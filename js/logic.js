@@ -156,10 +156,15 @@
     return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, incomeByDay, adjByDay, statsFrom, isHoliday };
   }
 
-  /** Build a fast "is this date a holiday?" check from vacation ranges [{from, to}]. */
+  const isWeekend = (d) => { const w = parse(d).getUTCDay(); return w === 0 || w === 6; };
+
+  /**
+   * "Is this date a holiday?" A day is a holiday only when BOTH are true:
+   * it's a Saturday or Sunday, and it falls inside a vacation mode date range [{from, to}].
+   */
   function makeHolidayCheck(vacations) {
     const ranges = (vacations || []).filter((v) => v && v.from && v.to).map((v) => (v.from <= v.to ? [v.from, v.to] : [v.to, v.from]));
-    return (d) => ranges.some(([a, b]) => d >= a && d <= b);
+    return (d) => isWeekend(d) && ranges.some(([a, b]) => d >= a && d <= b);
   }
 
   /** Number of budget (non-holiday) days from a to b inclusive. */
@@ -397,7 +402,7 @@
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
-    incomeKind, sumByDay, sumRange, buildLedger, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
+    incomeKind, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
     cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

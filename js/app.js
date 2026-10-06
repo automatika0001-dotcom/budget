@@ -158,18 +158,24 @@
     return `<div class="formula num">${money(ts.remainingMonth + ts.spentToday)} left this morning ÷ ${n} ${hol ? 'budget ' : ''}day${n === 1 ? '' : 's'} = <b>${money(ts.dailyAllowance)}</b> a day${hol && n !== ts.daysLeft ? ' (holidays skipped)' : ''}</div>`;
   }
 
+  function weekendCount(x) {
+    let n = 0;
+    for (let d = x.from; d <= x.to; d = L.addDays(d, 1)) if (L.isWeekend(d)) n++;
+    return n;
+  }
+
   function vacationHtml() {
     const v = (state.settings.vacations || []).slice().sort((a, b) => a.from.localeCompare(b.from));
     const plus7 = L.addDays(today, 7);
     return `<details class="card" id="vacCard" ${ui.vacOpen ? 'open' : ''}>
         <summary><h2>Vacation mode${v.some((x) => x.to >= today) ? ' <span class="tag">on</span>' : ''}</h2><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary>
-        <p class="small muted" style="margin-top:0">Holiday days get a 0 € budget; their share is spread over your other days. Anything you still spend on a holiday counts.</p>
+        <p class="small muted" style="margin-top:0">Saturdays and Sundays inside these dates get a 0 € budget; their share goes to your other days. Anything you still spend then counts.</p>
         <div class="field-row">
           <div class="field"><label>From</label><input id="vcFrom" type="date" value="${today}"></div>
           <div class="field"><label>To</label><input id="vcTo" type="date" value="${plus7}"></div>
         </div>
         <button class="btn primary block" id="vcAdd">Add holiday</button>
-        ${v.length ? `<div class="list" style="margin-top:12px">${v.map((x) => `<div class="row"><span>${dShort(x.from)} to ${dShort(x.to)} <span class="muted small">(${L.diffDays(x.from, x.to) + 1} days)</span></span><button class="btn ghost small vc-del" data-id="${x.id}" style="padding:4px 10px">Remove</button></div>`).join('')}</div>` : ''}
+        ${v.length ? `<div class="list" style="margin-top:12px">${v.map((x) => `<div class="row"><span>${dShort(x.from)} to ${dShort(x.to)} <span class="muted small">(${weekendCount(x)} weekend day${weekendCount(x) === 1 ? '' : 's'})</span></span><button class="btn ghost small vc-del" data-id="${x.id}" style="padding:4px 10px">Remove</button></div>`).join('')}</div>` : ''}
       </details>`;
   }
 

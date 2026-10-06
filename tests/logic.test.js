@@ -169,27 +169,34 @@ t('live payment skipped when the same purchase was just logged by hand', () => {
 });
 console.log('live tests passed');
 
-// ---- v1.5: vacation mode ----
-t('holidays get 0, their share goes to the remaining budget days', () => {
-  // Jan: effective 930, 31 days, holidays 10-19 (10 days) -> 21 budget days
-  const s = st([], [inc('2026-01-01', 1430)], { vacations: [{ from: '2026-01-10', to: '2026-01-19' }] });
-  const led = L.buildLedger(s, '2026-01-01');
-  near(L.todayStatus(led, '2026-01-01').dailyAllowance, 930 / 21, 'day 1');
-  const led2 = L.buildLedger(s, '2026-01-12');
-  const ts = L.todayStatus(led2, '2026-01-12');
-  assert.ok(ts.holiday); near(ts.dailyAllowance, 0, 'holiday allowance');
-  assert.strictEqual(ts.nextDate, '2026-01-20'); near(ts.nextAllowance, 930 / 12, 'next budget day (Jan 20-31 = 12 days)');
+// ---- v1.5: vacation mode (holiday = Sat/Sun inside a vacation range) ----
+// Jan 2026: 1st is Thursday. Range Jan 8 (Thu) to Jan 18 (Sun) contains weekends 10,11,17,18 = 4 holidays.
+const VAC = { vacations: [{ from: '2026-01-08', to: '2026-01-18' }] };
+t('only weekend days inside the range are holidays', () => {
+  const h = L.makeHolidayCheck(VAC.vacations);
+  assert.ok(h('2026-01-10') && h('2026-01-11') && h('2026-01-17') && h('2026-01-18'));
+  assert.ok(!h('2026-01-12'), 'Monday in range is a normal day');
+  assert.ok(!h('2026-01-24'), 'weekend outside range is a normal day');
+  assert.ok(!h('2026-01-08'), 'Thursday start is a normal day');
 });
-t('spending on a holiday counts as over budget and reduces later days', () => {
-  const s = st([ex('2026-01-12', 60)], [inc('2026-01-01', 1430)], { vacations: [{ from: '2026-01-10', to: '2026-01-19' }] });
-  const ts = L.todayStatus(L.buildLedger(s, '2026-01-12'), '2026-01-12');
-  near(ts.leftToday, -60, 'over by spend'); near(ts.nextAllowance, (930 - 60) / 12, 'next reduced');
-  const day = L.daysInRange(L.buildLedger(s, '2026-01-31'), '2026-01-12', '2026-01-12', '2026-01-31')[0];
+t('holidays get 0, their share goes to the other days', () => {
+  const s = st([], [inc('2026-01-01', 1430)], VAC); // effective 930, 31 days - 4 holidays = 27 budget days
+  near(L.todayStatus(L.buildLedger(s, '2026-01-01'), '2026-01-01').dailyAllowance, 930 / 27, 'day 1');
+  const ts = L.todayStatus(L.buildLedger(s, '2026-01-10'), '2026-01-10');
+  assert.ok(ts.holiday); near(ts.dailyAllowance, 0, 'saturday in range');
+  assert.strictEqual(ts.nextDate, '2026-01-12'); near(ts.nextAllowance, 930 / 18, 'Jan 12-31 = 20 days minus 17,18 = 18');
+  const mon = L.todayStatus(L.buildLedger(s, '2026-01-12'), '2026-01-12');
+  assert.ok(!mon.holiday); near(mon.dailyAllowance, 930 / 18, 'monday in range is a budget day');
+});
+t('spending on a holiday counts as over and reduces later days', () => {
+  const s = st([ex('2026-01-10', 60)], [inc('2026-01-01', 1430)], VAC);
+  const ts = L.todayStatus(L.buildLedger(s, '2026-01-10'), '2026-01-10');
+  near(ts.leftToday, -60, 'over'); near(ts.nextAllowance, (930 - 60) / 18, 'next reduced');
+  const day = L.daysInRange(L.buildLedger(s, '2026-01-31'), '2026-01-10', '2026-01-10', '2026-01-31')[0];
   near(day.diff, 60, 'stats over'); assert.ok(day.holiday);
 });
-t('day before a holiday shows the next budget day after the holiday', () => {
-  const s = st([], [inc('2026-01-01', 1430)], { vacations: [{ from: '2026-01-10', to: '2026-01-19' }] });
-  const ts = L.todayStatus(L.buildLedger(s, '2026-01-09'), '2026-01-09');
-  assert.strictEqual(ts.nextDate, '2026-01-20'); assert.ok(!ts.nextIsTomorrow);
+t('Friday before a holiday weekend points to Monday', () => {
+  const ts = L.todayStatus(L.buildLedger(st([], [inc('2026-01-01', 1430)], VAC), '2026-01-09'), '2026-01-09');
+  assert.strictEqual(ts.nextDate, '2026-01-12'); assert.ok(!ts.nextIsTomorrow);
 });
 console.log('vacation tests passed');
