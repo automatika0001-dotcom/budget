@@ -1,8 +1,8 @@
 # Budžets: personal budget app for Android
 
-Install it once on your phone. Every time you push from your PC, the phone gets the new version the next time you open the app, including big changes. Your data stays on the phone and survives updates.
+A real Android app (APK) you install once. Every time you push from your PC, the installed app updates itself the next time you open it, including big changes. Your data stays on the phone and survives updates.
 
-How it works: it's a Progressive Web App hosted free on GitHub Pages. When you "Install" it from Chrome on Android, Chrome builds a real Android app (icon in the app drawer, own window, works offline). The app always checks GitHub for newer code when it opens.
+How it works: the APK is a small native shell. The screens and logic live on GitHub Pages, and the app loads the newest version from there (and keeps a copy for offline use). GitHub also builds the APK for you in the cloud, so you never need Android Studio.
 
 ---
 
@@ -22,28 +22,48 @@ How it works: it's a Progressive Web App hosted free on GitHub Pages. When you "
 4. On GitHub: repo **Settings > Pages > Build and deployment > Source: Deploy from a branch**, branch `main`, folder `/ (root)`, Save.
 5. After about a minute your app lives at `https://YOUR-USERNAME.github.io/budget/`.
 
-## 2. Install on your phone (once)
+## 2. Build the APK on GitHub (once)
 
-1. Open that address in **Chrome** on your Android phone.
-2. Tap the **⋮** menu, then **Install app** (or "Add to home screen" then "Install").
-3. Open Budžets from your app drawer and complete the short setup.
+1. In your repo on github.com: **Settings > Secrets and variables > Actions > New repository secret**.
+   - Name: `ANDROID_KEYSTORE`
+   - Secret: open `ANDROID_KEYSTORE-secret.txt` (sent to you separately), select all, copy, paste.
+   - Click **Add secret**. This is your app's signing key: keep that file somewhere safe (e.g. a USB stick or password manager), never put it in the repo.
+2. Push the project (this includes the `android` folder and the build script):
+   ```
+   git add -A
+   git commit -m "android app"
+   git push
+   ```
+3. Open the **Actions** tab in your repo. "Build Android app" runs for about 3 to 5 minutes. When it shows a green tick, the APK is ready. (If it didn't start, click **Build Android app > Run workflow**.)
 
-## 3. Push an update from your PC (any time)
+## 3. Install on your phone (once)
+
+1. On your phone, open `https://github.com/automatika0001-dotcom/budget/releases`
+2. Under **Budžets Android app**, tap **Budzets.apk** to download it.
+3. Open the downloaded file. Android will ask to allow installs from this source (Chrome or Files): tap **Settings**, switch on **Allow from this source**, go back, tap **Install**.
+4. If Play Protect warns that it doesn't recognize the app, tap **More details > Install anyway**. That's normal for apps you build yourself.
+5. Open **Budžets** from your app drawer and complete the short setup.
+
+If you already entered data in the browser version: there, use Settings > Export backup, then in the app use Settings > Import backup. The app and the browser keep separate data.
+
+## 4. Push an update from your PC (any time)
 
 Edit any file, then in this folder run:
 
 - Windows: `.\deploy.ps1 "what changed"`
 - Mac/Linux: `./deploy.sh "what changed"`
 
-That bumps the version number, commits and pushes. Within about a minute, the next time you open the app it loads the new version and shows "Updated to version x.y.z". You can also tap **Settings > Check for update**.
+That bumps the version number, commits and pushes. Within about a minute, the next time you open the app it loads the new version and shows "Updated to version x.y.z". You can also tap **Settings > Check for update**. No reinstalling.
+
+You only ever need a new APK if you change something inside the `android` folder (app name, icon, address). GitHub rebuilds it automatically; install it over the old one and your data is kept, as long as the same signing key is used.
 
 If your data format ever needs to change in a big update, add a step in `migrate()` in `js/app.js`; old data is always carried forward.
 
-**Back up now and then:** Settings > Export backup saves a JSON file. If you ever clear Chrome's data or change phone, Import backup restores everything.
+**Back up now and then:** Settings > Export backup saves a JSON file to your phone's Downloads folder. If you ever clear Chrome's data or change phone, Import backup restores everything.
 
 ---
 
-## 4. Connect SEB (optional, about 15 minutes)
+## 5. Connect SEB (optional, about 15 minutes)
 
 Banks only give account data to licensed providers (PSD2). The free route for an individual in 2026 is **Enable Banking**, which has a free mode for linking **your own** accounts for personal use. A tiny free **Cloudflare Worker** sits between the app and Enable Banking so your secret key is never in the public website or on the phone.
 
@@ -65,7 +85,7 @@ Banks only give account data to licensed providers (PSD2). The free route for an
 4. Note the worker address, e.g. `https://budget-bridge.YOURNAME.workers.dev`.
 
 ### c) In the app
-Settings > SEB bank sync: paste the Bridge URL and password, tap **Connect SEB**, approve with Smart-ID. You're sent back to the app and transactions import.
+Settings > SEB bank sync: paste the Bridge URL and password, tap **Connect SEB**, approve with Smart-ID. The bank login opens inside the app and returns to it afterwards, then transactions import.
 
 After that it syncs automatically when you open the app (at most every 3 hours, since banks limit background fetches to about 4 per day) or when you tap the sync button at the top. Bank consent lasts up to 180 days; the app warns you a week before it expires so you can tap Reconnect.
 
@@ -95,3 +115,5 @@ Employee social insurance 10.5%, income tax 25.5% after the 550 € monthly non-
 - `sw.js`: offline support and auto update
 - `js/version.js`: version number (bumped by the deploy script)
 - `worker/worker.js`: the SEB bridge for Cloudflare
+- `android/`: the native Android app (the address it loads is in `android/app/build.gradle`)
+- `.github/workflows/android.yml`: builds the APK on GitHub

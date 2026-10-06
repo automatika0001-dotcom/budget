@@ -1,3 +1,10 @@
 node_modules/
 *.pem
+*.keystore
+*.jks
+ANDROID_KEYSTORE-secret.txt
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
 .DS_Store

@@ -583,9 +583,14 @@
 
   // ---------------- backup ----------------
   function exportData() {
+    const name = `budget-backup-${today}.json`;
+    if (window.AndroidBridge && window.AndroidBridge.saveFile) {
+      const where = window.AndroidBridge.saveFile(name, JSON.stringify(state, null, 1));
+      return toast(where.startsWith('ERROR') ? 'Backup failed: ' + where.slice(7) : 'Saved to ' + where, 4000);
+    }
     const blob = new Blob([JSON.stringify(state, null, 1)], { type: 'application/json' });
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = `budget-backup-${today}.json`; a.click();
+    a.href = URL.createObjectURL(blob); a.download = name; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
   function importData(file) {
@@ -684,7 +689,7 @@
   // ---------------- updates (service worker) ----------------
   let swReg = null;
   async function checkUpdate() {
-    if (!swReg) return toast('Updates work once installed from your website');
+    if (!swReg) return toast('Update check is not available here');
     toast('Checking for update…');
     await swReg.update();
     setTimeout(() => { if (!swReg.installing && !swReg.waiting) toast('You have the latest version (' + (window.APP_VERSION || 'dev') + ')'); }, 2500);
@@ -704,6 +709,13 @@
     }).catch((e) => console.warn('SW failed', e));
     if (sessionStorage.getItem('justUpdated')) { sessionStorage.removeItem('justUpdated'); setTimeout(() => toast('Updated to version ' + (window.APP_VERSION || '')), 400); }
   }
+
+  // Android back button (called by the native app): close panel, then go to Today, then exit.
+  window.__onBack = function () {
+    if (!$('#sheet').hidden) { closeSheet(); return true; }
+    if (ui.tab !== 'today') { ui.tab = 'today'; window.scrollTo(0, 0); render(); return true; }
+    return false;
+  };
 
   // ---------------- boot ----------------
   function boot() {

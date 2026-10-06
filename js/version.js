@@ -1,2 +1,2 @@
 // Bumped automatically by deploy.ps1 / deploy.sh on every push.
-self.APP_VERSION = '1.0.0';
+self.APP_VERSION = '1.1.0';
