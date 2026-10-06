@@ -122,9 +122,10 @@
     if (ts.nextAllowance === null) return ts.daysLeft > 1 || ts.holiday ? `<div class="tomorrow"><span>No budget days left before pay day (${dShort(ts.period.next)})</span></div>` : '';
     const label = ts.nextIsTomorrow ? "Tomorrow you'll have" : `Next budget day, ${dShort(ts.nextDate)}`;
     if (ts.holiday) return `<div class="tomorrow up"><span>${label}</span><b class="num">${money(ts.nextAllowance)}</b></div>`;
-    const up = ts.nextAllowance >= ts.dailyAllowance;
-    return `<div class="tomorrow ${up ? 'up' : 'down'}"><span>${label}</span><b class="num">${money(ts.nextAllowance)}</b>
-      <span class="trend">${up ? '▲' : '▼'} ${money(Math.abs(ts.nextAllowance - ts.dailyAllowance))}</span></div>`;
+    const d = L.r2(ts.nextAllowance - ts.dailyAllowance);
+    const cls = d > 0.005 ? 'up' : d < -0.005 ? 'down' : 'same';
+    const trend = cls === 'same' ? 'same as today' : `${d > 0 ? '▲' : '▼'} ${money(Math.abs(d))}`;
+    return `<div class="tomorrow ${cls}"><span>${label}</span><b class="num">${money(ts.nextAllowance)}</b><span class="trend">${trend}</span></div>`;
   }
 
   function heroHtml(ts, over) {

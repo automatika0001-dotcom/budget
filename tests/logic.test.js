@@ -200,3 +200,21 @@ t('Friday before a holiday weekend points to Monday', () => {
   assert.strictEqual(ts.nextDate, '2026-01-12'); assert.ok(!ts.nextIsTomorrow);
 });
 console.log('vacation tests passed');
+
+// ---- v1.6: tomorrow preview assumes today's budget is fully spent ----
+t('tomorrow preview: unspent today does not raise it, overspend lowers it, leftover counts once the day ends', () => {
+  // effective 930, 31 days -> 30/day
+  const s0 = st([], [inc('2026-01-01', 1430)]);
+  let ts = L.todayStatus(L.buildLedger(s0, '2026-01-01'), '2026-01-01');
+  near(ts.dailyAllowance, 30, 'today'); near(ts.nextAllowance, 30, 'nothing spent yet: tomorrow same as today');
+  const s1 = st([ex('2026-01-01', 10)], [inc('2026-01-01', 1430)]);
+  ts = L.todayStatus(L.buildLedger(s1, '2026-01-01'), '2026-01-01');
+  near(ts.nextAllowance, 30, 'spent 10 of 30: still same, leftover not counted yet');
+  const s2 = st([ex('2026-01-01', 60)], [inc('2026-01-01', 1430)]);
+  ts = L.todayStatus(L.buildLedger(s2, '2026-01-01'), '2026-01-01');
+  near(ts.nextAllowance, (930 - 60) / 30, 'overspent: tomorrow drops now');
+  // next day: the 20 left over yesterday is added
+  ts = L.todayStatus(L.buildLedger(s1, '2026-01-02'), '2026-01-02');
+  near(ts.dailyAllowance, (930 - 10) / 30, 'leftover counted the next day');
+});
+console.log('tomorrow tests passed');

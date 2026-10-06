@@ -187,3 +187,5 @@ table.hist td { text-align: right; padding: 7px 4px; border-top: 1px solid var(-
 .holiday-over { color: var(--bad); font-size: 22px; font-weight: 800; margin-bottom: 4px; }
 .cal .day.holiday { border: 1px dashed #6ab8f2; }
 .cal .day.holiday .d { color: #6ab8f2; }
+
+.tomorrow.same b { color: var(--text); } .tomorrow.same .trend { color: var(--muted); }

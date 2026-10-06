@@ -219,7 +219,11 @@
     for (let d = addDays(today, 1); d <= per.end; d = addDays(d, 1)) {
       if (!isHoliday(d)) { next = d; break; }
     }
-    const nextAllowance = next ? r2((per.effective - t.cum) / budgetDaysBetween(next, per.end, isHoliday)) : null;
+    // Preview of the next budget day: assume today's budget gets spent in full. Overspending lowers it
+    // right away; money left unspent today only raises it once the day is over (the real calculation
+    // tomorrow uses what was actually spent).
+    const usedToday = Math.max(t.spent, t.allow);
+    const nextAllowance = next ? r2((per.effective - t.before - usedToday) / budgetDaysBetween(next, per.end, isHoliday)) : null;
     return {
       period: per, holiday: t.holiday, dailyAllowance: t.allow, spentToday: t.spent, leftToday: r2(t.allow - t.spent),
       daysLeft: t.daysLeft, budgetDaysLeft: t.budgetDaysLeft, remainingMonth,
