@@ -10,12 +10,12 @@
     v: DATA_VERSION,
     settings: {
       payDay: 10, monthlySaving: 500, goal: 20000, startingSaved: 0, openingCarry: 0, startDate: null,
-      useExpected: true, expectedNet: 0,
+      useExpected: true, expectedNet: 0, statsFrom: null,
       salary: { gross: 0, taxBook: true, dependents: 0, disability: 'none' },
       bank: { workerUrl: '', token: '', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '' },
       aliases: {}
     },
-    expenses: [], incomes: [], ignoredBankIds: []
+    expenses: [], incomes: [], adjustments: [], ignoredBankIds: []
   });
 
   function deepMerge(base, extra) {
@@ -28,9 +28,21 @@
   function migrate(s) {
     // Future schema changes go here, keyed on s.v. Old data is always merged over current defaults.
     const out = deepMerge(defaults(), s || {});
+    // v1.3: give every income a kind (salary / advance / other) so advances don't cancel the expected salary
+    (out.incomes || []).forEach((i) => { if (!i.kind) i.kind = guessKind(i, out.settings); });
+    // v1.2: statistics ignore days before 6 Oct 2026 (or the budget start date, whichever is later)
+    if (!out.settings.statsFrom && out.settings.startDate) out.settings.statsFrom = out.settings.startDate > '2026-10-06' ? out.settings.startDate : '2026-10-06';
     out.v = DATA_VERSION;
     return out;
   }
+  function guessKind(i, settings) {
+    const k = L.incomeKind(i);
+    if (k !== 'other') return k;
+    // bank imports: a large incoming payment is almost certainly the salary
+    const exp = L.num(settings.expectedNet);
+    return i.bankId && exp > 0 && L.num(i.amount) >= exp * 0.5 ? 'salary' : 'other';
+  }
+
   function load() {
     try { const raw = localStorage.getItem(STORE_KEY); return migrate(raw ? JSON.parse(raw) : null); }
     catch (e) { console.error(e); return defaults(); }
@@ -89,7 +101,7 @@
     const title = kind === 'income' ? (e.source || 'Income') : (e.place || 'Expense');
     return `<div class="item" data-kind="${kind}" data-id="${e.id}">
       <div class="dot">${initial}</div>
-      <div class="meta"><div class="title">${esc(title)}${e.bankId ? '<span class="tag">SEB</span>' : ''}</div>
+      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && (e.kind || L.incomeKind(e)) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.bankId ? '<span class="tag">SEB</span>' : ''}</div>
       <div class="sub">${dShort(e.date)}${e.note ? ' · ' + esc(e.note) : ''}</div></div>
       <div class="amt num ${kind === 'income' ? 'good' : ''}">${kind === 'income' ? '+' : '-'}${money(e.amount)}</div></div>`;
   }
@@ -120,9 +132,10 @@
     const recent = state.expenses.filter((e) => e.date !== today).sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id)).slice(0, 6);
     const bank = state.settings.bank;
     const consentDays = bank.validUntil ? L.diffDays(today, bank.validUntil.slice(0, 10)) : null;
+    const rebals = (state.adjustments || []).filter((a) => a.date >= per.start && a.date <= per.end).sort((a, b) => b.date.localeCompare(a.date));
 
     v.innerHTML = `
-      ${per.incomeExpected ? `<div class="banner">Using expected salary ${money(per.income)} until you log this month's income.</div>` : ''}
+      ${per.incomeExpected ? `<div class="banner">${per.advance > 0 ? `Advance ${money(per.advance)} received. Still expecting ${money(per.salaryToCome)} of salary.` : `Using expected salary ${money(per.salaryToCome)} until you log this month's salary.`}</div>` : ''}
       ${per.income === 0 ? `<div class="banner bad">No income logged for this period yet. Add it in Income.</div>` : ''}
       ${consentDays !== null && consentDays <= 7 ? `<div class="banner bad">SEB connection expires in ${Math.max(0, consentDays)} days. Reconnect in Settings.</div>` : ''}
       <div class="card hero ${over ? 'over' : ''}">
@@ -131,8 +144,10 @@
         <div class="chips">
           <span class="chip">Daily budget <b class="num">${money(ts.dailyAllowance)}</b></span>
           <span class="chip">Spent today <b class="num">${money(ts.spentToday)}</b></span>
-          ${ts.tomorrow !== null ? `<span class="chip">Tomorrow <b class="num">${money(ts.tomorrow)}</b></span>` : ''}
         </div>
+        ${ts.tomorrow !== null ? `<div class="tomorrow ${ts.tomorrow >= ts.dailyAllowance ? 'up' : 'down'}">
+          <span>Tomorrow you'll have</span><b class="num">${money(ts.tomorrow)}</b>
+          <span class="trend">${ts.tomorrow >= ts.dailyAllowance ? '▲' : '▼'} ${money(Math.abs(ts.tomorrow - ts.dailyAllowance))}</span></div>` : ''}
       </div>
 
       <div class="quick">
@@ -150,10 +165,20 @@
       <div class="card">
         <h2>Monthly allowance</h2>
         <div class="row"><span class="label">Income (net)${per.incomeExpected ? ' <span class="tag">expected</span>' : ''}</span><span class="num">${money(per.income)}</span></div>
+        ${per.advance > 0 ? `<div class="row"><span class="label small">of which advance received${per.incomeExpected ? ', ' + money(per.salaryToCome) + ' still to come' : ''}</span><span class="num small muted">${money(per.advance)}</span></div>` : ''}
         <div class="row"><span class="label">Savings</span><span class="num">-${money(per.saving)}</span></div>
         ${per.carryIn ? `<div class="row"><span class="label">${per.carryIn < 0 ? 'Overspend from last month' : 'Rollover from last month'}</span><span class="num ${per.carryIn < 0 ? 'bad' : 'good'}">${signed(per.carryIn)}</span></div>` : ''}
+        ${per.adjust ? `<div class="row"><span class="label">Rebalance</span><span class="num">${signed(per.adjust)}</span></div>` : ''}
         <div class="row total"><span>Allowance</span><span class="num">${money(per.effective)}</span></div>
       </div>
+
+      <details class="card" id="rebalCard">
+        <summary><h2>Rebalance</h2><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary>
+        <p class="small muted" style="margin-top:0">Set how much you really have left to spend until pay day (${dShort(per.next)}). Fixes differences with your bank. It is not counted as spending or income and doesn't show in statistics.</p>
+        <div class="field"><label>Actually left to spend, €</label><input id="rbAmt" class="amount-input num" inputmode="decimal" placeholder="${fmtEUR0.format(Math.round(ts.remainingMonth))}"><div class="hint">The app currently thinks: ${money(ts.remainingMonth)}</div></div>
+        <button class="btn primary block" id="rbSet">Set balance</button>
+        ${rebals.length ? `<div class="list" style="margin-top:12px">${rebals.map((a) => `<div class="row"><span class="label">${dShort(a.date)} · set to ${money(a.target)}</span><span><span class="num">${signed(a.amount)}</span> <button class="btn ghost small rb-undo" data-id="${a.id}" style="padding:4px 10px;margin-left:6px">Undo</button></span></div>`).join('')}</div>` : ''}
+      </details>
 
       <div class="card">
         <h2>Today</h2>
@@ -163,6 +188,18 @@
     `;
     $('#qExp').onclick = () => openExpense(null);
     $('#qInc').onclick = () => openIncome(null);
+    $('#rbSet').onclick = () => {
+      const raw = $('#rbAmt').value.trim();
+      if (raw === '') return toast('Enter how much you have left');
+      const target = L.num(raw);
+      const delta = L.rebalanceDelta(ledger, target);
+      if (Math.abs(delta) < 0.005) return toast('Already matches');
+      state.adjustments.push({ id: uid(), date: today, amount: delta, target: L.r2(target) });
+      save(); render(); toast('Balance set to ' + money(target));
+    };
+    $$('.rb-undo', v).forEach((b) => (b.onclick = () => {
+      state.adjustments = state.adjustments.filter((a) => a.id !== b.dataset.id); save(); render(); toast('Rebalance removed');
+    }));
     bindItems(v);
   }
 
@@ -250,7 +287,7 @@
         <h2>Add money received</h2>
         <div class="field"><label>Amount (net, what arrived), €</label><input id="iAmt" class="amount-input num" inputmode="decimal" placeholder="0,00"></div>
         <div class="field-row">
-          <div class="field"><label>Source</label><select id="iSrc">${['Salary', 'Bonus', 'Side job', 'Gift', 'Refund', 'Other'].map((s) => `<option>${s}</option>`).join('')}</select></div>
+          <div class="field"><label>Source</label><select id="iSrc">${[['Salary', 'Salary (full / final)'], ['Advance', 'Salary advance (avanss)'], ['Bonus', 'Bonus'], ['Side job', 'Side job'], ['Gift', 'Gift'], ['Refund', 'Refund'], ['Other', 'Other']].map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
           <div class="field"><label>Date</label><input id="iDate" type="date" value="${today}"></div>
         </div>
         <button class="btn primary block" id="iAdd">Add income</button>
@@ -282,10 +319,13 @@
     ['#sBook', '#sDis'].forEach((s) => $(s).addEventListener('change', calc));
     calc();
     $('#sExpected').onclick = () => { state.settings.expectedNet = calc().net; state.settings.useExpected = true; save(); toast('Expected income set to ' + money(state.settings.expectedNet)); render(); };
-    $('#sLog').onclick = () => { const r = calc(); if (!r.net) return; state.incomes.push({ id: uid(), date: today, amount: r.net, source: 'Salary', note: 'From calculator' }); save(); toast('Logged ' + money(r.net)); render(); };
+    $('#sLog').onclick = () => { const r = calc(); if (!r.net) return; state.incomes.push({ id: uid(), date: today, amount: r.net, source: 'Salary', kind: 'salary', note: 'From calculator' }); save(); toast('Logged ' + money(r.net)); render(); };
     $('#iAdd').onclick = () => {
       const amt = L.num($('#iAmt').value); if (amt <= 0) return toast('Enter an amount');
-      state.incomes.push({ id: uid(), date: $('#iDate').value || today, amount: L.r2(amt), source: $('#iSrc').value, note: '' }); save(); toast('Income added'); render();
+      const src = $('#iSrc').value;
+      const kind = src === 'Salary' ? 'salary' : src === 'Advance' ? 'advance' : 'other';
+      state.incomes.push({ id: uid(), date: $('#iDate').value || today, amount: L.r2(amt), source: src, kind, note: '' }); save();
+      toast(kind === 'advance' ? 'Advance added, salary expectation kept' : 'Income added'); render();
     };
     $('#useExp').onchange = (e) => { state.settings.useExpected = e.target.checked; save(); recompute(); };
     $('#expNet').onchange = (e) => { state.settings.expectedNet = L.num(e.target.value); save(); recompute(); };
@@ -302,10 +342,13 @@
         tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${money(c.parsed.y)}` } } },
       scales: {
         x: { grid: { display: false }, ticks: { color: muted, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
-        y: { grid: { color: grid }, ticks: { color: muted, callback: (v) => fmtEUR0.format(v) + ' €' } }
+        y: { beginAtZero: true, grid: { color: grid }, ticks: { color: muted, callback: (v) => fmtEUR0.format(v) + ' €' } }
       }
     };
   }
+
+  // draw a dot on the most recent value so short ranges (even a single day) stay visible
+  const lastDot = (ctx) => { const data = ctx.dataset.data; let last = -1; data.forEach((v, i) => { if (v !== null && v !== undefined) last = i; }); return ctx.dataIndex === last ? 4 : 0; };
 
   function renderStats() {
     const v = $('#view-stats');
@@ -317,15 +360,19 @@
       const per = ledger.periods[idx];
       from = per.start; to = per.end; label = `${dShort(per.start)} to ${dShort(per.end)}`;
       days = L.daysInRange(ledger, from, to, today);
-      const all = []; for (let d = from; d <= to; d = L.addDays(d, 1)) all.push(d);
-      const cum = {}; days.forEach((d) => (cum[d.date] = d.cum));
-      const n = all.length;
+      // Only days from the statistics start count; the chart starts there.
+      const startD = ledger.statsFrom > per.start ? ledger.statsFrom : per.start;
+      const all = []; for (let d = startD; d <= to; d = L.addDays(d, 1)) all.push(d);
+      const before0 = days.length ? days[0].before : 0;
+      const limit = L.r2(per.effective - before0);
+      const cum = {}; days.forEach((d) => (cum[d.date] = L.r2(d.cum - before0)));
+      const n = all.length || 1;
       chart1 = {
         type: 'line',
         data: { labels: all.map(dShort), datasets: [
-          { label: 'Spent (cumulative)', data: all.map((d) => (d <= today ? cum[d] ?? null : null)), borderColor: css('--accent'), backgroundColor: 'rgba(200,242,106,.12)', fill: true, tension: .25, pointRadius: 0, borderWidth: 2.5 },
-          { label: 'Monthly limit', data: all.map(() => per.effective), borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5 },
-          { label: 'Even pace', data: all.map((_, i) => L.r2(per.effective * (i + 1) / n)), borderColor: css('--muted'), borderDash: [2, 4], pointRadius: 0, borderWidth: 1 }
+          { label: 'Spent (cumulative)', data: all.map((d) => (d <= today ? cum[d] ?? null : null)), borderColor: css('--accent'), backgroundColor: 'rgba(200,242,106,.12)', fill: true, tension: .25, pointRadius: lastDot, pointBackgroundColor: css('--accent'), borderWidth: 2.5 },
+          { label: 'Monthly limit', data: all.map(() => limit), borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5 },
+          { label: 'Even pace', data: all.map((_, i) => L.r2(limit * (i + 1) / n)), borderColor: css('--muted'), borderDash: [2, 4], pointRadius: 0, borderWidth: 1 }
         ] }
       };
     } else {
@@ -333,27 +380,27 @@
       from = `${y}-01-01`; to = `${y}-12-31`; label = String(y);
       days = L.daysInRange(ledger, from, to, today);
       const byDate = Object.fromEntries(days.map((d) => [d.date, d]));
-      const perLen = (p) => L.diffDays(p.start, p.end) + 1;
       const all = []; for (let d = from; d <= to; d = L.addDays(d, 1)) all.push(d);
-      let cs = 0, cl = 0;
+      let cs = 0, cl = 0, lastPlan = 0;
       const spentSeries = [], limitSeries = [];
       for (const d of all) {
         const p = ledger.periods.find((pp) => d >= pp.start && d <= pp.end);
-        if (p) cl += p.effective / perLen(p);
-        cs += byDate[d] ? byDate[d].spent : 0;
-        spentSeries.push(d <= today && p ? L.r2(cs) : null);
-        limitSeries.push(p ? L.r2(cl) : null);
+        const counted = p && d >= ledger.statsFrom;
+        if (byDate[d]) { lastPlan = byDate[d].plan || 0; cl += lastPlan; cs += byDate[d].spent; }
+        else if (counted && d > today) cl += lastPlan; // rest of the current month at its planned pace
+        spentSeries.push(counted && d <= today ? L.r2(cs) : null);
+        limitSeries.push(counted ? L.r2(cl) : null);
       }
       chart1 = {
         type: 'line',
         data: { labels: all.map(dShort), datasets: [
-          { label: 'Spent (cumulative)', data: spentSeries, borderColor: css('--accent'), backgroundColor: 'rgba(200,242,106,.12)', fill: true, tension: .2, pointRadius: 0, borderWidth: 2.5 },
+          { label: 'Spent (cumulative)', data: spentSeries, borderColor: css('--accent'), backgroundColor: 'rgba(200,242,106,.12)', fill: true, tension: .2, pointRadius: lastDot, pointBackgroundColor: css('--accent'), borderWidth: 2.5 },
           { label: 'Allowance (cumulative)', data: limitSeries, borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5 }
         ] }
       };
     }
     const st = L.overUnderStats(days.filter((d) => d.date <= today));
-    const places = L.topPlaces(state.expenses, from, to, state.settings.aliases, 8);
+    const places = L.topPlaces(state.expenses, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.aliases, 8);
     const placeTotal = places.reduce((s, p) => s + p.total, 0);
     const palette = ['#c8f26a', '#5fd3a0', '#6ab8f2', '#b48cf2', '#f2a65f', '#f26a9a', '#f5c35b', '#7b8a84'];
 
@@ -362,6 +409,7 @@
       <div class="navrow"><button class="icon-btn" id="stPrev"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
         <span class="lbl">${label}</span>
         <button class="icon-btn" id="stNext" ${ui.statsOffset >= 0 ? 'disabled' : ''}><svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button></div>
+      ${ledger.statsFrom > from ? `<div class="small muted" style="text-align:center">Statistics count from ${dLong(ledger.statsFrom)}</div>` : ''}
       <div class="card"><h2>Spending over time</h2><div class="chart-box"><canvas id="c1"></canvas></div></div>
       <div class="card"><h2>Where the money went</h2>
         ${places.length ? `<div class="chart-box pie"><canvas id="c2"></canvas></div>
@@ -494,20 +542,27 @@
 
   function openIncome(item, date) {
     const isNew = !item;
-    const e = item || { date: date || today, amount: '', source: 'Salary', note: '' };
+    const e = item || { date: date || today, amount: '', source: 'Salary', kind: 'salary', note: '' };
+    const kind = e.kind || L.incomeKind(e);
     openSheet(`<h3>${isNew ? 'New income' : 'Edit income'}${e.bankId ? '<span class="tag">from SEB</span>' : ''}</h3>
       <div class="field"><input id="nAmt" class="amount-input num" inputmode="decimal" placeholder="0,00" value="${e.amount || ''}"></div>
       <div class="field-row">
-        <div class="field"><label>Source</label><input id="nSrc" list="srcList" value="${esc(e.source)}"><datalist id="srcList">${['Salary', 'Bonus', 'Side job', 'Gift', 'Refund', 'Other'].map((s) => `<option value="${s}">`).join('')}</datalist></div>
+        <div class="field"><label>Source</label><input id="nSrc" list="srcList" value="${esc(e.source)}"><datalist id="srcList">${['Salary', 'Advance', 'Bonus', 'Side job', 'Gift', 'Refund', 'Other'].map((s) => `<option value="${s}">`).join('')}</datalist></div>
         <div class="field"><label>Date</label><input id="nDate" type="date" value="${e.date}"></div>
       </div>
+      <div class="field"><label>Counts as</label><select id="nKind">
+        <option value="salary" ${kind === 'salary' ? 'selected' : ''}>Salary (full / final)</option>
+        <option value="advance" ${kind === 'advance' ? 'selected' : ''}>Salary advance (part of salary)</option>
+        <option value="other" ${kind === 'other' ? 'selected' : ''}>Other income (on top of salary)</option></select>
+        <div class="hint">An advance keeps the expected salary until the final salary arrives.</div></div>
       <div class="field"><label>Note</label><input id="nNote" value="${esc(e.note)}"></div>
       <div class="actions">${isNew ? '' : '<button class="btn danger" id="nDel">Delete</button>'}<button class="btn primary" id="nSave">Save</button></div>`, (b) => {
+      $('#nSrc', b).addEventListener('change', () => { const v = $('#nSrc', b).value.trim().toLowerCase(); if (v === 'advance') $('#nKind', b).value = 'advance'; else if (v === 'salary') $('#nKind', b).value = 'salary'; });
       setTimeout(() => isNew && $('#nAmt', b).focus(), 50);
       $('#nSave', b).onclick = () => {
         const amt = L.num($('#nAmt', b).value);
         if (amt <= 0) return toast('Enter an amount');
-        const rec = Object.assign(item || { id: uid() }, { amount: L.r2(amt), source: $('#nSrc', b).value.trim() || 'Income', date: $('#nDate', b).value || today, note: $('#nNote', b).value.trim() });
+        const rec = Object.assign(item || { id: uid() }, { amount: L.r2(amt), source: $('#nSrc', b).value.trim() || 'Income', kind: $('#nKind', b).value, date: $('#nDate', b).value || today, note: $('#nNote', b).value.trim() });
         if (isNew) state.incomes.push(rec);
         save(); closeSheet(); render(); toast('Saved');
       };
@@ -536,7 +591,7 @@
         s.salary.gross = L.num($('#oGross', b).value);
         if (s.salary.gross) { s.expectedNet = L.salaryNet(s.salary.gross, s.salary).net; s.useExpected = true; }
         s.monthlySaving = L.num($('#oSave', b).value); s.goal = L.num($('#oGoal', b).value); s.startingSaved = L.num($('#oStart', b).value);
-        s.startDate = today; save(); closeSheet(); render(); toast('All set');
+        s.startDate = today; s.statsFrom = today; save(); closeSheet(); render(); toast('All set');
       };
     });
   }
@@ -547,6 +602,7 @@
     openSheet(`<h3>Settings</h3>
       <div class="field"><label>Pay day</label><input id="stPay" inputmode="numeric" value="${s.payDay}"><div class="hint">Budget months run from this day to the day before the next pay day.</div></div>
       <div class="field"><label>Budget start date</label><input id="stStart" type="date" value="${s.startDate || today}"><div class="hint">Months before this are ignored.</div></div>
+      <div class="field"><label>Statistics start date</label><input id="stStats" type="date" value="${s.statsFrom || s.startDate || today}"><div class="hint">Days before this don't count in any graph or average.</div></div>
       <div class="field"><label>Opening carry, € (negative = debt to make up)</label><input id="stCarry" inputmode="decimal" value="${s.openingCarry || 0}"></div>
 
       <h3 style="margin-top:22px">SEB bank sync</h3>
@@ -564,6 +620,7 @@
       <p class="small muted" style="text-align:center;margin-top:16px">Version ${esc(window.APP_VERSION || 'dev')} · data stored on this phone only</p>`, (b) => {
       $('#stPay', b).onchange = (e) => { s.payDay = Math.min(31, Math.max(1, parseInt(e.target.value, 10) || 1)); save(); render(); };
       $('#stStart', b).onchange = (e) => { s.startDate = e.target.value || today; save(); render(); };
+      $('#stStats', b).onchange = (e) => { s.statsFrom = e.target.value || s.startDate; save(); render(); };
       $('#stCarry', b).onchange = (e) => { s.openingCarry = L.num(e.target.value); save(); render(); };
       $('#bkUrl', b).onchange = (e) => { bk.workerUrl = e.target.value.trim().replace(/\/+$/, ''); save(); };
       $('#bkTok', b).onchange = (e) => { bk.token = e.target.value.trim(); save(); };
@@ -669,7 +726,7 @@
           known.add(m.bankId);
           if (L.matchesIgnore(m, bk.ignore)) continue;
           if (m.dir === 'out') { state.expenses.push({ id: uid(), date: m.date, amount: m.amount, place: m.place, note: m.note, bankId: m.bankId }); added++; }
-          else if (bk.importIncome) { state.incomes.push({ id: uid(), date: m.date, amount: m.amount, source: m.place, note: m.note, bankId: m.bankId }); addedIn++; }
+          else if (bk.importIncome) { const rec = { id: uid(), date: m.date, amount: m.amount, source: m.place, note: m.note, bankId: m.bankId }; rec.kind = guessKind(rec, state.settings); state.incomes.push(rec); addedIn++; }
         }
       }
       bk.lastSync = new Date().toISOString(); save(); render();
@@ -728,6 +785,7 @@
     // refresh numbers when the day changes or the app returns to the foreground
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (L.todayStr() !== today) render(); autoSync(); } });
     setInterval(() => { if (L.todayStr() !== today) render(); }, 60000);
+    if (localStorage.getItem(STORE_KEY)) save(); // persist any data migration
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     render();
     setupSW();

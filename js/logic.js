@@ -72,6 +72,14 @@
     return { start, end: addDays(next, -1), next };
   }
 
+  /** Income kind: 'salary' (final salary), 'advance' (part of salary paid early) or 'other'. */
+  function incomeKind(i) {
+    if (i.kind) return i.kind;
+    if (/^advance$|^avanss$/i.test(i.source || '')) return 'advance';
+    if (/^salary$|^alga$/i.test(i.source || '')) return 'salary';
+    return 'other';
+  }
+
   function sumByDay(items) {
     const map = {};
     for (const it of items) { if (it.ignored) continue; map[it.date] = (map[it.date] || 0) + num(it.amount); }
@@ -97,23 +105,39 @@
     const S = num(s.monthlySaving);
     const spentByDay = sumByDay(state.expenses || []);
     const incomeByDay = sumByDay(state.incomes || []);
+    const adjByDay = sumByDay(state.adjustments || []); // rebalances: change the allowance, never count as spend/income
+    const statsFrom = s.statsFrom || s.startDate || today;
     const periods = [];
     let savedTotal = num(s.startingSaved);
     let carry = num(s.openingCarry);
-    if (!s.startDate || s.startDate > today) return { periods, savedTotal, current: null, spentByDay, incomeByDay };
+    if (!s.startDate || s.startDate > today) return { periods, savedTotal, current: null, spentByDay, incomeByDay, adjByDay, statsFrom };
     let p = periodFor(s.startDate, payDay);
     let guard = 0;
     while (p.start <= today && guard++ < 1200) {
       const isCurrent = today >= p.start && today <= p.end;
-      let income = sumRange(incomeByDay, p.start, p.end);
-      let incomeExpected = false;
-      if (income === 0 && s.useExpected && num(s.expectedNet) > 0) { income = num(s.expectedNet); incomeExpected = true; }
+      // Salary rules: an advance is part of the salary, so until the final salary arrives the
+      // expected salary is still used (advance counts toward it). Other income adds on top.
+      let salary = 0, advance = 0, other = 0, hasSalary = false;
+      for (const it of state.incomes || []) {
+        if (it.ignored || it.date < p.start || it.date > p.end) continue;
+        const k = incomeKind(it), a = num(it.amount);
+        if (k === 'salary') { salary += a; hasSalary = true; } else if (k === 'advance') advance += a; else other += a;
+      }
+      const exp = s.useExpected ? num(s.expectedNet) : 0;
+      let income = r2(salary + advance + other);
+      let incomeExpected = false, salaryToCome = 0;
+      if (exp > 0 && !hasSalary && advance < exp) {
+        incomeExpected = true; salaryToCome = r2(exp - advance);
+        income = r2(other + exp);
+      }
       const base = r2(income - S);
       const rolloverIn = Math.max(0, carry);
-      const effective = r2(base + carry);
+      const adjust = sumRange(adjByDay, p.start, p.end);
+      const effectiveBase = r2(base + carry);
+      const effective = r2(effectiveBase + adjust);
       const spent = sumRange(spentByDay, p.start, p.end);
       const leftover = r2(effective - spent);
-      const per = Object.assign({}, p, { income, incomeExpected, saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), effective, spent, leftover, isCurrent });
+      const per = Object.assign({}, p, { income, incomeExpected, salaryToCome, advance: r2(advance), saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), adjust, effectiveBase, effective, spent, leftover, isCurrent });
       if (!isCurrent) {
         let toSavings = 0, carryOut;
         if (leftover < 0) carryOut = leftover;
@@ -128,19 +152,29 @@
       periods.push(per);
       p = periodFor(p.next, payDay);
     }
-    return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, incomeByDay };
+    return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, incomeByDay, adjByDay, statsFrom };
   }
 
-  /** Day by day allowance inside one period: what was left at the start of the day divided by days left. */
-  function dailySeries(per, spentByDay, upTo) {
+  /**
+   * Day by day allowance inside one period: what was left at the start of the day divided by days left.
+   * A rebalance counts from its own day onward. `plan` is the even-pace share used for statistics; it is
+   * set on the first counted day (stats start) and reset whenever a rebalance happens.
+   */
+  function dailySeries(per, spentByDay, upTo, adjByDay, statsFrom) {
+    adjByDay = adjByDay || {};
     const out = [];
     let before = 0;
-    const plan = per.effective / (diffDays(per.start, per.end) + 1); // even pace share of the month
+    let eff = per.effectiveBase !== undefined ? per.effectiveBase : per.effective;
+    let plan = null;
+    const anchor = statsFrom && statsFrom > per.start ? statsFrom : per.start;
     for (let d = per.start; d <= per.end && d <= upTo; d = addDays(d, 1)) {
+      const adj = adjByDay[d] || 0;
+      eff += adj;
       const daysLeft = diffDays(d, per.end) + 1;
-      const allow = (per.effective - before) / daysLeft;
+      const allow = (eff - before) / daysLeft;
+      if (d === anchor || (adj && d > anchor)) plan = allow;
       const spent = spentByDay[d] || 0;
-      out.push({ date: d, allow: r2(allow), plan, spent: r2(spent), diff: r2(spent - allow), cum: r2(before + spent), daysLeft });
+      out.push({ date: d, allow: r2(allow), plan, spent: r2(spent), diff: r2(spent - allow), cum: r2(before + spent), before: r2(before), daysLeft });
       before += spent;
     }
     return out;
@@ -150,7 +184,7 @@
   function todayStatus(ledger, today) {
     const per = ledger.current;
     if (!per) return null;
-    const series = dailySeries(per, ledger.spentByDay, today);
+    const series = dailySeries(per, ledger.spentByDay, today, ledger.adjByDay, ledger.statsFrom);
     const t = series[series.length - 1];
     return {
       period: per, dailyAllowance: t.allow, spentToday: t.spent, leftToday: r2(t.allow - t.spent),
@@ -160,21 +194,29 @@
     };
   }
 
-  /** All days (with allowance) in a date range, across periods. */
+  /** All counted days (with allowance) in a date range, across periods. Days before the stats start are left out. */
   function daysInRange(ledger, from, to, today) {
     const out = [];
+    if (ledger.statsFrom && ledger.statsFrom > from) from = ledger.statsFrom;
     for (const per of ledger.periods) {
       if (per.end < from || per.start > to) continue;
-      for (const d of dailySeries(per, ledger.spentByDay, today)) if (d.date >= from && d.date <= to) out.push(Object.assign({ periodStart: per.start }, d));
+      for (const d of dailySeries(per, ledger.spentByDay, today, ledger.adjByDay, ledger.statsFrom)) if (d.date >= from && d.date <= to) out.push(Object.assign({ periodStart: per.start }, d));
     }
     return out;
+  }
+
+  /** Amount to store so that what's left to spend this period becomes `target`. */
+  function rebalanceDelta(ledger, target) {
+    const per = ledger.current;
+    if (!per) return 0;
+    return r2(num(target) - (per.effective - per.spent));
   }
 
   function overUnderStats(days) {
     if (!days.length) return { days: 0, avgDiff: 0, totalSpent: 0, totalAllow: 0, pct: 0, overDays: 0, underDays: 0 };
     // avgDiff: spent minus that day's live allowance. pct: total spent vs the even-pace plan for those days.
     let sp = 0, al = 0, diff = 0, over = 0, under = 0;
-    for (const d of days) { sp += d.spent; al += d.plan; diff += d.diff; if (d.diff > 0.005) over++; else under++; }
+    for (const d of days) { sp += d.spent; al += d.plan || 0; diff += d.diff; if (d.diff > 0.005) over++; else under++; }
     return {
       days: days.length, avgDiff: r2(diff / days.length), totalSpent: r2(sp), totalAllow: r2(al),
       pct: al > 0 ? (sp - al) / al : 0, overDays: over, underDays: under
@@ -256,7 +298,7 @@
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
-    sumByDay, sumRange, buildLedger, dailySeries, todayStatus, daysInRange, overUnderStats, projectGoal,
+    incomeKind, sumByDay, sumRange, buildLedger, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
     cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

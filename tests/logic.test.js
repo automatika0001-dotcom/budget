@@ -85,3 +85,50 @@ t('bank transaction mapping', () => {
   assert.strictEqual(m.dir, 'out'); near(m.amount, 12.3, 'amt'); assert.strictEqual(m.place, 'RIMI TEIKA');
 });
 console.log(`\n${n} tests passed`);
+
+// ---- v1.2: rebalance + stats start ----
+t('rebalance sets what is left without counting as spend or income', () => {
+  const s = st([ex('2026-01-03', 100)], [inc('2026-01-01', 1500)]); // effective 1000, left 900
+  let led = L.buildLedger(s, '2026-01-10');
+  const delta = L.rebalanceDelta(led, 650);
+  near(delta, -250, 'delta');
+  s.adjustments = [{ id: 'a', date: '2026-01-10', amount: delta }];
+  led = L.buildLedger(s, '2026-01-10');
+  near(led.current.effective - led.current.spent, 650, 'left now');
+  near(led.current.spent, 100, 'spent unchanged');
+  near(L.sumRange(led.incomeByDay, '2026-01-01', '2026-01-31'), 1500, 'income unchanged');
+  const ts = L.todayStatus(led, '2026-01-10');
+  near(ts.dailyAllowance, 650 / 22, 'daily from rebalance day');
+  // the days before the rebalance keep their old allowance
+  const d3 = L.daysInRange(led, '2026-01-03', '2026-01-03', '2026-01-10')[0];
+  near(d3.allow, 1000 / 29, 'past day unchanged');
+});
+t('days before stats start are not counted', () => {
+  const s = st([ex('2026-01-03', 100), ex('2026-01-12', 50)], [inc('2026-01-01', 1500)], { statsFrom: '2026-01-10' });
+  const led = L.buildLedger(s, '2026-01-15');
+  const days = L.daysInRange(led, '2026-01-01', '2026-01-31', '2026-01-15');
+  assert.strictEqual(days[0].date, '2026-01-10'); assert.strictEqual(days.length, 6);
+  const stt = L.overUnderStats(days);
+  near(stt.totalSpent, 50, 'only counted spending');
+  near(days[0].plan, 900 / 22, 'plan starts from what was left on stats day');
+});
+console.log('rebalance/stats tests passed');
+
+// ---- v1.3: salary advance ----
+const inck = (date, amount, kind) => ({ date, amount, kind });
+const E = { useExpected: true, expectedNet: 1500 };
+t('advance alone keeps the full expected salary', () => {
+  const p = L.buildLedger(st([], [inck('2026-01-15', 500, 'advance')], E), '2026-01-20').current;
+  near(p.income, 1500, 'income'); near(p.salaryToCome, 1000, 'to come'); assert.ok(p.incomeExpected);
+});
+t('other income adds on top of expected salary', () => {
+  near(L.buildLedger(st([], [inck('2026-01-15', 500, 'advance'), inck('2026-01-16', 100, 'other')], E), '2026-01-20').current.income, 1600, 'income');
+});
+t('final salary replaces the expectation with actual amounts', () => {
+  const p = L.buildLedger(st([], [inck('2026-01-15', 500, 'advance'), inck('2026-01-28', 980, 'salary')], E), '2026-01-29').current;
+  near(p.income, 1480, 'actual'); assert.ok(!p.incomeExpected);
+});
+t('old entries without kind: source "Advance" counts as advance', () => {
+  near(L.buildLedger(st([], [{ date: '2026-01-15', amount: 400, source: 'Advance' }], E), '2026-01-20').current.income, 1500, 'income');
+});
+console.log('advance tests passed');
