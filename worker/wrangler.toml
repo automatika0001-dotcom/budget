@@ -1,0 +1,5 @@
+# Optional: only if you deploy with the wrangler CLI instead of the Cloudflare dashboard.
+name = "budget-bridge"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+# Then: npx wrangler secret put EB_APP_ID / EB_PRIVATE_KEY / APP_TOKEN / ALLOWED_ORIGIN

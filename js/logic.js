@@ -1,0 +1,264 @@
+/* Budget logic: pure functions, no DOM. Works in the browser (window.BudgetLogic) and in Node (require). */
+(function (root) {
+  'use strict';
+
+  // ---------- Latvia 2026 payroll constants (employee insured in all social insurance types) ----------
+  // Sources: VID / PwC Latvia 2026 payroll guide.
+  const TAX2026 = {
+    vsaoiEmployee: 0.105,        // employee social insurance
+    vsaoiEmployer: 0.2359,       // employer social insurance (for employer cost display)
+    riskFee: 0.36,               // employer business risk fee per month
+    iinRate: 0.255,              // personal income tax, monthly withholding
+    iinHighRate: 0.33,           // applies to annual income above threshold (settled in annual declaration)
+    highThresholdAnnual: 105300, // EUR per year
+    nonTaxableMin: 550,          // fixed non-taxable minimum per month in 2026
+    dependent: 250,              // relief per dependent per month
+    disabilityI_II: 154,
+    disabilityIII: 120,
+    minWage: 780
+  };
+
+  const r2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
+  const num = (x) => { const n = parseFloat(String(x ?? '').replace(',', '.')); return isFinite(n) ? n : 0; };
+
+  /** Gross (bruto) monthly salary to net (neto), Latvia 2026. */
+  function salaryNet(gross, opts) {
+    opts = opts || {};
+    const t = TAX2026;
+    const g = Math.max(0, num(gross));
+    const taxBook = opts.taxBook !== false;
+    const deps = Math.max(0, parseInt(opts.dependents, 10) || 0);
+    const dis = opts.disability || 'none';
+    const vsaoi = r2(g * t.vsaoiEmployee);
+    let relief = 0;
+    if (taxBook) {
+      relief += t.nonTaxableMin + deps * t.dependent;
+      if (dis === 'I-II') relief += t.disabilityI_II;
+      if (dis === 'III') relief += t.disabilityIII;
+    }
+    const taxable = Math.max(0, g - vsaoi - relief);
+    const iin = r2(taxable * t.iinRate);
+    const net = r2(g - vsaoi - iin);
+    // Extra 7.5% (33% minus 25.5%) on the yearly part above 105 300 EUR, paid with the annual declaration.
+    const annualGross = g * 12;
+    const annualExtra = r2(Math.max(0, annualGross - t.highThresholdAnnual) * (t.iinHighRate - t.iinRate));
+    const employerCost = r2(g * (1 + t.vsaoiEmployer) + (g > 0 ? t.riskFee : 0));
+    return {
+      gross: r2(g), vsaoi, relief: r2(Math.min(relief, Math.max(0, g - vsaoi))), taxable: r2(taxable), iin, net,
+      annualExtra, netAfterAnnualExtra: r2(net - annualExtra / 12), employerCost,
+      effectiveRate: g > 0 ? (g - net) / g : 0
+    };
+  }
+
+  // ---------- Dates (YYYY-MM-DD strings, timezone safe) ----------
+  const pad = (n) => String(n).padStart(2, '0');
+  const ymd = (d) => d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate());
+  const parse = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)); };
+  const addDays = (s, n) => { const d = parse(s); d.setUTCDate(d.getUTCDate() + n); return ymd(d); };
+  const diffDays = (a, b) => Math.round((parse(b) - parse(a)) / 86400000);
+  const daysInMonth = (y, m0) => new Date(Date.UTC(y, m0 + 1, 0)).getUTCDate();
+  const todayStr = (now) => { now = now || new Date(); return now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()); };
+  const payDateIn = (y, m0, payDay) => ymd(new Date(Date.UTC(y, m0, Math.min(payDay, daysInMonth(y, m0)))));
+
+  /** Budget period containing date s: from pay date to the day before the next pay date. */
+  function periodFor(s, payDay) {
+    payDay = Math.min(31, Math.max(1, parseInt(payDay, 10) || 1));
+    const d = parse(s);
+    let y = d.getUTCFullYear(), m = d.getUTCMonth();
+    let start = payDateIn(y, m, payDay);
+    if (s < start) { m--; if (m < 0) { m = 11; y--; } start = payDateIn(y, m, payDay); }
+    let ny = y, nm = m + 1; if (nm > 11) { nm = 0; ny++; }
+    const next = payDateIn(ny, nm, payDay);
+    return { start, end: addDays(next, -1), next };
+  }
+
+  function sumByDay(items) {
+    const map = {};
+    for (const it of items) { if (it.ignored) continue; map[it.date] = (map[it.date] || 0) + num(it.amount); }
+    return map;
+  }
+  function sumRange(map, a, b) {
+    let s = 0;
+    for (const k in map) if (k >= a && k <= b) s += map[k];
+    return r2(s);
+  }
+
+  /**
+   * Walk every budget period from the start date until today and apply the carry rules:
+   *  - Overspend (negative leftover) is carried in full to the next period, every time.
+   *  - Surplus rolls over to the next period once. If that rollover is still unspent when the
+   *    next period closes, what is left of it goes to savings; that period's own surplus rolls on.
+   *  - Savings per closed period = monthly saving + rollover sent to savings.
+   *  - Current period (live): saved = monthly saving minus any overspend so far.
+   */
+  function buildLedger(state, today) {
+    const s = state.settings;
+    const payDay = s.payDay || 1;
+    const S = num(s.monthlySaving);
+    const spentByDay = sumByDay(state.expenses || []);
+    const incomeByDay = sumByDay(state.incomes || []);
+    const periods = [];
+    let savedTotal = num(s.startingSaved);
+    let carry = num(s.openingCarry);
+    if (!s.startDate || s.startDate > today) return { periods, savedTotal, current: null, spentByDay, incomeByDay };
+    let p = periodFor(s.startDate, payDay);
+    let guard = 0;
+    while (p.start <= today && guard++ < 1200) {
+      const isCurrent = today >= p.start && today <= p.end;
+      let income = sumRange(incomeByDay, p.start, p.end);
+      let incomeExpected = false;
+      if (income === 0 && s.useExpected && num(s.expectedNet) > 0) { income = num(s.expectedNet); incomeExpected = true; }
+      const base = r2(income - S);
+      const rolloverIn = Math.max(0, carry);
+      const effective = r2(base + carry);
+      const spent = sumRange(spentByDay, p.start, p.end);
+      const leftover = r2(effective - spent);
+      const per = Object.assign({}, p, { income, incomeExpected, saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), effective, spent, leftover, isCurrent });
+      if (!isCurrent) {
+        let toSavings = 0, carryOut;
+        if (leftover < 0) carryOut = leftover;
+        else { toSavings = Math.min(rolloverIn, leftover); carryOut = leftover - toSavings; }
+        per.toSavings = r2(toSavings); per.carryOut = r2(carryOut); per.saved = r2(S + toSavings);
+        carry = carryOut;
+      } else {
+        const over = Math.max(0, spent - effective);
+        per.overspend = r2(over); per.saved = r2(S - over);
+      }
+      savedTotal += per.saved;
+      periods.push(per);
+      p = periodFor(p.next, payDay);
+    }
+    return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, incomeByDay };
+  }
+
+  /** Day by day allowance inside one period: what was left at the start of the day divided by days left. */
+  function dailySeries(per, spentByDay, upTo) {
+    const out = [];
+    let before = 0;
+    const plan = per.effective / (diffDays(per.start, per.end) + 1); // even pace share of the month
+    for (let d = per.start; d <= per.end && d <= upTo; d = addDays(d, 1)) {
+      const daysLeft = diffDays(d, per.end) + 1;
+      const allow = (per.effective - before) / daysLeft;
+      const spent = spentByDay[d] || 0;
+      out.push({ date: d, allow: r2(allow), plan, spent: r2(spent), diff: r2(spent - allow), cum: r2(before + spent), daysLeft });
+      before += spent;
+    }
+    return out;
+  }
+
+  /** Today's numbers for the big display. */
+  function todayStatus(ledger, today) {
+    const per = ledger.current;
+    if (!per) return null;
+    const series = dailySeries(per, ledger.spentByDay, today);
+    const t = series[series.length - 1];
+    return {
+      period: per, dailyAllowance: t.allow, spentToday: t.spent, leftToday: r2(t.allow - t.spent),
+      daysLeft: t.daysLeft, remainingMonth: r2(per.effective - per.spent),
+      // what tomorrow's allowance will be if nothing else is spent today
+      tomorrow: t.daysLeft > 1 ? r2((per.effective - t.cum) / (t.daysLeft - 1)) : null
+    };
+  }
+
+  /** All days (with allowance) in a date range, across periods. */
+  function daysInRange(ledger, from, to, today) {
+    const out = [];
+    for (const per of ledger.periods) {
+      if (per.end < from || per.start > to) continue;
+      for (const d of dailySeries(per, ledger.spentByDay, today)) if (d.date >= from && d.date <= to) out.push(Object.assign({ periodStart: per.start }, d));
+    }
+    return out;
+  }
+
+  function overUnderStats(days) {
+    if (!days.length) return { days: 0, avgDiff: 0, totalSpent: 0, totalAllow: 0, pct: 0, overDays: 0, underDays: 0 };
+    // avgDiff: spent minus that day's live allowance. pct: total spent vs the even-pace plan for those days.
+    let sp = 0, al = 0, diff = 0, over = 0, under = 0;
+    for (const d of days) { sp += d.spent; al += d.plan; diff += d.diff; if (d.diff > 0.005) over++; else under++; }
+    return {
+      days: days.length, avgDiff: r2(diff / days.length), totalSpent: r2(sp), totalAllow: r2(al),
+      pct: al > 0 ? (sp - al) / al : 0, overDays: over, underDays: under
+    };
+  }
+
+  function projectGoal(ledger, settings) {
+    const goal = num(settings.goal);
+    const S = num(settings.monthlySaving);
+    const saved = ledger.savedTotal;
+    const pct = goal > 0 ? Math.min(1, Math.max(0, saved / goal)) : 0;
+    const remaining = r2(goal - saved);
+    if (goal <= 0) return { saved, goal, pct, remaining: 0, none: true };
+    if (remaining <= 0) return { saved, goal, pct: 1, remaining: 0, reached: true };
+    if (S <= 0 || !ledger.current) return { saved, goal, pct, remaining, never: true };
+    const months = Math.ceil(remaining / S - 1e-9);
+    let next = ledger.current.next;
+    for (let i = 1; i < months; i++) next = periodFor(next, settings.payDay).next;
+    return { saved, goal, pct, remaining, months, date: next };
+  }
+
+  // ---------- Places / merchants ----------
+  function cleanPlace(s) {
+    s = String(s || '').replace(/\s+/g, ' ').trim();
+    s = s.replace(/\b\d{4,6}\*+\d{2,6}\b/g, '')             // masked card numbers
+      .replace(/\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/g, '')  // dates
+      .replace(/\b\d{2}:\d{2}(:\d{2})?\b/g, '')              // times
+      .replace(/^(PIRKUMS|MAKSĀJUMS|MAKSAJUMS|KARTES DARĪJUMS|CARD PAYMENT|PURCHASE)\s*[:\-]?\s*/i, '')
+      .replace(/\b\d{6,}\b/g, '')
+      .replace(/\s+/g, ' ').replace(/^[\s,.;:\-]+|[\s,.;:\-]+$/g, '').trim();
+    return s.slice(0, 60) || 'Unknown';
+  }
+
+  function topPlaces(expenses, from, to, aliases, limit) {
+    aliases = aliases || {}; limit = limit || 8;
+    const map = {};
+    for (const e of expenses) {
+      if (e.ignored || e.date < from || e.date > to) continue;
+      const raw = e.place || 'Unknown';
+      const key = aliases[raw] || raw;
+      map[key] = (map[key] || 0) + num(e.amount);
+    }
+    const arr = Object.entries(map).map(([name, total]) => ({ name, total: r2(total) })).sort((a, b) => b.total - a.total);
+    if (arr.length > limit) {
+      const rest = arr.slice(limit - 1).reduce((s, x) => s + x.total, 0);
+      return arr.slice(0, limit - 1).concat([{ name: 'Other', total: r2(rest) }]);
+    }
+    return arr;
+  }
+
+  // ---------- Bank (Enable Banking / PSD2 transaction format) ----------
+  function txId(tx) {
+    const a = tx.transaction_amount || {};
+    return tx.transaction_id || tx.entry_reference ||
+      ['h', tx.booking_date || tx.value_date, a.amount, tx.credit_debit_indicator, (tx.remittance_information || []).join('|'),
+        (tx.creditor && tx.creditor.name) || '', (tx.debtor && tx.debtor.name) || ''].join('~');
+  }
+
+  function mapTransaction(tx) {
+    const a = tx.transaction_amount || {};
+    let amount = num(a.amount);
+    let dir = tx.credit_debit_indicator;
+    if (!dir) dir = amount < 0 ? 'DBIT' : 'CRDT';
+    amount = Math.abs(amount);
+    const date = tx.booking_date || tx.value_date || tx.transaction_date;
+    const remit = (tx.remittance_information || []).join(' ');
+    const counter = dir === 'DBIT' ? (tx.creditor && tx.creditor.name) : (tx.debtor && tx.debtor.name);
+    const place = cleanPlace(counter || remit || tx.bank_transaction_code?.description || 'Unknown');
+    return { bankId: txId(tx), dir: dir === 'DBIT' ? 'out' : 'in', amount: r2(amount), date, place, note: remit.slice(0, 140), pending: tx.status === 'PDNG' };
+  }
+
+  function matchesIgnore(m, rules) {
+    const list = String(rules || '').split(/[,\n]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+    if (!list.length) return false;
+    const hay = (m.place + ' ' + m.note).toLowerCase();
+    return list.some((k) => hay.includes(k));
+  }
+
+  const api = {
+    TAX2026, salaryNet, r2, num,
+    pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
+    sumByDay, sumRange, buildLedger, dailySeries, todayStatus, daysInRange, overUnderStats, projectGoal,
+    cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.BudgetLogic = api;
+})(typeof window !== 'undefined' ? window : globalThis);
