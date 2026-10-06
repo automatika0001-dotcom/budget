@@ -87,7 +87,7 @@ Banks only give account data to licensed providers (PSD2). The free route for an
 ### c) In the app
 Settings > SEB bank sync: paste the Bridge URL and password, tap **Connect SEB**, approve with Smart-ID. The bank login opens inside the app and returns to it afterwards, then transactions import.
 
-After that it syncs automatically when you open the app (at most every 3 hours, since banks limit background fetches to about 4 per day) or when you tap the sync button at the top. Bank consent lasts up to 180 days; the app warns you a week before it expires so you can tap Reconnect.
+After that it syncs automatically every time you open the app or bring it back from the background (at most every 5 minutes). Because you're present, the bank's 4-per-day background limit doesn't apply. A manual **Sync now** button is in Settings. Bank consent lasts up to 180 days; the app warns you a week before it expires so you can tap Reconnect.
 
 Tips:
 - **Ignore list:** add words like your own name or "savings" so transfers between your own accounts aren't counted as spending.
@@ -95,6 +95,19 @@ Tips:
 - Merchant names come from what SEB sends (card payments usually include the shop name). You can edit any place name.
 
 ---
+
+## 6. Live payments from Google Wallet (Android app 1.1+)
+
+Pay with Google Wallet and the expense appears in Budžets within a second, even if the app is closed (it's picked up next time you open it).
+
+1. Settings > Live payments > **Turn on**, find Budžets in the list and allow it.
+2. If the switch is greyed out ("Restricted setting", Android 13+): Settings > Live payments > **App info**, tap ⋮ (top right) > **Allow restricted settings**, then try again.
+
+Duplicates: when the bank sync later brings in the same purchase (same amount within 3 days), it's linked to the live entry (tags: live + SEB) instead of being added again. An expense you typed by hand within an hour of the Wallet notification also stops the notification from adding a second copy. Declined payments and refunds are ignored.
+
+Battery: Android only wakes the listener when a notification arrives; it ignores every app except the watched ones. Nothing runs on a timer in the background, and the app's own timers pause when it's not on screen.
+
+If a payment isn't picked up: Settings > Live payments > Advanced shows the raw text of recent Wallet notifications and what happened to each. Send that text to improve the parser.
 
 ## How the numbers work
 

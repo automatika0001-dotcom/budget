@@ -22,5 +22,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Reads payment notifications (Google Wallet) for instant expense logging.
+             Only works after you grant "Notification access" in Android settings. -->
+        <service
+            android:name=".PaymentListener"
+            android:label="Budžets live payments"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

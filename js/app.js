@@ -10,12 +10,12 @@
     v: DATA_VERSION,
     settings: {
       payDay: 10, monthlySaving: 500, goal: 20000, startingSaved: 0, openingCarry: 0, startDate: null,
-      useExpected: true, expectedNet: 0, statsFrom: null,
+      useExpected: true, expectedNet: 0, statsFrom: null, liveEnabled: true,
       salary: { gross: 0, taxBook: true, dependents: 0, disability: 'none' },
       bank: { workerUrl: '', token: '', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '' },
       aliases: {}
     },
-    expenses: [], incomes: [], adjustments: [], ignoredBankIds: []
+    expenses: [], incomes: [], adjustments: [], ignoredBankIds: [], liveSeen: [], liveLog: []
   });
 
   function deepMerge(base, extra) {
@@ -86,7 +86,6 @@
     $('#viewTitle').textContent = titles[ui.tab];
     const per = ledger.current;
     $('#periodLabel').textContent = per ? `${dShort(per.start)} to ${dShort(per.end)}` : 'Budget';
-    $('#syncBtn').hidden = !(state.settings.bank.workerUrl && state.settings.bank.sessionId);
     $$('.view').forEach((v) => (v.hidden = v.id !== 'view-' + ui.tab));
     $$('.tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === ui.tab));
     Object.values(ui.charts).forEach((c) => c.destroy()); ui.charts = {};
@@ -101,7 +100,7 @@
     const title = kind === 'income' ? (e.source || 'Income') : (e.place || 'Expense');
     return `<div class="item" data-kind="${kind}" data-id="${e.id}">
       <div class="dot">${initial}</div>
-      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && (e.kind || L.incomeKind(e)) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.bankId ? '<span class="tag">SEB</span>' : ''}</div>
+      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && (e.kind || L.incomeKind(e)) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.bankId ? '<span class="tag">SEB</span>' : ''}</div>
       <div class="sub">${dShort(e.date)}${e.note ? ' · ' + esc(e.note) : ''}</div></div>
       <div class="amt num ${kind === 'income' ? 'good' : ''}">${kind === 'income' ? '+' : '-'}${money(e.amount)}</div></div>`;
   }
@@ -160,6 +159,8 @@
         <div class="row"><span class="label">Left of monthly allowance</span><b class="num ${ts.remainingMonth < 0 ? 'bad' : ''}">${money(ts.remainingMonth)}</b></div>
         <div style="margin:10px 0 6px" class="bar"><i class="${spentPct >= 1 ? 'bad' : ''}" style="width:${(spentPct * 100).toFixed(1)}%"></i><span class="pace" style="left:${(pacePct * 100).toFixed(1)}%"></span></div>
         <div class="small muted" style="display:flex;justify-content:space-between"><span>Spent ${money(per.spent)} of ${money(per.effective)}</span><span>${ts.daysLeft} day${ts.daysLeft === 1 ? '' : 's'} left</span></div>
+        <div class="formula num">${money(ts.remainingMonth + ts.spentToday)} left this morning ÷ ${ts.daysLeft} day${ts.daysLeft === 1 ? '' : 's'} = <b>${money(ts.dailyAllowance)}</b> a day</div>
+        ${statusLine()}
       </div>
 
       <div class="card">
@@ -202,6 +203,22 @@
     }));
     bindItems(v);
   }
+
+  function ago(iso) {
+    if (!iso) return 'never';
+    const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return m + ' min ago';
+    const h = Math.round(m / 60);
+    return h < 24 ? h + ' h ago' : dShort(iso.slice(0, 10));
+  }
+  function statusLine() {
+    const bk = state.settings.bank, parts = [];
+    if (bk.sessionId) parts.push(syncing ? 'SEB syncing…' : 'SEB synced ' + ago(bk.lastSync));
+    if (liveAvailable()) parts.push(liveAccess() && state.settings.liveEnabled ? '<span class="good">● Live payments on</span>' : 'Live payments off');
+    return parts.length ? `<div class="status-line" id="statusLine">${parts.join(' · ')}</div>` : '';
+  }
+  function refreshStatus() { const el = $('#statusLine'); if (el) el.outerHTML = statusLine(); }
 
   // ---------------- CALENDAR ----------------
   function renderCalendar() {
@@ -529,7 +546,7 @@
       $('#eSave', b).onclick = () => {
         const amt = L.num($('#eAmt', b).value);
         if (amt <= 0) return toast('Enter an amount');
-        const rec = Object.assign(item || { id: uid() }, { amount: L.r2(amt), place: $('#ePlace', b).value.trim() || 'Unknown', date: $('#eDate', b).value || today, note: $('#eNote', b).value.trim() });
+        const rec = Object.assign(item || { id: uid(), created: Date.now() }, { amount: L.r2(amt), place: $('#ePlace', b).value.trim() || 'Unknown', date: $('#eDate', b).value || today, note: $('#eNote', b).value.trim() });
         if (isNew) state.expenses.push(rec);
         save(); closeSheet(); render(); toast(isNew ? 'Saved' : 'Updated');
       };
@@ -613,6 +630,7 @@
       <div class="field"><label>Ignore transactions containing (comma separated)</label><input id="bkIgn" value="${esc(bk.ignore)}" placeholder="own transfer, savings, your name"></div>
       <div class="actions"><button class="btn primary" id="bkConnect">${connected ? 'Reconnect SEB' : 'Connect SEB'}</button>${connected ? '<button class="btn" id="bkSync">Sync now</button>' : ''}</div>
 
+      ${liveSettingsHtml()}
       <h3 style="margin-top:22px">Data</h3>
       <div class="actions"><button class="btn" id="dExport">Export backup</button><button class="btn" id="dImport">Import backup</button></div>
       <input type="file" id="dFile" accept="application/json" hidden>
@@ -628,6 +646,7 @@
       $('#bkIgn', b).onchange = (e) => { bk.ignore = e.target.value; save(); };
       $('#bkConnect', b).onclick = () => { bk.workerUrl = $('#bkUrl', b).value.trim().replace(/\/+$/, ''); bk.token = $('#bkTok', b).value.trim(); save(); bankConnect(); };
       if (connected) $('#bkSync', b).onclick = () => { closeSheet(); bankSync(true); };
+      bindLiveSettings(b);
       $('#dExport', b).onclick = exportData;
       $('#dImport', b).onclick = () => $('#dFile', b).click();
       $('#dFile', b).onchange = (e) => importData(e.target.files[0]);
@@ -711,37 +730,124 @@
   async function bankSync(manual) {
     const bk = state.settings.bank;
     if (syncing || !bk.sessionId || !bk.workerUrl) return;
-    syncing = true; $('#syncBtn').classList.add('spin');
+    syncing = true; refreshStatus();
     try {
       const start = state.settings.startDate || today;
       let from = bk.lastSync ? L.addDays(bk.lastSync.slice(0, 10), -5) : start;
       if (from < start) from = start;
       const known = new Set([...state.expenses, ...state.incomes].map((x) => x.bankId).filter(Boolean).concat(state.ignoredBankIds));
-      let added = 0, addedIn = 0;
+      let added = 0, addedIn = 0, matched = 0;
       for (const acc of bk.accounts) {
-        const r = await bridge('/transactions', { account_uid: acc.uid, date_from: from });
+        // present: you opened the app yourself, so the bank's 4-per-day background limit doesn't apply
+        const r = await bridge('/transactions', { account_uid: acc.uid, date_from: from, present: true });
         for (const tx of r.transactions || []) {
           const m = L.mapTransaction(tx);
           if (!m.date || m.pending || m.date < start || known.has(m.bankId)) continue;
           known.add(m.bankId);
           if (L.matchesIgnore(m, bk.ignore)) continue;
-          if (m.dir === 'out') { state.expenses.push({ id: uid(), date: m.date, amount: m.amount, place: m.place, note: m.note, bankId: m.bankId }); added++; }
-          else if (bk.importIncome) { const rec = { id: uid(), date: m.date, amount: m.amount, source: m.place, note: m.note, bankId: m.bankId }; rec.kind = guessKind(rec, state.settings); state.incomes.push(rec); addedIn++; }
+          if (m.dir === 'out') {
+            // Same purchase already logged live (Google Wallet) or by hand? Link it instead of adding a duplicate.
+            const dup = L.findDuplicateForBank(state.expenses, m);
+            if (dup) { dup.bankId = m.bankId; dup.bankPlace = m.place; matched++; continue; }
+            state.expenses.push({ id: uid(), date: m.date, amount: m.amount, place: m.place, note: m.note, bankId: m.bankId }); added++;
+          } else if (bk.importIncome) {
+            const dupIn = L.findDuplicateForBank(state.incomes, m);
+            if (dupIn) { dupIn.bankId = m.bankId; matched++; continue; }
+            const rec = { id: uid(), date: m.date, amount: m.amount, source: m.place, note: m.note, bankId: m.bankId };
+            rec.kind = guessKind(rec, state.settings); state.incomes.push(rec); addedIn++;
+          }
         }
       }
-      bk.lastSync = new Date().toISOString(); save(); render();
-      if (manual || added || addedIn) toast(added || addedIn ? `Imported ${added} expense${added === 1 ? '' : 's'}${addedIn ? `, ${addedIn} income` : ''}` : 'Up to date');
+      bk.lastSync = new Date().toISOString(); save();
+      syncing = false; render();
+      if (manual || added || addedIn) toast(added || addedIn ? `Imported ${added} expense${added === 1 ? '' : 's'}${addedIn ? `, ${addedIn} income` : ''}${matched ? ` (${matched} already logged)` : ''}` : 'Up to date');
     } catch (e) {
       if (/expired|session|consent|401|403/i.test(e.message)) toast('SEB access expired. Reconnect in Settings.', 6000);
       else if (manual) toast('Sync failed: ' + e.message, 5000);
-    } finally { syncing = false; $('#syncBtn').classList.remove('spin'); }
+    } finally { syncing = false; refreshStatus(); }
   }
+  // Sync whenever the app is opened or brought back from the background, at most every 5 minutes.
+  // Nothing runs while the app is in the background, so there is no battery cost.
+  const SYNC_GAP_MS = 5 * 60e3;
   function autoSync() {
     const bk = state.settings.bank;
-    if (!bk.sessionId) return;
-    // PSD2 allows ~4 background fetches per day, so auto sync at most every 3 hours.
-    if (!bk.lastSync || Date.now() - Date.parse(bk.lastSync) > 3 * 3600e3) bankSync(false);
+    if (!bk.sessionId || !navigator.onLine) return;
+    if (!bk.lastSync || Date.now() - Date.parse(bk.lastSync) > SYNC_GAP_MS) bankSync(false);
   }
+
+  // ---------------- live payments (Google Wallet notifications, Android app only) ----------------
+  const AB = () => window.AndroidBridge;
+  const liveAvailable = () => !!(AB() && AB().peekPaymentEvents);
+  const liveAccess = () => { try { return liveAvailable() && AB().hasNotificationAccess(); } catch (e) { return false; } };
+
+  function processLive(fromNotification) {
+    if (!liveAvailable() || !state.settings.startDate) return;
+    let events = [];
+    try { events = JSON.parse(AB().peekPaymentEvents() || '[]'); } catch (e) { return; }
+    if (!events.length) return;
+    const seen = new Set(state.liveSeen);
+    const done = [];
+    let lastAdded = null, addedCount = 0;
+    for (const ev of events) {
+      done.push(ev.id);
+      if (seen.has(ev.id)) continue;
+      seen.add(ev.id); state.liveSeen.push(ev.id);
+      const t = new Date(ev.time || Date.now());
+      const date = L.todayStr(t);
+      const parsed = state.settings.liveEnabled ? L.parsePaymentNotification(ev) : null;
+      let result = 'not a payment';
+      if (!state.settings.liveEnabled) result = 'live payments off';
+      else if (parsed && date < state.settings.startDate) result = 'before budget start';
+      else if (parsed && L.findDuplicateForLive(state.expenses, date, parsed.amount, t.getTime())) result = 'duplicate, skipped';
+      else if (parsed) {
+        const rec = { id: uid(), date, amount: parsed.amount, place: parsed.place, note: 'Google Wallet', liveId: ev.id, created: t.getTime() };
+        state.expenses.push(rec); lastAdded = rec; addedCount++;
+        result = 'added ' + money(parsed.amount) + ' · ' + parsed.place;
+      }
+      state.liveLog.unshift({ time: t.toISOString(), title: ev.title || '', text: ev.text || '', result });
+    }
+    state.liveSeen = state.liveSeen.slice(-400);
+    state.liveLog = state.liveLog.slice(0, 15);
+    save();
+    try { AB().ackPaymentEvents(done.join(',')); } catch (e) {}
+    if (addedCount) {
+      render();
+      toast(addedCount === 1 ? `Logged ${money(lastAdded.amount)} · ${lastAdded.place}` : `Logged ${addedCount} payments`);
+    }
+  }
+
+  function liveSettingsHtml() {
+    if (!AB()) return '';
+    if (!liveAvailable()) return `<h3 style="margin-top:22px">Live payments</h3><div class="banner">Install the new APK from your GitHub Releases page to log Google Wallet payments instantly.</div>`;
+    const on = liveAccess();
+    const s = state.settings;
+    return `<h3 style="margin-top:22px">Live payments (Google Wallet)</h3>
+      <div class="small ${on ? 'good' : 'muted'}" style="margin-bottom:10px">${on ? '● Notification access granted. Payments are logged the moment Wallet shows them.' : 'Off. Budžets needs Notification access to see Google Wallet payment notifications.'}</div>
+      ${on ? '' : `<div class="small muted" style="margin-bottom:10px">If the switch is greyed out ("Restricted setting"): tap <b>App info</b>, then the ⋮ menu (top right), <b>Allow restricted settings</b>, then come back and tap <b>Turn on</b> again.</div>`}
+      <div class="actions"><button class="btn ${on ? 'ghost' : 'primary'}" id="lvAccess">${on ? 'Notification access' : 'Turn on'}</button><button class="btn ghost" id="lvInfo">App info</button></div>
+      <div class="toggle" style="margin-top:8px"><span>Log payments from notifications</span><input type="checkbox" id="lvOn" ${s.liveEnabled ? 'checked' : ''}></div>
+      <details style="margin-bottom:8px"><summary class="small muted" style="cursor:pointer">Advanced: watched apps and recent notifications</summary>
+        <div class="field" style="margin-top:10px"><label>Watched apps (package names, comma separated)</label><input id="lvPk" value="${esc(AB().getWatchedPackages())}"><div class="hint">Google Wallet is com.google.android.apps.walletnfcrel</div></div>
+        <div class="list">${state.liveLog.length ? state.liveLog.map((l) => `<div class="row" style="flex-direction:column;align-items:flex-start;gap:2px"><span class="small"><b>${esc(l.title)}</b> ${esc(l.text)}</span><span class="small muted">${dShort(L.todayStr(new Date(l.time)))} ${new Date(l.time).toTimeString().slice(0, 5)} · ${esc(l.result)}</span></div>`).join('') : '<div class="empty">No payment notifications seen yet</div>'}</div>
+      </details>`;
+  }
+  function bindLiveSettings(b) {
+    if (!liveAvailable()) return;
+    $('#lvAccess', b).onclick = () => AB().openNotificationAccess();
+    $('#lvInfo', b).onclick = () => AB().openAppInfo();
+    $('#lvOn', b).onchange = (e) => { state.settings.liveEnabled = e.target.checked; AB().setLiveEnabled(e.target.checked); save(); render(); };
+    $('#lvPk', b).onchange = (e) => AB().setWatchedPackages(e.target.value.trim());
+  }
+
+  // Called by the Android app: on returning from the background, and when a payment notification arrives.
+  window.__onResume = function () {
+    if (L.todayStr() !== today) render();
+    processLive(false);
+    autoSync();
+    if (!$('#sheet').hidden && $('#lvAccess')) openSettings(); // refresh access status after visiting Android settings
+    else refreshStatus();
+  };
+  window.__onLivePayment = function () { processLive(true); };
 
   // ---------------- updates (service worker) ----------------
   let swReg = null;
@@ -779,7 +885,6 @@
     $$('.tabbar button').forEach((b) => (b.onclick = () => { ui.tab = b.dataset.tab; window.scrollTo(0, 0); render(); }));
     $('#fab').onclick = () => (needsSetup() ? openOnboarding() : openExpense(null));
     $('#settingsBtn').onclick = openSettings;
-    $('#syncBtn').onclick = () => bankSync(true);
     $('#sheetBackdrop').onclick = closeSheet;
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
     // refresh numbers when the day changes or the app returns to the foreground
@@ -789,7 +894,10 @@
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     render();
     setupSW();
+    processLive(false);
+    if (liveAvailable()) { try { AB().setLiveEnabled(state.settings.liveEnabled !== false); } catch (e) {} }
     handleBankRedirect().then(autoSync);
+    setInterval(refreshStatus, 60000); // keeps "synced x min ago" fresh; paused in the background
     if (needsSetup()) setTimeout(openOnboarding, 300);
   }
   boot();

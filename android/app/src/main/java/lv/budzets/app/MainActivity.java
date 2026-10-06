@@ -3,13 +3,17 @@ package lv.budzets.app;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ContentResolver;
+import android.content.ComponentName;
 import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -24,6 +28,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
+import java.util.Set;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * Native shell for the Budžets app. The screens and logic are loaded from GitHub Pages,
@@ -106,6 +115,35 @@ public class MainActivity extends Activity {
         web.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null);
     }
 
+    // ---- foreground / background ----
+    // In the background all JavaScript timers are paused (no battery use). Coming back to the
+    // app tells the web app, which then syncs the bank and picks up queued live payments.
+    @Override
+    protected void onResume() {
+        super.onResume();
+        web.onResume();
+        web.resumeTimers();
+        PaymentListener.visible = new java.lang.ref.WeakReference<>(this);
+        web.evaluateJavascript("window.__onResume && window.__onResume()", null);
+    }
+
+    @Override
+    protected void onPause() {
+        PaymentListener.visible = new java.lang.ref.WeakReference<>(null);
+        web.onPause();
+        web.pauseTimers();
+        super.onPause();
+    }
+
+    /** Called by PaymentListener when a payment notification arrives while the app is on screen. */
+    void onLivePayment() {
+        runOnUiThread(() -> web.evaluateJavascript("window.__onLivePayment && window.__onLivePayment()", null));
+    }
+
+    private SharedPreferences livePrefs() {
+        return getSharedPreferences(PaymentListener.PREFS, Context.MODE_PRIVATE);
+    }
+
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
@@ -143,6 +181,78 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean isNative() {
             return true;
+        }
+
+        @JavascriptInterface
+        public int nativeVersion() {
+            return 2;
+        }
+
+        /** True when the user has granted Notification access to Budžets. */
+        @JavascriptInterface
+        public boolean hasNotificationAccess() {
+            String flat = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+            ComponentName me = new ComponentName(MainActivity.this, PaymentListener.class);
+            return flat != null && flat.contains(me.flattenToString());
+        }
+
+        @JavascriptInterface
+        public void openNotificationAccess() {
+            runOnUiThread(() -> {
+                try {
+                    startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+                } catch (Exception e) {
+                    startActivity(new Intent(Settings.ACTION_SETTINGS));
+                }
+            });
+        }
+
+        /** Opens this app's info page (needed on Android 13+ to "Allow restricted settings"). */
+        @JavascriptInterface
+        public void openAppInfo() {
+            runOnUiThread(() -> {
+                Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()));
+                startActivity(i);
+            });
+        }
+
+        @JavascriptInterface
+        public void setLiveEnabled(boolean on) {
+            livePrefs().edit().putBoolean(PaymentListener.KEY_ENABLED, on).apply();
+        }
+
+        @JavascriptInterface
+        public void setWatchedPackages(String csv) {
+            livePrefs().edit().putString(PaymentListener.KEY_WATCH, csv == null || csv.trim().isEmpty() ? PaymentListener.DEFAULT_WATCH : csv).apply();
+        }
+
+        @JavascriptInterface
+        public String getWatchedPackages() {
+            return livePrefs().getString(PaymentListener.KEY_WATCH, PaymentListener.DEFAULT_WATCH);
+        }
+
+        /** Returns queued payment notifications as JSON. They stay queued until ackPaymentEvents. */
+        @JavascriptInterface
+        public String peekPaymentEvents() {
+            return livePrefs().getString(PaymentListener.KEY_QUEUE, "[]");
+        }
+
+        /** Removes the given event ids (comma separated) after the web app has saved them. */
+        @JavascriptInterface
+        public synchronized void ackPaymentEvents(String idsCsv) {
+            try {
+                Set<String> ids = new HashSet<>();
+                for (String id : idsCsv.split(",")) if (!id.isEmpty()) ids.add(id);
+                SharedPreferences p = livePrefs();
+                JSONArray q = new JSONArray(p.getString(PaymentListener.KEY_QUEUE, "[]"));
+                JSONArray keep = new JSONArray();
+                for (int i = 0; i < q.length(); i++) {
+                    JSONObject ev = q.getJSONObject(i);
+                    if (!ids.contains(ev.optString("id"))) keep.put(ev);
+                }
+                p.edit().putString(PaymentListener.KEY_QUEUE, keep.toString()).apply();
+            } catch (Exception ignored) {
+            }
         }
 
         /** Save a backup file into Downloads. */

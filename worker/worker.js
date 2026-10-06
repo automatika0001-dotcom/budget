@@ -50,7 +50,12 @@ export default {
         for (let page = 0; page < 30; page++) {
           const q = new URLSearchParams({ date_from: body.date_from });
           if (key) q.set('continuation_key', key);
-          const r = await eb(env, 'GET', `/accounts/${encodeURIComponent(body.account_uid)}/transactions?${q}`);
+          // When you open the app yourself, tell the bank you're present (PSD2: no 4-per-day limit then).
+          const psu = body.present ? {
+            'psu-ip-address': req.headers.get('cf-connecting-ip') || '',
+            'psu-user-agent': req.headers.get('user-agent') || 'Budzets'
+          } : null;
+          const r = await eb(env, 'GET', `/accounts/${encodeURIComponent(body.account_uid)}/transactions?${q}`, null, psu);
           if (!r.ok) return pass(r, json);
           all.push(...(r.data.transactions || []));
           key = r.data.continuation_key;
@@ -73,10 +78,10 @@ function pass(r, json) {
   return json({ error: r.data.message || r.data.error || r.data.detail || ('Enable Banking error ' + r.status), details: r.data }, r.status);
 }
 
-async function eb(env, method, path, body) {
+async function eb(env, method, path, body, extraHeaders) {
   const res = await fetch(EB + path, {
     method,
-    headers: { authorization: 'Bearer ' + (await jwt(env)), 'content-type': 'application/json' },
+    headers: { authorization: 'Bearer ' + (await jwt(env)), 'content-type': 'application/json', ...(extraHeaders || {}) },
     body: body ? JSON.stringify(body) : undefined
   });
   const data = await res.json().catch(() => ({}));

@@ -295,11 +295,81 @@
     return list.some((k) => hay.includes(k));
   }
 
+  // ---------- Live payments (phone notifications, e.g. Google Wallet) ----------
+  const AMOUNT_RE = /(?:(€|EUR)\s?(\d{1,3}(?:[   .,]\d{3})*(?:[.,]\d{1,2})?))|(?:(\d{1,3}(?:[   .,]\d{3})*(?:[.,]\d{1,2})?)\s?(€|EUR))/i;
+  const SKIP_RE = /declin|noraid|atteikt|fail|neizdev|refund|atmaks|return|atgriez|reversed|cancel|atcel|added to wallet|pievienot|ready to|verify|verific|apstiprin|top.?up|papildin/i;
+
+  function parseAmount(raw) {
+    let t = String(raw).replace(/[   ]/g, '');
+    const lastComma = t.lastIndexOf(','), lastDot = t.lastIndexOf('.');
+    if (lastComma >= 0 && lastDot >= 0) {
+      const dec = Math.max(lastComma, lastDot);
+      t = t.slice(0, dec).replace(/[.,]/g, '') + '.' + t.slice(dec + 1);
+    } else if (lastComma >= 0 || lastDot >= 0) {
+      const i = Math.max(lastComma, lastDot);
+      const after = t.length - i - 1;
+      t = after === 3 ? t.replace(/[.,]/g, '') : t.slice(0, i).replace(/[.,]/g, '') + '.' + t.slice(i + 1);
+    }
+    const n = parseFloat(t);
+    return isFinite(n) ? r2(n) : 0;
+  }
+
+  /**
+   * Turn a payment notification into { amount, place } or null.
+   * Handles e.g. title "Rimi" + text "€12.40 with Visa ••1234", or "12,40 € pie Rimi".
+   */
+  function parsePaymentNotification(ev) {
+    const title = String(ev.title || '').trim();
+    const text = String(ev.text || '').trim();
+    const all = title + ' \n ' + text;
+    if (SKIP_RE.test(all)) return null;
+    const m = all.match(AMOUNT_RE);
+    if (!m) return null;
+    const amount = parseAmount(m[2] || m[3]);
+    if (!(amount > 0) || amount > 20000) return null;
+    const tidy = (x) => String(x || '').replace(AMOUNT_RE, ' ')
+      .replace(/\b(with|ar|using|via)\b.*$/i, '')               // "with Visa ••1234"
+      .replace(/(visa|mastercard|maestro|amex)\b.*$/i, '')
+      .replace(/[•*·]+\s*\d{2,4}/g, '')
+      .replace(/\b(paid|payment|samaksāts|samaksats|maksājums|purchase|pirkums)\b[:]?/gi, '')
+      .replace(/\s+/g, ' ').replace(/^[\s,.;:\-–]+|[\s,.;:\-–]+$/g, '').trim();
+    let place = '';
+    if (title && !AMOUNT_RE.test(title)) place = tidy(title);
+    else {
+      const src = AMOUNT_RE.test(title) ? title : text;
+      const after = src.replace(AMOUNT_RE, ' ').match(/(?:^|\s)(?:at|pie|in|@|-|–)\s+(.+)/i);
+      place = tidy(after ? after[1] : src);
+      if (!place && src === title) place = tidy(text); // e.g. title "Paid €12", text "IKEA Riga"
+    }
+    return { amount, place: (place || 'Card payment').slice(0, 60) };
+  }
+
+  /**
+   * Find an expense already logged (live from a notification, or typed by hand) that is the same
+   * purchase as a bank transaction: same amount, within 3 days, not yet linked to the bank.
+   */
+  function findDuplicateForBank(expenses, m) {
+    let best = null, bestGap = 99;
+    for (const e of expenses) {
+      if (e.bankId || e.ignored) continue;
+      if (Math.abs(num(e.amount) - m.amount) > 0.005) continue;
+      const gap = Math.abs(diffDays(e.date, m.date));
+      if (gap <= 3 && gap < bestGap) { best = e; bestGap = gap; }
+    }
+    return best;
+  }
+
+  /** A live payment is a duplicate if the same amount was already logged that day within an hour. */
+  function findDuplicateForLive(expenses, date, amount, timeMs) {
+    return expenses.find((e) => !e.ignored && e.date === date && Math.abs(num(e.amount) - amount) <= 0.005 &&
+      (e.bankId || (e.created && Math.abs(e.created - timeMs) <= 3600e3))) || null;
+  }
+
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
     incomeKind, sumByDay, sumRange, buildLedger, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
-    cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore
+    cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BudgetLogic = api;

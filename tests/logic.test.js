@@ -132,3 +132,39 @@ t('old entries without kind: source "Advance" counts as advance', () => {
   near(L.buildLedger(st([], [{ date: '2026-01-15', amount: 400, source: 'Advance' }], E), '2026-01-20').current.income, 1500, 'income');
 });
 console.log('advance tests passed');
+
+// ---- v1.4: live payments + duplicates ----
+t('parse Google Wallet style notifications', () => {
+  const cases = [
+    [{ title: 'Rimi', text: '€12.40 with Visa ••1234' }, 12.4, 'Rimi'],
+    [{ title: 'Circle K', text: '12,40 € ar Mastercard •• 9876' }, 12.4, 'Circle K'],
+    [{ title: '€5.20 at Narvesen', text: 'Visa ••1234' }, 5.2, 'Narvesen'],
+    [{ title: 'Paid €1,234.56', text: 'IKEA Riga' }, 1234.56, 'IKEA Riga'],
+    [{ title: 'Lidl', text: 'EUR 3,99' }, 3.99, 'Lidl'],
+    [{ title: 'Apranga', text: '1 299,00 €' }, 1299, 'Apranga']
+  ];
+  for (const [ev, amt, place] of cases) {
+    const r = L.parsePaymentNotification(ev);
+    assert.ok(r, 'parsed ' + JSON.stringify(ev)); near(r.amount, amt, 'amount ' + ev.title); assert.strictEqual(r.place, place, JSON.stringify(ev));
+  }
+});
+t('ignore declined, refunds and non-payment notifications', () => {
+  assert.strictEqual(L.parsePaymentNotification({ title: 'Payment declined', text: '€12.40 at Rimi' }), null);
+  assert.strictEqual(L.parsePaymentNotification({ title: 'Refund from Rimi', text: '€12.40' }), null);
+  assert.strictEqual(L.parsePaymentNotification({ title: 'Card added', text: 'Your Visa is ready to use' }), null);
+  assert.strictEqual(L.parsePaymentNotification({ title: 'Google Wallet', text: 'Tap to pay is set up' }), null);
+});
+t('bank transaction matches an earlier live/manual expense, closest day first', () => {
+  const exps = [{ id: 'a', date: '2026-10-01', amount: 12.4 }, { id: 'b', date: '2026-10-05', amount: 12.4 }, { id: 'c', date: '2026-10-05', amount: 9 }];
+  assert.strictEqual(L.findDuplicateForBank(exps, { amount: 12.4, date: '2026-10-06' }).id, 'b');
+  exps[1].bankId = 'x';
+  assert.strictEqual(L.findDuplicateForBank(exps, { amount: 12.4, date: '2026-10-06' }), null); // 'a' is 5 days away
+  assert.strictEqual(L.findDuplicateForBank(exps, { amount: 12.4, date: '2026-10-03' }).id, 'a');
+});
+t('live payment skipped when the same purchase was just logged by hand', () => {
+  const now = Date.parse('2026-10-06T12:00:00Z');
+  const exps = [{ id: 'm', date: '2026-10-06', amount: 4.5, created: now - 10 * 60e3 }];
+  assert.ok(L.findDuplicateForLive(exps, '2026-10-06', 4.5, now));
+  assert.strictEqual(L.findDuplicateForLive(exps, '2026-10-06', 4.5, now + 3 * 3600e3), null); // second coffee later
+});
+console.log('live tests passed');
