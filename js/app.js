@@ -10,7 +10,7 @@
     v: DATA_VERSION,
     settings: {
       payDay: 10, monthlySaving: 500, goal: 20000, startingSaved: 0, openingCarry: 0, startDate: null,
-      useExpected: true, expectedNet: 0, statsFrom: null, liveEnabled: true,
+      useExpected: true, expectedNet: 0, statsFrom: null, liveEnabled: true, vacations: [],
       salary: { gross: 0, taxBook: true, dependents: 0, disability: 'none' },
       bank: { workerUrl: '', token: '', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '' },
       aliases: {}
@@ -113,6 +113,66 @@
     }));
   }
 
+  function euroBig(x) {
+    const a = Math.abs(x);
+    return `${fmtEUR0.format(Math.floor(a))}<span class="cur">,${String(Math.round((a - Math.floor(a)) * 100)).padStart(2, '0')} €</span>`;
+  }
+
+  function nextBoxHtml(ts) {
+    if (ts.nextAllowance === null) return ts.daysLeft > 1 || ts.holiday ? `<div class="tomorrow"><span>No budget days left before pay day (${dShort(ts.period.next)})</span></div>` : '';
+    const label = ts.nextIsTomorrow ? "Tomorrow you'll have" : `Next budget day, ${dShort(ts.nextDate)}`;
+    if (ts.holiday) return `<div class="tomorrow up"><span>${label}</span><b class="num">${money(ts.nextAllowance)}</b></div>`;
+    const up = ts.nextAllowance >= ts.dailyAllowance;
+    return `<div class="tomorrow ${up ? 'up' : 'down'}"><span>${label}</span><b class="num">${money(ts.nextAllowance)}</b>
+      <span class="trend">${up ? '▲' : '▼'} ${money(Math.abs(ts.nextAllowance - ts.dailyAllowance))}</span></div>`;
+  }
+
+  function heroHtml(ts, over) {
+    if (ts.holiday) {
+      const spent = ts.spentToday > 0;
+      return `<div class="card hero holiday ${spent ? 'over' : ''}">
+        <div class="caption">Vacation mode</div>
+        <div class="big holiday-word">HOLIDAY!</div>
+        ${spent ? `<div class="holiday-over num">Over budget: ${money(ts.spentToday)}</div>` : '<div class="small muted" style="margin-bottom:6px">Today has no budget. Enjoy it.</div>'}
+        ${nextBoxHtml(ts)}
+      </div>`;
+    }
+    return `<div class="card hero ${over ? 'over' : ''}">
+        <div class="caption">${over ? 'Over today\'s budget by' : 'You can spend today'}</div>
+        <div class="big num ${over ? 'bad' : ''}">${euroBig(ts.leftToday)}</div>
+        <div class="chips">
+          <span class="chip">Daily budget <b class="num">${money(ts.dailyAllowance)}</b></span>
+          <span class="chip">Spent today <b class="num">${money(ts.spentToday)}</b></span>
+        </div>
+        ${nextBoxHtml(ts)}
+      </div>`;
+  }
+
+  function formulaHtml(ts) {
+    const hol = (state.settings.vacations || []).length > 0;
+    if (ts.holiday) {
+      const n = ts.budgetDaysLeft;
+      return `<div class="formula num">Holiday today (budget 0 €). ${money(ts.remainingMonth)} left ÷ ${n} budget day${n === 1 ? '' : 's'} after the holiday</div>`;
+    }
+    const n = ts.budgetDaysLeft;
+    return `<div class="formula num">${money(ts.remainingMonth + ts.spentToday)} left this morning ÷ ${n} ${hol ? 'budget ' : ''}day${n === 1 ? '' : 's'} = <b>${money(ts.dailyAllowance)}</b> a day${hol && n !== ts.daysLeft ? ' (holidays skipped)' : ''}</div>`;
+  }
+
+  function vacationHtml() {
+    const v = (state.settings.vacations || []).slice().sort((a, b) => a.from.localeCompare(b.from));
+    const plus7 = L.addDays(today, 7);
+    return `<details class="card" id="vacCard" ${ui.vacOpen ? 'open' : ''}>
+        <summary><h2>Vacation mode${v.some((x) => x.to >= today) ? ' <span class="tag">on</span>' : ''}</h2><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary>
+        <p class="small muted" style="margin-top:0">Holiday days get a 0 € budget; their share is spread over your other days. Anything you still spend on a holiday counts.</p>
+        <div class="field-row">
+          <div class="field"><label>From</label><input id="vcFrom" type="date" value="${today}"></div>
+          <div class="field"><label>To</label><input id="vcTo" type="date" value="${plus7}"></div>
+        </div>
+        <button class="btn primary block" id="vcAdd">Add holiday</button>
+        ${v.length ? `<div class="list" style="margin-top:12px">${v.map((x) => `<div class="row"><span>${dShort(x.from)} to ${dShort(x.to)} <span class="muted small">(${L.diffDays(x.from, x.to) + 1} days)</span></span><button class="btn ghost small vc-del" data-id="${x.id}" style="padding:4px 10px">Remove</button></div>`).join('')}</div>` : ''}
+      </details>`;
+  }
+
   function renderToday() {
     const v = $('#view-today');
     if (needsSetup()) {
@@ -137,17 +197,7 @@
       ${per.incomeExpected ? `<div class="banner">${per.advance > 0 ? `Advance ${money(per.advance)} received. Still expecting ${money(per.salaryToCome)} of salary.` : `Using expected salary ${money(per.salaryToCome)} until you log this month's salary.`}</div>` : ''}
       ${per.income === 0 ? `<div class="banner bad">No income logged for this period yet. Add it in Income.</div>` : ''}
       ${consentDays !== null && consentDays <= 7 ? `<div class="banner bad">SEB connection expires in ${Math.max(0, consentDays)} days. Reconnect in Settings.</div>` : ''}
-      <div class="card hero ${over ? 'over' : ''}">
-        <div class="caption">${over ? 'Over today\'s budget by' : 'You can spend today'}</div>
-        <div class="big num ${over ? 'bad' : ''}">${fmtEUR0.format(Math.floor(Math.abs(ts.leftToday)))}<span class="cur">,${String(Math.round((Math.abs(ts.leftToday) - Math.floor(Math.abs(ts.leftToday))) * 100)).padStart(2, '0')} €</span></div>
-        <div class="chips">
-          <span class="chip">Daily budget <b class="num">${money(ts.dailyAllowance)}</b></span>
-          <span class="chip">Spent today <b class="num">${money(ts.spentToday)}</b></span>
-        </div>
-        ${ts.tomorrow !== null ? `<div class="tomorrow ${ts.tomorrow >= ts.dailyAllowance ? 'up' : 'down'}">
-          <span>Tomorrow you'll have</span><b class="num">${money(ts.tomorrow)}</b>
-          <span class="trend">${ts.tomorrow >= ts.dailyAllowance ? '▲' : '▼'} ${money(Math.abs(ts.tomorrow - ts.dailyAllowance))}</span></div>` : ''}
-      </div>
+      ${heroHtml(ts, over)}
 
       <div class="quick">
         <button class="btn primary" id="qExp">+ Expense</button>
@@ -159,7 +209,7 @@
         <div class="row"><span class="label">Left of monthly allowance</span><b class="num ${ts.remainingMonth < 0 ? 'bad' : ''}">${money(ts.remainingMonth)}</b></div>
         <div style="margin:10px 0 6px" class="bar"><i class="${spentPct >= 1 ? 'bad' : ''}" style="width:${(spentPct * 100).toFixed(1)}%"></i><span class="pace" style="left:${(pacePct * 100).toFixed(1)}%"></span></div>
         <div class="small muted" style="display:flex;justify-content:space-between"><span>Spent ${money(per.spent)} of ${money(per.effective)}</span><span>${ts.daysLeft} day${ts.daysLeft === 1 ? '' : 's'} left</span></div>
-        <div class="formula num">${money(ts.remainingMonth + ts.spentToday)} left this morning ÷ ${ts.daysLeft} day${ts.daysLeft === 1 ? '' : 's'} = <b>${money(ts.dailyAllowance)}</b> a day</div>
+        ${formulaHtml(ts)}
         ${statusLine()}
       </div>
 
@@ -186,9 +236,21 @@
         <div class="list">${todays.length ? todays.map((e) => itemRow(e, 'expense')).join('') : '<div class="empty">Nothing spent today</div>'}</div>
       </div>
       ${recent.length ? `<div class="card"><h2>Recent</h2><div class="list">${recent.map((e) => itemRow(e, 'expense')).join('')}</div></div>` : ''}
+      ${vacationHtml()}
     `;
     $('#qExp').onclick = () => openExpense(null);
     $('#qInc').onclick = () => openIncome(null);
+    $('#vacCard').addEventListener('toggle', (e) => (ui.vacOpen = e.target.open));
+    $('#vcAdd').onclick = () => {
+      let a = $('#vcFrom').value, b = $('#vcTo').value;
+      if (!a || !b) return toast('Pick both dates');
+      if (a > b) [a, b] = [b, a];
+      state.settings.vacations = (state.settings.vacations || []).concat([{ id: uid(), from: a, to: b }]);
+      ui.vacOpen = true; save(); render(); toast(`Holiday ${dShort(a)} to ${dShort(b)} added`);
+    };
+    $$('.vc-del', v).forEach((b) => (b.onclick = () => {
+      state.settings.vacations = state.settings.vacations.filter((x) => x.id !== b.dataset.id); ui.vacOpen = true; save(); render(); toast('Holiday removed');
+    }));
     $('#rbSet').onclick = () => {
       const raw = $('#rbAmt').value.trim();
       if (raw === '') return toast('Enter how much you have left');
@@ -243,6 +305,7 @@
       if (ds === today) cls += ' today';
       if (info && ds <= today) cls += info.diff > 0.005 ? ' over' : ' under';
       if (d === payDay) cls += ' payday';
+      if (ledger.isHoliday && ledger.isHoliday(ds)) cls += ' holiday';
       cells += `<div class="${cls}" data-date="${ds}"><span class="d">${d}</span><span class="s num">${sp ? fmtEUR0.format(Math.round(sp)) : ''}</span></div>`;
     }
     const inc = L.sumRange(ledger.incomeByDay, first, last);
@@ -251,7 +314,7 @@
         <span class="lbl">${MONTHS_LONG[m]} ${y}</span>
         <button class="icon-btn" id="calNext"><svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button></div>
       <div class="card"><div class="cal">${cells}</div>
-        <div class="legend" style="margin-top:12px"><span><i style="background:#17291f"></i>Under daily budget</span><span><i style="background:#331a18"></i>Over</span><span><span style="color:var(--accent)">€</span> Pay day</span></div></div>
+        <div class="legend" style="margin-top:12px"><span><i style="background:#17291f"></i>Under daily budget</span><span><i style="background:#331a18"></i>Over</span><span><span style="color:var(--accent)">€</span> Pay day</span>${(state.settings.vacations || []).length ? '<span><i style="background:transparent;border:1px dashed #6ab8f2"></i>Holiday</span>' : ''}</div></div>
       <div class="stat-grid">
         <div class="stat"><div class="k">Spent in ${MONTHS[m]}</div><div class="v num">${money(monthSpent)}</div></div>
         <div class="stat"><div class="k">Income in ${MONTHS[m]}</div><div class="v num good">${money(inc)}</div></div>
@@ -267,7 +330,7 @@
     const inc = state.incomes.filter((e) => e.date === date);
     const info = L.daysInRange(ledger, date, date, today)[0];
     openSheet(`<h3>${dLong(date)}</h3>
-      ${info ? `<div class="chips" style="margin-bottom:12px"><span class="chip">Daily budget <b class="num">${money(info.allow)}</b></span>
+      ${info ? `<div class="chips" style="margin-bottom:12px">${info.holiday ? '<span class="chip" style="color:#6ab8f2"><b>HOLIDAY</b></span>' : ''}<span class="chip">Daily budget <b class="num">${money(info.allow)}</b></span>
         <span class="chip">Spent <b class="num">${money(info.spent)}</b></span>
         <span class="chip ${info.diff > 0 ? 'bad' : 'good'}"><b class="num">${info.diff > 0 ? 'Over ' : 'Under '}${money(Math.abs(info.diff))}</b></span></div>` : ''}
       <div class="list">${ex.map((e) => itemRow(e, 'expense')).join('')}${inc.map((e) => itemRow(e, 'income')).join('')}${!ex.length && !inc.length ? '<div class="empty">No entries</div>' : ''}</div>

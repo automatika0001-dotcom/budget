@@ -107,10 +107,11 @@
     const incomeByDay = sumByDay(state.incomes || []);
     const adjByDay = sumByDay(state.adjustments || []); // rebalances: change the allowance, never count as spend/income
     const statsFrom = s.statsFrom || s.startDate || today;
+    const isHoliday = makeHolidayCheck(s.vacations);
     const periods = [];
     let savedTotal = num(s.startingSaved);
     let carry = num(s.openingCarry);
-    if (!s.startDate || s.startDate > today) return { periods, savedTotal, current: null, spentByDay, incomeByDay, adjByDay, statsFrom };
+    if (!s.startDate || s.startDate > today) return { periods, savedTotal, current: null, spentByDay, incomeByDay, adjByDay, statsFrom, isHoliday };
     let p = periodFor(s.startDate, payDay);
     let guard = 0;
     while (p.start <= today && guard++ < 1200) {
@@ -152,30 +153,50 @@
       periods.push(per);
       p = periodFor(p.next, payDay);
     }
-    return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, incomeByDay, adjByDay, statsFrom };
+    return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, incomeByDay, adjByDay, statsFrom, isHoliday };
+  }
+
+  /** Build a fast "is this date a holiday?" check from vacation ranges [{from, to}]. */
+  function makeHolidayCheck(vacations) {
+    const ranges = (vacations || []).filter((v) => v && v.from && v.to).map((v) => (v.from <= v.to ? [v.from, v.to] : [v.to, v.from]));
+    return (d) => ranges.some(([a, b]) => d >= a && d <= b);
+  }
+
+  /** Number of budget (non-holiday) days from a to b inclusive. */
+  function budgetDaysBetween(a, b, isHoliday) {
+    let n = 0;
+    for (let d = a; d <= b; d = addDays(d, 1)) if (!isHoliday(d)) n++;
+    return n;
   }
 
   /**
-   * Day by day allowance inside one period: what was left at the start of the day divided by days left.
-   * A rebalance counts from its own day onward. `plan` is the even-pace share used for statistics; it is
-   * set on the first counted day (stats start) and reset whenever a rebalance happens.
+   * Day by day allowance inside one period: what was left at the start of the day divided by the
+   * budget days left (holidays don't count, they get 0). Spending on a holiday still comes off what's
+   * left. A rebalance counts from its own day onward. `plan` is the even-pace share used for statistics;
+   * it's set on the first counted day (stats start) and reset whenever a rebalance happens.
    */
-  function dailySeries(per, spentByDay, upTo, adjByDay, statsFrom) {
+  function dailySeries(per, spentByDay, upTo, adjByDay, statsFrom, isHoliday) {
     adjByDay = adjByDay || {};
+    isHoliday = isHoliday || (() => false);
     const out = [];
     let before = 0;
     let eff = per.effectiveBase !== undefined ? per.effectiveBase : per.effective;
-    let plan = null;
+    let planRate = null;
     const anchor = statsFrom && statsFrom > per.start ? statsFrom : per.start;
+    let budgetLeft = budgetDaysBetween(per.start, per.end, isHoliday); // budget days from d to period end
     for (let d = per.start; d <= per.end && d <= upTo; d = addDays(d, 1)) {
       const adj = adjByDay[d] || 0;
       eff += adj;
+      const holiday = isHoliday(d);
       const daysLeft = diffDays(d, per.end) + 1;
-      const allow = (eff - before) / daysLeft;
-      if (d === anchor || (adj && d > anchor)) plan = allow;
+      const available = eff - before;
+      const allow = holiday ? 0 : available / Math.max(1, budgetLeft);
+      if (d === anchor || (adj && d > anchor)) planRate = budgetLeft > 0 ? available / budgetLeft : 0;
+      const plan = planRate === null ? null : (holiday ? 0 : planRate);
       const spent = spentByDay[d] || 0;
-      out.push({ date: d, allow: r2(allow), plan, spent: r2(spent), diff: r2(spent - allow), cum: r2(before + spent), before: r2(before), daysLeft });
+      out.push({ date: d, allow: r2(allow), plan, spent: r2(spent), diff: r2(spent - allow), cum: r2(before + spent), before: r2(before), daysLeft, budgetDaysLeft: budgetLeft, holiday });
       before += spent;
+      if (!holiday) budgetLeft--;
     }
     return out;
   }
@@ -184,13 +205,21 @@
   function todayStatus(ledger, today) {
     const per = ledger.current;
     if (!per) return null;
-    const series = dailySeries(per, ledger.spentByDay, today, ledger.adjByDay, ledger.statsFrom);
+    const isHoliday = ledger.isHoliday || (() => false);
+    const series = dailySeries(per, ledger.spentByDay, today, ledger.adjByDay, ledger.statsFrom, isHoliday);
     const t = series[series.length - 1];
+    const remainingMonth = r2(per.effective - per.spent);
+    // next budget (non-holiday) day after today, and its allowance if nothing else is spent today
+    let next = null;
+    for (let d = addDays(today, 1); d <= per.end; d = addDays(d, 1)) {
+      if (!isHoliday(d)) { next = d; break; }
+    }
+    const nextAllowance = next ? r2((per.effective - t.cum) / budgetDaysBetween(next, per.end, isHoliday)) : null;
     return {
-      period: per, dailyAllowance: t.allow, spentToday: t.spent, leftToday: r2(t.allow - t.spent),
-      daysLeft: t.daysLeft, remainingMonth: r2(per.effective - per.spent),
-      // what tomorrow's allowance will be if nothing else is spent today
-      tomorrow: t.daysLeft > 1 ? r2((per.effective - t.cum) / (t.daysLeft - 1)) : null
+      period: per, holiday: t.holiday, dailyAllowance: t.allow, spentToday: t.spent, leftToday: r2(t.allow - t.spent),
+      daysLeft: t.daysLeft, budgetDaysLeft: t.budgetDaysLeft, remainingMonth,
+      nextDate: next, nextAllowance, nextIsTomorrow: next === addDays(today, 1),
+      tomorrow: next === addDays(today, 1) ? nextAllowance : null // kept for older screens
     };
   }
 
@@ -200,7 +229,7 @@
     if (ledger.statsFrom && ledger.statsFrom > from) from = ledger.statsFrom;
     for (const per of ledger.periods) {
       if (per.end < from || per.start > to) continue;
-      for (const d of dailySeries(per, ledger.spentByDay, today, ledger.adjByDay, ledger.statsFrom)) if (d.date >= from && d.date <= to) out.push(Object.assign({ periodStart: per.start }, d));
+      for (const d of dailySeries(per, ledger.spentByDay, today, ledger.adjByDay, ledger.statsFrom, ledger.isHoliday)) if (d.date >= from && d.date <= to) out.push(Object.assign({ periodStart: per.start }, d));
     }
     return out;
   }
@@ -368,7 +397,7 @@
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
-    incomeKind, sumByDay, sumRange, buildLedger, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
+    incomeKind, sumByDay, sumRange, buildLedger, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
     cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

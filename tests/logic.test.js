@@ -168,3 +168,28 @@ t('live payment skipped when the same purchase was just logged by hand', () => {
   assert.strictEqual(L.findDuplicateForLive(exps, '2026-10-06', 4.5, now + 3 * 3600e3), null); // second coffee later
 });
 console.log('live tests passed');
+
+// ---- v1.5: vacation mode ----
+t('holidays get 0, their share goes to the remaining budget days', () => {
+  // Jan: effective 930, 31 days, holidays 10-19 (10 days) -> 21 budget days
+  const s = st([], [inc('2026-01-01', 1430)], { vacations: [{ from: '2026-01-10', to: '2026-01-19' }] });
+  const led = L.buildLedger(s, '2026-01-01');
+  near(L.todayStatus(led, '2026-01-01').dailyAllowance, 930 / 21, 'day 1');
+  const led2 = L.buildLedger(s, '2026-01-12');
+  const ts = L.todayStatus(led2, '2026-01-12');
+  assert.ok(ts.holiday); near(ts.dailyAllowance, 0, 'holiday allowance');
+  assert.strictEqual(ts.nextDate, '2026-01-20'); near(ts.nextAllowance, 930 / 12, 'next budget day (Jan 20-31 = 12 days)');
+});
+t('spending on a holiday counts as over budget and reduces later days', () => {
+  const s = st([ex('2026-01-12', 60)], [inc('2026-01-01', 1430)], { vacations: [{ from: '2026-01-10', to: '2026-01-19' }] });
+  const ts = L.todayStatus(L.buildLedger(s, '2026-01-12'), '2026-01-12');
+  near(ts.leftToday, -60, 'over by spend'); near(ts.nextAllowance, (930 - 60) / 12, 'next reduced');
+  const day = L.daysInRange(L.buildLedger(s, '2026-01-31'), '2026-01-12', '2026-01-12', '2026-01-31')[0];
+  near(day.diff, 60, 'stats over'); assert.ok(day.holiday);
+});
+t('day before a holiday shows the next budget day after the holiday', () => {
+  const s = st([], [inc('2026-01-01', 1430)], { vacations: [{ from: '2026-01-10', to: '2026-01-19' }] });
+  const ts = L.todayStatus(L.buildLedger(s, '2026-01-09'), '2026-01-09');
+  assert.strictEqual(ts.nextDate, '2026-01-20'); assert.ok(!ts.nextIsTomorrow);
+});
+console.log('vacation tests passed');

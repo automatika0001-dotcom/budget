@@ -178,3 +178,12 @@ table.hist td { text-align: right; padding: 7px 4px; border-top: 1px solid var(-
 .formula { font-size: 12px; color: var(--muted); margin-top: 8px; }
 .formula b { color: var(--text); }
 .status-line { font-size: 12px; color: var(--muted); margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+
+/* v1.5 vacation mode */
+.hero.holiday { background: radial-gradient(120% 90% at 100% 0%, #14304a 0%, var(--surface) 60%); }
+.hero.holiday.over { background: radial-gradient(120% 90% at 100% 0%, #3a1a17 0%, var(--surface) 60%); }
+.holiday-word { color: #6ab8f2; font-size: clamp(48px, 15vw, 72px) !important; font-weight: 900 !important; }
+.hero.holiday.over .holiday-word { color: #6ab8f2; }
+.holiday-over { color: var(--bad); font-size: 22px; font-weight: 800; margin-bottom: 4px; }
+.cal .day.holiday { border: 1px dashed #6ab8f2; }
+.cal .day.holiday .d { color: #6ab8f2; }
