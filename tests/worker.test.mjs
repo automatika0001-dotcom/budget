@@ -187,9 +187,27 @@ await t('each user has their own backup slot; the owner keeps the original one',
   assert.strictEqual((await (await ucall(Bu, '/backup/get')).json()).blob, 'B-DATA');
   assert.strictEqual((await (await call('/backup/get')).json()).blob, 'ENCRYPTED-TWO');
 });
-await t('SEB (Enable Banking) is owner only', async () => {
-  assert.strictEqual((await ucall(A, '/start', { state: 'z' })).status, 403);
-  assert.strictEqual((await ucall(A, '/transactions', {})).status, 403);
+await t('SEB: users need their own Enable Banking keys; their keys sign the requests; only they can collect the login', async () => {
+  assert.strictEqual((await ucall(A, '/start', { state: 'z' })).status, 400);
+  const { privateKey: pk2 } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const ebKeys = { app_id: 'user-app-123', key: pk2.export({ type: 'pkcs8', format: 'pem' }) };
+  const st = 'user-state-1';
+  const r = await ucall(A, '/start', { state: st, redirect_url: B + '/callback', eb: ebKeys });
+  assert.strictEqual(r.status, 200);
+  const authCall = outbound.filter((o) => o.url.endsWith('/auth')).pop();
+  const head = JSON.parse(Buffer.from(authCall.headers.authorization.split(' ')[1].split('.')[0], 'base64url').toString());
+  assert.strictEqual(head.kid, 'user-app-123');
+  const pend = await STORE.get('pending:' + st);
+  assert.ok(pend.includes(A.uid));
+  await call(`/callback?code=good&state=${st}`, null, { method: 'GET', auth: false });
+  const sess = outbound.filter((o) => o.url.endsWith('/sessions')).pop();
+  assert.strictEqual(JSON.parse(Buffer.from(sess.headers.authorization.split(' ')[1].split('.')[0], 'base64url').toString()).kid, 'user-app-123');
+  assert.strictEqual((await ucall(Bu, '/claim', { state: st, eb: ebKeys })).status, 202); // B can't take A's login
+  const got = await (await ucall(A, '/claim', { state: st, eb: ebKeys })).json();
+  assert.strictEqual(got.session_id, 'sess-1'); assert.ok(!('_uid' in got));
+  assert.strictEqual((await ucall(A, '/transactions', { account_uid: 'acc-1', date_from: '2026-10-01', eb: ebKeys })).status, 200);
+  const bad = await ucall(A, '/transactions', { account_uid: 'acc-1', date_from: '2026-10-01', eb: { app_id: 'user-app-123', key: '-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----' } });
+  assert.ok(/could not be read|damaged/.test((await bad.json()).error));
 });
 await t('Plaid per user: separate bank logins, reconnect reuses the login (no extra slot)', async () => {
   const before = Number(await STORE.get('plaid_count')) || 0;

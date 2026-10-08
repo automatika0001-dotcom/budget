@@ -5,7 +5,7 @@
 **iPhone**
 1. Open this link in **Safari**: `https://automatika0001-dotcom.github.io/budget/`
 2. Tap **Share**, then **Add to Home Screen**.
-3. Open **CBudget** from the home screen and follow the steps. You choose a password in step 2: write it down.
+3. Open **CBudget** from the home screen and follow the steps. You choose a password in step 2: write it down. Latvia users connect SEB through their own free Enable Banking account, USA users connect America First CU through their own free Plaid account; the steps show every link and value to copy.
 
 **Android**: install **Budzets.apk** from `https://github.com/automatika0001-dotcom/budget/releases`, then step 3.
 
@@ -33,4 +33,4 @@ Each user brings their own free Plaid account and pastes the keys into their app
 Optional: if you put `PLAID_CLIENT_ID` and `PLAID_SECRET` into the Worker, users without their own keys use yours instead (shared cap of 10 bank logins in total, and you'd hold read access to their transactions).
 
 ### SEB
-Enable Banking's free mode only reaches the owner's own accounts, so SEB sync is available in the owner's app only (the one with the owner password in Settings > Backup > Advanced).
+Each user registers their own free Enable Banking app and adds its Application ID and .pem key in the app (setup steps 3 to 6), so their SEB accounts never touch yours. Your own app keeps using the keys stored on the Worker.

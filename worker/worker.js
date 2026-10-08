@@ -14,7 +14,7 @@
  *   PLAID_SECRET     optional fallback, the Production secret
  *   PLAID_ENV        optional: "production" (default) or "sandbox"
  *   PLAID_MAX_ITEMS  optional: bank logins allowed in total (default 10, Plaid's free Trial plan cap)
- *   EB_APP_ID        optional, owner's SEB: Enable Banking Application ID
+ *   EB_APP_ID        optional, owner's SEB: Enable Banking Application ID (other users paste their own keys in the app)
  *   EB_PRIVATE_KEY   optional, owner's SEB: the .pem private key (PKCS#8)
  *   SIGNUPS          optional: set to "off" to stop new users from being created
  * KV namespace binding:
@@ -90,9 +90,12 @@ export default {
       if (path === '/plaid/status') return await plaidStatus(env, u, json);
       if (path === '/plaid/transactions') return await plaidTransactions(env, u, body, json);
 
-      // ---- Enable Banking (SEB): its free mode only reaches the owner's own accounts, so owner only ----
-      if (['/start', '/session', '/claim', '/transactions', '/aspsps'].includes(path) && !u.owner) {
-        return json({ error: 'SEB sync is only available to the app owner' }, 403);
+      // ---- Enable Banking (SEB): each user brings their own Enable Banking app (its free mode only reaches
+      //      the accounts linked to that app). The owner may use the keys stored on the Worker. ----
+      let ebc = null;
+      if (['/start', '/session', '/claim', '/transactions', '/aspsps'].includes(path)) {
+        ebc = ebCreds(env, body, u);
+        if (!ebc) return json({ error: 'Add your Enable Banking keys in Settings > Bank sync' }, 400);
       }
       if (path === '/start') {
         const st = String(body.state || crypto.randomUUID());
@@ -102,18 +105,22 @@ export default {
           aspsp: { name: body.bank || 'SEB', country: body.country || 'LV' },
           state: st, redirect_url: redirect, psu_type: 'personal'
         });
-        let r = await eb(env, 'POST', '/auth', make(180));
-        if (!r.ok) r = await eb(env, 'POST', '/auth', make(90)); // some banks allow shorter consent only
-        if (r.ok) await env.STORE.put('pending:' + st, '1', { expirationTtl: 3600 });
+        let r = await eb(env, 'POST', '/auth', make(180), null, ebc);
+        if (!r.ok) r = await eb(env, 'POST', '/auth', make(90), null, ebc); // some banks allow shorter consent only
+        // the callback page needs to know whose keys to use and who may collect the result
+        if (r.ok) await env.STORE.put('pending:' + st, JSON.stringify({ uid: u.uid, ebc: ebc.own ? ebc : null }), { expirationTtl: 3600 });
         return pass(r, json);
       }
-      if (path === '/session') return pass(await eb(env, 'POST', '/sessions', { code: body.code }), json);
+      if (path === '/session') return pass(await eb(env, 'POST', '/sessions', { code: body.code }, null, ebc), json);
       if (path === '/claim') {
         const k = 'claim:' + String(body.state || '');
         const raw = await env.STORE.get(k);
         if (!raw) return json({ status: 'waiting' }, 202);
+        const c = JSON.parse(raw);
+        if (c._uid && c._uid !== u.uid) return json({ status: 'waiting' }, 202); // someone else's login
         await env.STORE.delete(k);
-        return json(JSON.parse(raw));
+        delete c._uid;
+        return json(c);
       }
       if (path === '/transactions') {
         const all = [];
@@ -123,7 +130,7 @@ export default {
           if (cont) q.set('continuation_key', cont);
           // When you open the app yourself, tell the bank you're present (PSD2: no 4-per-day limit then).
           const psu = body.present ? { 'psu-ip-address': req.headers.get('cf-connecting-ip') || '', 'psu-user-agent': req.headers.get('user-agent') || 'Budzets' } : null;
-          const r = await eb(env, 'GET', `/accounts/${encodeURIComponent(body.account_uid)}/transactions?${q}`, null, psu);
+          const r = await eb(env, 'GET', `/accounts/${encodeURIComponent(body.account_uid)}/transactions?${q}`, null, psu, ebc);
           if (!r.ok) return pass(r, json);
           all.push(...(r.data.transactions || []));
           cont = r.data.continuation_key;
@@ -131,7 +138,7 @@ export default {
         }
         return json({ transactions: all });
       }
-      if (path === '/aspsps') return pass(await eb(env, 'GET', `/aspsps?country=${encodeURIComponent(body.country || 'LV')}`), json);
+      if (path === '/aspsps') return pass(await eb(env, 'GET', `/aspsps?country=${encodeURIComponent(body.country || 'LV')}`, null, null, ebc), json);
 
       return json({ error: 'Unknown route' }, 404);
     } catch (e) {
@@ -179,45 +186,61 @@ async function ebCallback(env, url, html) {
   const code = url.searchParams.get('code');
   const err = url.searchParams.get('error');
   const known = st && (await env.STORE.get('pending:' + st));
+  let pend = {};
+  try { pend = JSON.parse(known) || {}; } catch (e) {}
+  const ebc = pend.ebc || ebCreds(env, {}, { owner: true });
+  const tag = (o) => ({ ...o, _uid: pend.uid || 'owner' });
   if (!known) return html('<h1>Link expired</h1><p>Go back to CBudget and start the bank connection again.</p>', 400);
   if (err || !code) {
-    await env.STORE.put('claim:' + st, JSON.stringify({ error: url.searchParams.get('error_description') || err || 'Cancelled' }), { expirationTtl: 3600 });
+    await env.STORE.put('claim:' + st, JSON.stringify(tag({ error: url.searchParams.get('error_description') || err || 'Cancelled' })), { expirationTtl: 3600 });
     return html('<h1>Not connected</h1><p>The bank connection was cancelled. Go back to CBudget and try again.</p>');
   }
-  const r = await eb(env, 'POST', '/sessions', { code });
+  const r = await eb(env, 'POST', '/sessions', { code }, null, ebc);
   if (!r.ok) {
-    await env.STORE.put('claim:' + st, JSON.stringify({ error: r.data.message || r.data.error || ('Enable Banking error ' + r.status) }), { expirationTtl: 3600 });
+    await env.STORE.put('claim:' + st, JSON.stringify(tag({ error: r.data.message || r.data.error || ('Enable Banking error ' + r.status) })), { expirationTtl: 3600 });
     return html('<h1>Something went wrong</h1><p>Go back to CBudget and try again.</p>', 502);
   }
-  await env.STORE.put('claim:' + st, JSON.stringify(r.data), { expirationTtl: 3600 });
+  await env.STORE.put('claim:' + st, JSON.stringify(tag(r.data)), { expirationTtl: 3600 });
   await env.STORE.delete('pending:' + st);
   return html('<h1>Connected</h1><p>You can close this page and go back to CBudget. It will pick up the connection by itself.</p>');
 }
 
-async function eb(env, method, path, body, extraHeaders) {
+// The user's own Enable Banking keys (sent by their app) win; the Worker's keys are for the owner only.
+function ebCreds(env, b, u) {
+  const e = b && b.eb;
+  if (e && /^[A-Za-z0-9-]{8,64}$/.test(e.app_id || '') && /-----BEGIN (RSA )?PRIVATE KEY-----/.test(e.key || '')) return { app_id: e.app_id, key: e.key, own: true };
+  if (u && u.owner && env.EB_APP_ID && env.EB_PRIVATE_KEY) return { app_id: env.EB_APP_ID, key: env.EB_PRIVATE_KEY, own: false };
+  return null;
+}
+async function eb(env, method, path, body, extraHeaders, creds) {
   const res = await fetch(EB + path, {
     method,
-    headers: { authorization: 'Bearer ' + (await jwt(env)), 'content-type': 'application/json', ...(extraHeaders || {}) },
+    headers: { authorization: 'Bearer ' + (await jwt(creds || ebCreds(env, {}, { owner: true }))), 'content-type': 'application/json', ...(extraHeaders || {}) },
     body: body ? JSON.stringify(body) : undefined
   });
   const data = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, data };
 }
 
-let cachedKey = null;
-async function jwt(env) {
-  if (!env.EB_PRIVATE_KEY || !env.EB_APP_ID) throw new Error('SEB is not set up on this Worker (EB_APP_ID / EB_PRIVATE_KEY missing)');
-  if (!cachedKey) {
-    const pem = env.EB_PRIVATE_KEY.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
-    if (/BEGIN RSA PRIVATE KEY/.test(env.EB_PRIVATE_KEY)) throw new Error('Key is PKCS#1. Convert: openssl pkcs8 -topk8 -nocrypt -in key.pem -out key8.pem');
-    const der = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0));
-    cachedKey = await crypto.subtle.importKey('pkcs8', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+const keyCache = new Map();
+async function jwt(c) {
+  if (!c) throw new Error('SEB is not set up: add your Enable Banking keys in Settings > Bank sync');
+  if (/BEGIN RSA PRIVATE KEY/.test(c.key)) throw new Error('This private key is in the old PKCS#1 format. Generate the key again in Enable Banking (Generate in the browser).');
+  const ck = await sha256(c.app_id + '\n' + c.key);
+  let key = keyCache.get(ck);
+  if (!key) {
+    const pem = c.key.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+    let der;
+    try { der = Uint8Array.from(atob(pem), (ch) => ch.charCodeAt(0)); } catch (e) { throw new Error('The private key is damaged: paste the whole .pem file'); }
+    try { key = await crypto.subtle.importKey('pkcs8', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']); }
+    catch (e) { throw new Error('The private key could not be read: paste the whole .pem file, including the BEGIN and END lines'); }
+    keyCache.set(ck, key);
   }
   const now = Math.floor(Date.now() / 1000);
   const enc = (o) => b64url(new TextEncoder().encode(JSON.stringify(o)));
-  const head = enc({ typ: 'JWT', alg: 'RS256', kid: env.EB_APP_ID });
+  const head = enc({ typ: 'JWT', alg: 'RS256', kid: c.app_id });
   const claims = enc({ iss: 'enablebanking.com', aud: 'api.enablebanking.com', iat: now, exp: now + 3600 });
-  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', cachedKey, new TextEncoder().encode(head + '.' + claims));
+  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(head + '.' + claims));
   return head + '.' + claims + '.' + b64url(new Uint8Array(sig));
 }
 function b64url(bytes) {

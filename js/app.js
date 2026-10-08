@@ -12,7 +12,7 @@
       payDay: 10, monthlySaving: 500, goal: 20000, startingSaved: 0, openingCarry: 0, startDate: null,
       useExpected: true, expectedNet: 0, statsFrom: null, liveEnabled: true, vacations: [],
       salary: { gross: 0, taxBook: true, dependents: 0, disability: 'none' }, currency: 'EUR',
-      bank: { workerUrl: '', token: '', provider: 'eb', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '', pendingMode: '', pendingSince: 0, plaidId: '', plaidSecret: '' },
+      bank: { workerUrl: '', token: '', provider: 'eb', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '', pendingMode: '', pendingSince: 0, plaidId: '', plaidSecret: '', ebAppId: '', ebKey: '' },
       backup: { pass: '', id: '', codeSaved: false, hasPassword: false },
       account: { uid: '', secret: '' }, country: '',
       us: { state: '', filing: 'single', dependents: 0, gross: 0, per: 'year', pretaxMonth: 0 },
@@ -719,7 +719,7 @@
   const PLAID = { signup: 'https://dashboard.plaid.com/signup', api: 'https://dashboard.plaid.com/developers/api', keys: 'https://dashboard.plaid.com/developers/keys' };
   const wzSteps = () => (wz.country === 'US'
     ? ['country', 'password', 'plaidSignup', 'plaidRedirect', 'plaidKeys', 'connect', 'salaryUS', 'savings']
-    : wz.country === 'LV' ? ['country', 'password', 'salaryLV', 'savings'] : ['country', 'x', 'x', 'x']);
+    : wz.country === 'LV' ? ['country', 'password', 'ebSignup', 'ebRegister', 'ebLink', 'ebKeys', 'connect', 'salaryLV', 'savings'] : ['country', 'x', 'x', 'x']);
   function wzSave() { try { localStorage.setItem(WZ_KEY, JSON.stringify({ step: wz.step, country: wz.country })); } catch (e) {} }
   function openOnboarding() {
     let saved = null; try { saved = JSON.parse(localStorage.getItem(WZ_KEY)); } catch (e) {}
@@ -728,9 +728,11 @@
   }
   function wzGo(delta) { wz.step = Math.max(0, Math.min(wzSteps().length - 1, wz.step + delta)); wzSave(); wzRender(); }
   const copyBtn = (id, value) => `<div class="copyrow"><input id="${id}" value="${esc(value)}" readonly><button class="btn" type="button" data-copy="${id}">Copy</button></div>`;
-  const linkBtn = (href, label, primary) => `<a class="btn ${primary ? 'primary' : ''} block" href="${esc(href)}" target="_blank" rel="noopener">${label} ↗</a>`;
+  const linkBtn = (href, label, primary) => `<a class="btn ${primary ? 'primary' : ''} block" href="${esc(href)}" target="_blank" rel="noopener" data-ext>${label} ↗</a>`;
   const pasteField = (id, label, value) => `<div class="field"><label>${label}</label><div class="copyrow"><input id="${id}" value="${esc(value)}" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"><button class="btn" type="button" data-paste="${id}">Paste</button></div></div>`;
   function bindCopyPaste(b) {
+    // In the Android app, websites like Plaid and Enable Banking open in the phone's browser (sign-in and downloads work there).
+    if (window.AndroidBridge && window.AndroidBridge.openExternal) $$('a[data-ext]', b).forEach((a) => (a.onclick = (e) => { e.preventDefault(); window.AndroidBridge.openExternal(a.href); }));
     $$('[data-copy]', b).forEach((x) => (x.onclick = async () => {
       const inp = $('#' + x.dataset.copy, b);
       try { await navigator.clipboard.writeText(inp.value); x.textContent = 'Copied ✓'; } catch (e) { inp.select(); document.execCommand && document.execCommand('copy'); x.textContent = 'Copied ✓'; }
@@ -751,7 +753,7 @@
     if (id === 'country') {
       body = `<h3>Where do you live?</h3>
         <p class="small muted">This sets your currency and how your take-home pay is calculated.</p>
-        <button class="choice ${wz.country === 'LV' ? 'on' : ''}" data-c="LV"><b>Latvia</b><span>Euro · Latvian salary taxes</span></button>
+        <button class="choice ${wz.country === 'LV' ? 'on' : ''}" data-c="LV"><b>Latvia</b><span>Euro · Latvian salary taxes · SEB bank sync</span></button>
         <button class="choice ${wz.country === 'US' ? 'on' : ''}" data-c="US"><b>United States</b><span>Dollar · federal and state taxes · America First CU bank sync</span></button>
         <div class="actions" style="margin-top:14px"><button class="btn ghost block" id="oRestore">I already used CBudget: restore my backup</button></div>`;
       nextLabel = '';
@@ -762,6 +764,34 @@
         <p class="small muted">Your budget is backed up automatically and encrypted with this password. You only need it if you delete the app or get a new phone.</p>
         <div class="field"><label>Password (8+ characters)</label><input id="wzPw" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"></div>
         <p class="small muted">Use something unique and write it down. Nobody can reset it: if it's forgotten, the backup can't be opened.</p>`;
+    } else if (id === 'ebSignup') {
+      body = `<h3>Create a free Enable Banking account</h3>
+        <p class="small muted">Enable Banking is the licensed service that lets CBudget read your SEB transactions. Personal use is free.</p>
+        ${linkBtn(EB_LINKS.signup, 'Open Enable Banking', true)}
+        <p class="small muted" style="margin-top:12px">Sign up with your email, then come back here and tap Next.</p>`;
+      canSkip = 'Skip bank connection';
+    } else if (id === 'ebRegister') {
+      body = `<h3>Register CBudget there</h3>
+        <p class="small muted">Open <b>API applications</b> and tap <b>Register new application</b>. Fill in:</p>
+        ${linkBtn(EB_LINKS.apps, 'Open API applications', true)}
+        <div class="field" style="margin-top:12px"><label>Environment</label><div class="small">Production</div></div>
+        <div class="field"><label>Application name</label>${copyBtn('ebName', 'CBudget')}</div>
+        <div class="field"><label>Allowed redirect URL</label>${copyBtn('ebRedir', EB_REDIRECT())}</div>
+        <div class="field"><label>Description</label>${copyBtn('ebDesc', 'Personal budget, own accounts only')}</div>
+        <p class="small muted">For the key choose <b>Generate in the browser</b>, then <b>Register</b>. A <b>.pem</b> file downloads: keep it, you need it in step 6.</p>`;
+      canSkip = 'Skip bank connection';
+    } else if (id === 'ebLink') {
+      body = `<h3>Link your SEB account</h3>
+        <p class="small muted">On your new CBudget application card in Enable Banking tap <b>Link accounts</b>, choose <b>Latvia</b>, <b>SEB</b>, <b>Personal</b>, and approve with <b>Smart-ID</b>.</p>
+        ${linkBtn(EB_LINKS.apps, 'Open API applications', true)}
+        <p class="small muted" style="margin-top:12px">The card then shows <b>Restricted</b> and <b>Active</b>. That's the free personal mode. Then come back and tap Next.</p>`;
+      canSkip = 'Skip bank connection';
+    } else if (id === 'ebKeys') {
+      body = `<h3>Add your two keys</h3>
+        <p class="small muted">Copy the <b>Application ID</b> from your application card, and add the <b>.pem</b> file that downloaded in step 4.</p>
+        ${linkBtn(EB_LINKS.apps, 'Open API applications', false)}
+        <div style="margin-top:12px">${ebKeyFields()}</div>`;
+      canSkip = 'Skip bank connection';
     } else if (id === 'plaidSignup') {
       body = `<h3>Create a free Plaid account</h3>
         <p class="small muted">Plaid is the service that lets CBudget read your America First Credit Union transactions. It's free for personal use (up to 10 bank logins).</p>
@@ -781,11 +811,12 @@
         <div style="margin-top:12px">${pasteField('wzPid', 'client_id', bk.plaidId)}${pasteField('wzPsec', 'Production secret', bk.plaidSecret)}</div>`;
       canSkip = 'Skip bank connection';
     } else if (id === 'connect') {
-      const done = !!bk.sessionId && bk.provider === 'plaid';
-      body = `<h3>Connect America First CU</h3>
+      const done = !!bk.sessionId;
+      const bn = wz.country === 'LV' ? 'SEB' : 'America First CU';
+      body = `<h3>Connect ${bn}</h3>
         ${done ? `<div class="banner">Connected ✓ ${bk.accounts.length} account${bk.accounts.length === 1 ? '' : 's'}. Your spending will fill in by itself.</div>`
-          : wz.linkUrl ? `<p class="small muted">Tap the button, log in to America First, then come back here. This page notices the connection by itself.</p>${linkBtn(wz.linkUrl, 'Open bank login', true)}<div class="actions" style="margin-top:10px"><button class="btn ghost block" id="wzCheck">I finished, check now</button></div>`
-          : `<p class="small muted">Log in to your bank once. CBudget only gets read access to your transactions.</p><button class="btn primary block" id="wzConnect">Connect America First CU</button>`}`;
+          : wz.linkUrl ? `<p class="small muted">Tap the button, log in to ${bn}, then come back here. This page notices the connection by itself.</p>${linkBtn(wz.linkUrl, 'Open bank login', true)}<div class="actions" style="margin-top:10px"><button class="btn ghost block" id="wzCheck">I finished, check now</button></div>`
+          : `<p class="small muted">Log in to your bank once. CBudget only gets read access to your transactions.</p><button class="btn primary block" id="wzConnect">Connect ${bn}</button>`}`;
       if (!done) canSkip = 'Skip for now';
     } else if (id === 'salaryUS') {
       body = `<h3>Your salary</h3><p class="small muted">Your take-home pay sets your monthly budget.</p>${usSalaryHtml()}
@@ -808,12 +839,13 @@
     openSheet(top + body + nav, (b) => {
       bindCopyPaste(b);
       const back = $('#wzBack', b); if (back) back.onclick = () => wzGo(-1);
-      const skip = $('#wzSkip', b); if (skip) skip.onclick = () => { wz.step = wzSteps().indexOf('salaryUS'); wzSave(); wzRender(); };
+      const skip = $('#wzSkip', b); if (skip) skip.onclick = () => { wz.step = wzSteps().indexOf(wz.country === 'LV' ? 'salaryLV' : 'salaryUS'); wzSave(); wzRender(); };
       const next = $('#wzNext', b);
       if (id === 'country') {
         $$('.choice', b).forEach((x) => (x.onclick = () => {
           wz.country = x.dataset.c; s.country = wz.country; s.currency = wz.country === 'US' ? 'USD' : 'EUR';
           if (wz.country === 'US') { bk.provider = 'plaid'; bk.bankName = 'America First CU'; bk.country = 'US'; }
+          else { bk.provider = 'eb'; bk.bankName = 'SEB'; bk.country = 'LV'; }
           setCurrency(); save(); wzGo(1);
         }));
         $('#oRestore', b).onclick = () => { wz.open = false; openRestore(); };
@@ -827,6 +859,11 @@
         };
         return;
       }
+      if (id === 'ebKeys') {
+        const read = bindEbKeys(b);
+        next.onclick = () => { read(); if (!bk.ebAppId || !/-----BEGIN PRIVATE KEY-----/.test(bk.ebKey)) return toast('Add the Application ID and the .pem key first', 4000); wzGo(1); };
+        return;
+      }
       if (id === 'plaidKeys') {
         const read = () => { bk.plaidId = $('#wzPid', b).value.trim(); bk.plaidSecret = $('#wzPsec', b).value.trim(); save(); };
         $('#wzPid', b).onchange = read; $('#wzPsec', b).onchange = read;
@@ -838,10 +875,17 @@
         if (c) c.onclick = async () => {
           try {
             c.disabled = true; c.textContent = 'Preparing…';
-            const r = await bridge('/plaid/start', {});
-            bk.pendingState = 'plaid'; bk.pendingMode = 'worker'; bk.pendingSince = Date.now(); save();
-            wz.linkUrl = r.url; startClaimPolling(); wzRender();
-          } catch (e) { toast(e.message, 6000); c.disabled = false; c.textContent = 'Connect America First CU'; }
+            if (bk.provider === 'plaid') {
+              const r = await bridge('/plaid/start', {});
+              wz.linkUrl = r.url; bk.pendingState = 'plaid';
+            } else {
+              const st = uid() + uid();
+              const r = await bridge('/start', { redirect_url: EB_REDIRECT(), state: st, bank: 'SEB', country: 'LV' });
+              wz.linkUrl = r.url; bk.pendingState = st;
+            }
+            bk.pendingMode = 'worker'; bk.pendingSince = Date.now(); save();
+            startClaimPolling(); wzRender();
+          } catch (e) { toast(e.message, 6000); c.disabled = false; c.textContent = 'Try again'; }
         };
         const ck = $('#wzCheck', b); if (ck) ck.onclick = async () => { if (!(await checkClaim())) toast('Not finished yet'); };
         next.onclick = () => (bk.sessionId ? wzGo(1) : toast('Connect first, or tap Skip for now'));
@@ -923,7 +967,6 @@
   function openSettings() {
     const s = state.settings, bk = s.bank;
     const connected = !!bk.sessionId;
-    if (!isOwner() && bk.provider !== 'plaid') { bk.provider = 'plaid'; bk.bankName = 'America First CU'; bk.country = 'US'; }
     const plaidMode = bk.provider === 'plaid';
     const label = bankLabel();
     const lastBk = bkmeta.lastOkMs ? `${dShort(L.todayStr(new Date(bkmeta.lastOkMs)))} ${new Date(bkmeta.lastOkMs).toTimeString().slice(0, 5)}` : 'never';
@@ -948,8 +991,8 @@
       </details>
 
       <h3 style="margin-top:22px">Bank sync</h3>
-      ${isOwner() ? `<div class="field"><label>Bank</label><select id="bkProv"><option value="eb" ${plaidMode ? '' : 'selected'}>SEB (Latvia)</option><option value="plaid" ${plaidMode ? 'selected' : ''}>America First Credit Union (USA)</option></select></div>` : '<div class="small" style="margin-bottom:6px">America First Credit Union (USA)</div>'}
-      ${plaidMode ? plaidKeysHtml() : ''}
+      <div class="field"><label>Bank</label><select id="bkProv"><option value="eb" ${plaidMode ? '' : 'selected'}>SEB (Latvia)</option><option value="plaid" ${plaidMode ? 'selected' : ''}>America First Credit Union (USA)</option></select></div>
+      ${plaidMode ? plaidKeysHtml() : isOwner() ? '' : ebKeysHtml()}
       <div class="small muted" style="margin-bottom:10px">${connected ? `Connected · ${bk.accounts.length} account(s) · last sync ${bk.lastSync ? dShort(bk.lastSync.slice(0, 10)) + ' ' + bk.lastSync.slice(11, 16) : 'never'}${bk.validUntil ? ' · consent until ' + dShort(bk.validUntil.slice(0, 10)) : ''}` : bk.pendingState ? 'Waiting for the bank login to finish…' : 'Not connected.'}</div>
       <div class="toggle"><span>Import incoming payments as income</span><input type="checkbox" id="bkInc" ${bk.importIncome ? 'checked' : ''}></div>
       <div class="field"><label>Ignore transactions containing (comma separated)</label><input id="bkIgn" value="${esc(bk.ignore)}" placeholder="own transfer, savings, your name"></div>
@@ -993,10 +1036,11 @@
       };
       $('#bkInc', b).onchange = (e) => { bk.importIncome = e.target.checked; save(); };
       $('#bkIgn', b).onchange = (e) => { bk.ignore = e.target.value; save(); };
-      const readKeys = plaidMode ? bindPlaidKeys(b) : () => {};
+      const readKeys = plaidMode ? bindPlaidKeys(b) : isOwner() ? () => {} : bindEbKeys(b);
       $('#bkConnect', b).onclick = () => {
         readBridge(); readKeys();
         if (plaidMode && (!bk.plaidId || !bk.plaidSecret)) return toast('Paste your Plaid client_id and secret first', 4000);
+        if (!plaidMode && !isOwner() && (!bk.ebAppId || !bk.ebKey)) return toast('Add your Enable Banking Application ID and private key first', 4000);
         bankConnect();
       };
       if (connected) $('#bkSync', b).onclick = () => { closeSheet(); bankSync(true); };
@@ -1055,6 +1099,39 @@
       <div class="field"><label>Plaid Production secret</label><input id="pkSec" type="text" value="${esc(bk.plaidSecret)}" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"></div>
       <div class="field"><label>Redirect URI for Plaid</label><div style="display:flex;gap:8px"><input id="pkRedir" value="${esc(PLAID_REDIRECT())}" readonly><button class="btn" id="pkCopy" type="button">Copy</button></div></div>
     </details>`;
+  }
+  const EB_LINKS = { signup: 'https://enablebanking.com/sign-in/', apps: 'https://enablebanking.com/cp/applications' };
+  const EB_REDIRECT = () => bridgeUrl() + '/callback';
+  function ebKeyFields() {
+    const bk = state.settings.bank;
+    return `${pasteField('ebId', 'Application ID', bk.ebAppId)}
+      <div class="field"><label>Private key (.pem file)</label>
+        <div class="actions" style="margin:0 0 8px"><button class="btn" type="button" id="ebFileBtn">Choose the .pem file</button><button class="btn" type="button" data-paste="ebKey">Paste</button></div>
+        <input type="file" id="ebFile" hidden>
+        <textarea id="ebKey" rows="4" placeholder="-----BEGIN PRIVATE KEY-----" autocapitalize="none" autocorrect="off" spellcheck="false">${esc(bk.ebKey)}</textarea>
+        <div class="hint" id="ebKeyHint">${bk.ebKey ? 'Key added ✓' : 'Pick the file you downloaded (in Files / Downloads), or paste its whole text.'}</div></div>`;
+  }
+  function ebKeysHtml() {
+    const bk = state.settings.bank;
+    return `<details ${bk.ebAppId && bk.ebKey ? '' : 'open'} style="margin-bottom:10px"><summary class="small muted" style="cursor:pointer">Your Enable Banking keys ${bk.ebAppId && bk.ebKey ? '(saved)' : '(needed once)'}</summary>
+      <p class="small muted">Redirect URL to allow in Enable Banking:</p>${copyBtn('ebRedir', EB_REDIRECT())}
+      <div style="margin-top:10px">${ebKeyFields()}</div></details>`;
+  }
+  function bindEbKeys(b) {
+    const bk = state.settings.bank;
+    const read = () => {
+      bk.ebAppId = $('#ebId', b).value.trim(); bk.ebKey = $('#ebKey', b).value.trim(); save();
+      const ok = /-----BEGIN PRIVATE KEY-----/.test(bk.ebKey);
+      $('#ebKeyHint', b).textContent = !bk.ebKey ? 'Pick the file you downloaded, or paste its whole text.' : ok ? 'Key added ✓' : 'That does not look like the .pem private key';
+    };
+    $('#ebId', b).onchange = read; $('#ebKey', b).onchange = read; $('#ebKey', b).oninput = read;
+    $('#ebFileBtn', b).onclick = () => $('#ebFile', b).click();
+    $('#ebFile', b).onchange = (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      const r = new FileReader(); r.onload = () => { $('#ebKey', b).value = String(r.result).trim(); read(); }; r.readAsText(f);
+    };
+    bindCopyPaste(b);
+    return read;
   }
   function bindPlaidKeys(b) {
     const bk = state.settings.bank;
@@ -1208,6 +1285,7 @@
     if (!bridgeUrl()) throw new Error('No server set');
     const b = { ...(body || {}) };
     if (path.startsWith('/plaid/') && bk.plaidId && bk.plaidSecret) b.plaid = { client_id: bk.plaidId, secret: bk.plaidSecret };
+    if (['/start', '/session', '/claim', '/transactions', '/aspsps'].includes(path) && bk.ebAppId && bk.ebKey) b.eb = { app_id: bk.ebAppId, key: bk.ebKey };
     const res = await fetch(bridgeUrl() + path, {
       method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders() },
       body: JSON.stringify(b)
@@ -1219,13 +1297,13 @@
 
   // On iPhone the browser that shows the bank login is not the home screen app, so the login finishes on your
   // Worker's own page and the app collects the result. Elsewhere the old redirect-back flow still works.
-  const useWorkerCallback = () => state.settings.bank.provider === 'plaid' || isIOS || isStandalone();
+  const useWorkerCallback = () => state.settings.bank.provider === 'plaid' || !isOwner() || isIOS || isStandalone();
 
   async function bankConnect() {
     const bk = state.settings.bank;
     try {
       if (!bridgeUrl()) throw new Error('No server set');
-      if (bk.provider === 'eb' && !isOwner()) bk.provider = 'plaid';
+      if (bk.provider === 'eb' && !isOwner() && !(bk.ebAppId && bk.ebKey)) throw new Error('Add your Enable Banking keys first');
       let url;
       if (bk.provider === 'plaid') {
         const r = await bridge('/plaid/start', {});

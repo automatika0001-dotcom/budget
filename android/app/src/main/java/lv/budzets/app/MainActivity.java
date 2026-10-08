@@ -35,7 +35,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Native shell for the Budžets app. The screens and logic are loaded from GitHub Pages,
+ * Native shell for the CBudget app. The screens and logic are loaded from GitHub Pages,
  * so pushing to GitHub updates the app without reinstalling. Data is kept on the phone.
  */
 public class MainActivity extends Activity {
@@ -109,7 +109,7 @@ public class MainActivity extends Activity {
     private void showOfflinePage() {
         String html = "<html><body style=\"background:#101312;color:#eef2ef;font-family:sans-serif;"
                 + "display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:24px\">"
-                + "<h2>No connection</h2><p style=\"color:#8f9a95\">Budžets needs internet the very first time it opens.<br>After that it works offline.</p>"
+                + "<h2>No connection</h2><p style=\"color:#8f9a95\">CBudget needs internet the very first time it opens.<br>After that it works offline.</p>"
                 + "<button onclick=\"location.href='" + BuildConfig.APP_URL + "'\" style=\"background:#c8f26a;border:0;"
                 + "border-radius:14px;padding:14px 28px;font-size:16px;font-weight:bold\">Try again</button></body></html>";
         web.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null);
@@ -185,10 +185,24 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public int nativeVersion() {
-            return 2;
+            return 3;
         }
 
-        /** True when the user has granted Notification access to Budžets. */
+        /** Open a website (Plaid, Enable Banking) in the phone's browser, where sign-in and file downloads work. */
+        @JavascriptInterface
+        public void openExternal(String url) {
+            runOnUiThread(() -> {
+                try {
+                    Uri u = Uri.parse(url);
+                    if (!"https".equals(u.getScheme())) return;
+                    startActivity(new Intent(Intent.ACTION_VIEW, u));
+                } catch (Exception e) {
+                    Toast.makeText(MainActivity.this, "No browser to open this link", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
+
+        /** True when the user has granted Notification access to CBudget. */
         @JavascriptInterface
         public boolean hasNotificationAccess() {
             String flat = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
