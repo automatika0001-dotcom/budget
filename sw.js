@@ -2,7 +2,7 @@
    falls back to the cached copy when offline. */
 importScripts('js/version.js');
 const CACHE = 'budget-' + self.APP_VERSION;
-const CORE = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/logic.js', 'js/version.js', 'js/chart.umd.min.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
+const CORE = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/logic.js', 'js/backup.js', 'js/version.js', 'js/chart.umd.min.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));

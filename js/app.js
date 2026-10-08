@@ -11,8 +11,9 @@
     settings: {
       payDay: 10, monthlySaving: 500, goal: 20000, startingSaved: 0, openingCarry: 0, startDate: null,
       useExpected: true, expectedNet: 0, statsFrom: null, liveEnabled: true, vacations: [],
-      salary: { gross: 0, taxBook: true, dependents: 0, disability: 'none' },
-      bank: { workerUrl: '', token: '', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '' },
+      salary: { gross: 0, taxBook: true, dependents: 0, disability: 'none' }, currency: 'EUR',
+      bank: { workerUrl: '', token: '', provider: 'eb', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '', pendingMode: '', pendingSince: 0 },
+      backup: { pass: '', id: '' },
       aliases: {}
     },
     expenses: [], incomes: [], adjustments: [], ignoredBankIds: [], liveSeen: [], liveLog: []
@@ -48,7 +49,17 @@
     catch (e) { console.error(e); return defaults(); }
   }
   let state = load();
-  function save() { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+  let saveSeq = 0;
+  function save() {
+    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    saveSeq++;
+    if (!bkmeta.dirty) { bkmeta.dirty = true; saveMeta(); }
+  }
+  // Backup bookkeeping lives outside the budget data (so restoring a backup never overwrites it).
+  const META_KEY = 'budget.bkmeta';
+  let bkmeta = (() => { try { return JSON.parse(localStorage.getItem(META_KEY)) || {}; } catch (e) { return {}; } })();
+  function saveMeta() { try { localStorage.setItem(META_KEY, JSON.stringify(bkmeta)); } catch (e) {} }
+  const BB = window.BudgetBackup;
 
   const ui = { tab: 'today', statsMode: 'month', statsOffset: 0, calOffset: 0, charts: {} };
   let ledger, today;
@@ -58,9 +69,18 @@
   const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  const fmtEUR = new Intl.NumberFormat('lv-LV', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const fmtEUR0 = new Intl.NumberFormat('lv-LV', { maximumFractionDigits: 0 });
+  let fmtEUR, fmtEUR0, SYM = '€';
+  function setCurrency() {
+    const usd = state.settings.currency === 'USD';
+    SYM = usd ? '$' : '€';
+    fmtEUR = new Intl.NumberFormat(usd ? 'en-US' : 'lv-LV', { style: 'currency', currency: usd ? 'USD' : 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    fmtEUR0 = new Intl.NumberFormat(usd ? 'en-US' : 'lv-LV', { maximumFractionDigits: 0 });
+  }
+  setCurrency();
   const money = (x) => fmtEUR.format(L.r2(x || 0) || 0);
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isStandalone = () => navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+  const bankLabel = () => (state.settings.bank.provider === 'plaid' ? 'AFCU' : state.settings.bank.bankName || 'Bank');
   const signed = (x) => (x > 0 ? '+' : '') + money(x);
   const pct = (x) => (x > 0 ? '+' : '') + (x * 100).toFixed(1) + '%';
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -100,7 +120,7 @@
     const title = kind === 'income' ? (e.source || 'Income') : (e.place || 'Expense');
     return `<div class="item" data-kind="${kind}" data-id="${e.id}">
       <div class="dot">${initial}</div>
-      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && (e.kind || L.incomeKind(e)) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.bankId ? '<span class="tag">SEB</span>' : ''}</div>
+      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && (e.kind || L.incomeKind(e)) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
       <div class="sub">${dShort(e.date)}${e.note ? ' · ' + esc(e.note) : ''}</div></div>
       <div class="amt num ${kind === 'income' ? 'good' : ''}">${kind === 'income' ? '+' : '-'}${money(e.amount)}</div></div>`;
   }
@@ -115,7 +135,7 @@
 
   function euroBig(x) {
     const a = Math.abs(x);
-    return `${fmtEUR0.format(Math.floor(a))}<span class="cur">,${String(Math.round((a - Math.floor(a)) * 100)).padStart(2, '0')} €</span>`;
+    return `${fmtEUR0.format(Math.floor(a))}<span class="cur">${state.settings.currency === 'USD' ? '' : ','}${String(Math.round((a - Math.floor(a)) * 100)).padStart(2, '0')} ${SYM}</span>`;
   }
 
   function nextBoxHtml(ts) {
@@ -153,7 +173,7 @@
     const hol = (state.settings.vacations || []).length > 0;
     if (ts.holiday) {
       const n = ts.budgetDaysLeft;
-      return `<div class="formula num">Holiday today (budget 0 €). ${money(ts.remainingMonth)} left ÷ ${n} budget day${n === 1 ? '' : 's'} after the holiday</div>`;
+      return `<div class="formula num">Holiday today (budget 0 ${SYM}). ${money(ts.remainingMonth)} left ÷ ${n} budget day${n === 1 ? '' : 's'} after the holiday</div>`;
     }
     const n = ts.budgetDaysLeft;
     return `<div class="formula num">${money(ts.remainingMonth + ts.spentToday)} left this morning ÷ ${n} ${hol ? 'budget ' : ''}day${n === 1 ? '' : 's'} = <b>${money(ts.dailyAllowance)}</b> a day${hol && n !== ts.daysLeft ? ' (holidays skipped)' : ''}</div>`;
@@ -170,7 +190,7 @@
     const plus7 = L.addDays(today, 7);
     return `<details class="card" id="vacCard" ${ui.vacOpen ? 'open' : ''}>
         <summary><h2>Vacation mode${v.some((x) => x.to >= today) ? ' <span class="tag">on</span>' : ''}</h2><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary>
-        <p class="small muted" style="margin-top:0">Saturdays and Sundays inside these dates get a 0 € budget; their share goes to your other days. Anything you still spend then counts.</p>
+        <p class="small muted" style="margin-top:0">Saturdays and Sundays inside these dates get a 0 ${SYM} budget; their share goes to your other days. Anything you still spend then counts.</p>
         <div class="field-row">
           <div class="field"><label>From</label><input id="vcFrom" type="date" value="${today}"></div>
           <div class="field"><label>To</label><input id="vcTo" type="date" value="${plus7}"></div>
@@ -203,7 +223,8 @@
     v.innerHTML = `
       ${per.incomeExpected ? `<div class="banner">${per.advance > 0 ? `Advance ${money(per.advance)} received. Still expecting ${money(per.salaryToCome)} of salary.` : `Using expected salary ${money(per.salaryToCome)} until you log this month's salary.`}</div>` : ''}
       ${per.income === 0 ? `<div class="banner bad">No income logged for this period yet. Add it in Income.</div>` : ''}
-      ${consentDays !== null && consentDays <= 7 ? `<div class="banner bad">SEB connection expires in ${Math.max(0, consentDays)} days. Reconnect in Settings.</div>` : ''}
+      ${isIOS && !isStandalone() && !localStorage.getItem('budget.hideInstall') ? `<div class="banner" id="installTip"><b>Install on iPhone:</b> tap the Share button in Safari, then <b>Add to Home Screen</b>, and open Budžets from your home screen. Enter your data only there: the Safari tab and the home screen app keep separate data. <a href="#" id="hideTip">Hide</a></div>` : ''}
+      ${consentDays !== null && consentDays <= 7 ? `<div class="banner bad">${esc(bankLabel())} connection expires in ${Math.max(0, consentDays)} days. Reconnect in Settings.</div>` : ''}
       ${heroHtml(ts, over)}
 
       <div class="quick">
@@ -233,7 +254,7 @@
       <details class="card" id="rebalCard">
         <summary><h2>Rebalance</h2><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary>
         <p class="small muted" style="margin-top:0">Set how much you really have left to spend until pay day (${dShort(per.next)}). Fixes differences with your bank. It is not counted as spending or income and doesn't show in statistics.</p>
-        <div class="field"><label>Actually left to spend, €</label><input id="rbAmt" class="amount-input num" inputmode="decimal" placeholder="${fmtEUR0.format(Math.round(ts.remainingMonth))}"><div class="hint">The app currently thinks: ${money(ts.remainingMonth)}</div></div>
+        <div class="field"><label>Actually left to spend, ${SYM}</label><input id="rbAmt" class="amount-input num" inputmode="decimal" placeholder="${fmtEUR0.format(Math.round(ts.remainingMonth))}"><div class="hint">The app currently thinks: ${money(ts.remainingMonth)}</div></div>
         <button class="btn primary block" id="rbSet">Set balance</button>
         ${rebals.length ? `<div class="list" style="margin-top:12px">${rebals.map((a) => `<div class="row"><span class="label">${dShort(a.date)} · set to ${money(a.target)}</span><span><span class="num">${signed(a.amount)}</span> <button class="btn ghost small rb-undo" data-id="${a.id}" style="padding:4px 10px;margin-left:6px">Undo</button></span></div>`).join('')}</div>` : ''}
       </details>
@@ -246,6 +267,7 @@
       ${vacationHtml()}
     `;
     $('#qExp').onclick = () => openExpense(null);
+    const ht = $('#hideTip'); if (ht) ht.onclick = (ev) => { ev.preventDefault(); try { localStorage.setItem('budget.hideInstall', '1'); } catch (e) {} $('#installTip').remove(); };
     $('#qInc').onclick = () => openIncome(null);
     $('#vacCard').addEventListener('toggle', (e) => (ui.vacOpen = e.target.open));
     $('#vcAdd').onclick = () => {
@@ -283,7 +305,8 @@
   }
   function statusLine() {
     const bk = state.settings.bank, parts = [];
-    if (bk.sessionId) parts.push(syncing ? 'SEB syncing…' : 'SEB synced ' + ago(bk.lastSync));
+    if (bk.sessionId) parts.push(syncing ? bankLabel() + ' syncing…' : bankLabel() + ' synced ' + ago(bk.lastSync));
+    if (backupReady()) parts.push(bkmeta.conflict ? '<span class="bad">Backup paused</span>' : bkmeta.error ? '<span class="bad">Backup failed</span>' : bkmeta.lastOkMs ? 'Backed up ' + ago(new Date(bkmeta.lastOkMs).toISOString()) : 'Backup pending');
     if (liveAvailable()) parts.push(liveAccess() && state.settings.liveEnabled ? '<span class="good">● Live payments on</span>' : 'Live payments off');
     return parts.length ? `<div class="status-line" id="statusLine">${parts.join(' · ')}</div>` : '';
   }
@@ -321,7 +344,7 @@
         <span class="lbl">${MONTHS_LONG[m]} ${y}</span>
         <button class="icon-btn" id="calNext"><svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button></div>
       <div class="card"><div class="cal">${cells}</div>
-        <div class="legend" style="margin-top:12px"><span><i style="background:#17291f"></i>Under daily budget</span><span><i style="background:#331a18"></i>Over</span><span><span style="color:var(--accent)">€</span> Pay day</span>${(state.settings.vacations || []).length ? '<span><i style="background:transparent;border:1px dashed #6ab8f2"></i>Holiday</span>' : ''}</div></div>
+        <div class="legend" style="margin-top:12px"><span><i style="background:#17291f"></i>Under daily budget</span><span><i style="background:#331a18"></i>Over</span><span><span style="color:var(--accent)">${SYM}</span> Pay day</span>${(state.settings.vacations || []).length ? '<span><i style="background:transparent;border:1px dashed #6ab8f2"></i>Holiday</span>' : ''}</div></div>
       <div class="stat-grid">
         <div class="stat"><div class="k">Spent in ${MONTHS[m]}</div><div class="v num">${money(monthSpent)}</div></div>
         <div class="stat"><div class="k">Income in ${MONTHS[m]}</div><div class="v num good">${money(inc)}</div></div>
@@ -354,8 +377,9 @@
     const sal = state.settings.salary;
     const per = ledger.current;
     const list = state.incomes.slice().sort((a, b) => b.date.localeCompare(a.date));
+    const showCalc = state.settings.currency !== 'USD';
     v.innerHTML = `
-      <details class="card" id="calcCard" ${sal.gross ? '' : 'open'}>
+      ${showCalc ? `<details class="card" id="calcCard" ${sal.gross ? '' : 'open'}>
         <summary><h2>Salary calculator 2026</h2><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary>
         <div class="field"><label>Gross monthly salary (bruto), €</label><input id="sGross" class="num" inputmode="decimal" value="${sal.gross || ''}" placeholder="e.g. 2000"></div>
         <div class="toggle"><span>Tax book submitted (algas nodokļa grāmatiņa)</span><input type="checkbox" id="sBook" ${sal.taxBook ? 'checked' : ''}></div>
@@ -368,11 +392,11 @@
         </div>
         <div id="calcOut"></div>
         <div class="actions" style="margin-top:12px"><button class="btn" id="sExpected">Use as expected income</button><button class="btn primary" id="sLog">Log as income today</button></div>
-      </details>
+      </details>` : ''}
 
       <div class="card">
         <h2>Add money received</h2>
-        <div class="field"><label>Amount (net, what arrived), €</label><input id="iAmt" class="amount-input num" inputmode="decimal" placeholder="0,00"></div>
+        <div class="field"><label>Amount (net, what arrived), ${SYM}</label><input id="iAmt" class="amount-input num" inputmode="decimal" placeholder="0,00"></div>
         <div class="field-row">
           <div class="field"><label>Source</label><select id="iSrc">${[['Salary', 'Salary (full / final)'], ['Advance', 'Salary advance (avanss)'], ['Bonus', 'Bonus'], ['Side job', 'Side job'], ['Gift', 'Gift'], ['Refund', 'Refund'], ['Other', 'Other']].map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
           <div class="field"><label>Date</label><input id="iDate" type="date" value="${today}"></div>
@@ -383,7 +407,7 @@
       <div class="card">
         <h2>Expected salary</h2>
         <div class="toggle"><span>Use expected net salary when a month has no logged income</span><input type="checkbox" id="useExp" ${state.settings.useExpected ? 'checked' : ''}></div>
-        <div class="field"><label>Expected net per month, €</label><input id="expNet" class="num" inputmode="decimal" value="${state.settings.expectedNet || ''}"></div>
+        <div class="field"><label>Expected net per month, ${SYM}</label><input id="expNet" class="num" inputmode="decimal" value="${state.settings.expectedNet || ''}"></div>
         ${per ? `<div class="small muted">This period (${dShort(per.start)} to ${dShort(per.end)}): ${money(L.sumRange(ledger.incomeByDay, per.start, per.end))} logged.</div>` : ''}
       </div>
 
@@ -402,11 +426,13 @@
         <div class="small muted" style="margin-top:6px">Effective deduction ${(r.effectiveRate * 100).toFixed(1)}% · employer total cost ${money(r.employerCost)}</div>`;
       return r;
     };
+    if (showCalc) {
     ['#sGross', '#sDeps'].forEach((s) => $(s).addEventListener('input', calc));
     ['#sBook', '#sDis'].forEach((s) => $(s).addEventListener('change', calc));
     calc();
     $('#sExpected').onclick = () => { state.settings.expectedNet = calc().net; state.settings.useExpected = true; save(); toast('Expected income set to ' + money(state.settings.expectedNet)); render(); };
     $('#sLog').onclick = () => { const r = calc(); if (!r.net) return; state.incomes.push({ id: uid(), date: today, amount: r.net, source: 'Salary', kind: 'salary', note: 'From calculator' }); save(); toast('Logged ' + money(r.net)); render(); };
+    }
     $('#iAdd').onclick = () => {
       const amt = L.num($('#iAmt').value); if (amt <= 0) return toast('Enter an amount');
       const src = $('#iSrc').value;
@@ -429,7 +455,7 @@
         tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${money(c.parsed.y)}` } } },
       scales: {
         x: { grid: { display: false }, ticks: { color: muted, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
-        y: { beginAtZero: true, grid: { color: grid }, ticks: { color: muted, callback: (v) => fmtEUR0.format(v) + ' €' } }
+        y: { beginAtZero: true, grid: { color: grid }, ticks: { color: muted, callback: (v) => fmtEUR0.format(v) + ' ' + SYM } }
       }
     };
   }
@@ -571,9 +597,9 @@
         ${per.rolloverIn > 0 ? `<div class="small muted" style="margin-top:6px">If ${money(per.rolloverIn)} of last month's rollover is still unspent on ${dShort(per.next)}, it moves to savings.</div>` : ''}
       </div>` : ''}
       <div class="card"><h2>Goal settings</h2>
-        <div class="field"><label>Savings goal, €</label><input id="gGoal" class="num" inputmode="decimal" value="${s.goal}"></div>
-        <div class="field"><label>Save each month, €</label><input id="gMonthly" class="num" inputmode="decimal" value="${s.monthlySaving}"></div>
-        <div class="field"><label>Already saved before starting, €</label><input id="gStart" class="num" inputmode="decimal" value="${s.startingSaved}"></div>
+        <div class="field"><label>Savings goal, ${SYM}</label><input id="gGoal" class="num" inputmode="decimal" value="${s.goal}"></div>
+        <div class="field"><label>Save each month, ${SYM}</label><input id="gMonthly" class="num" inputmode="decimal" value="${s.monthlySaving}"></div>
+        <div class="field"><label>Already saved before starting, ${SYM}</label><input id="gStart" class="num" inputmode="decimal" value="${s.startingSaved}"></div>
       </div>
       <div class="card"><h2>History</h2><div class="table-wrap"><table class="hist num">
         <tr><th>Period</th><th>Allowance</th><th>Spent</th><th>Carried</th><th>Saved</th></tr>
@@ -601,7 +627,7 @@
   function openExpense(item, date) {
     const isNew = !item;
     const e = item || { date: date || today, amount: '', place: '', note: '' };
-    openSheet(`<h3>${isNew ? 'New expense' : 'Edit expense'}${e.bankId ? '<span class="tag">from SEB</span>' : ''}</h3>
+    openSheet(`<h3>${isNew ? 'New expense' : 'Edit expense'}${e.bankId ? `<span class="tag">from ${esc(bankLabel())}</span>` : ''}</h3>
       <div class="field"><input id="eAmt" class="amount-input num" inputmode="decimal" placeholder="0,00" value="${e.amount || ''}"></div>
       <div class="field"><label>Where</label><input id="ePlace" list="placeList" value="${esc(e.place)}" placeholder="Rimi, Circle K, Wolt…">
         <datalist id="placeList">${recentPlaces().map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
@@ -631,7 +657,7 @@
     const isNew = !item;
     const e = item || { date: date || today, amount: '', source: 'Salary', kind: 'salary', note: '' };
     const kind = e.kind || L.incomeKind(e);
-    openSheet(`<h3>${isNew ? 'New income' : 'Edit income'}${e.bankId ? '<span class="tag">from SEB</span>' : ''}</h3>
+    openSheet(`<h3>${isNew ? 'New income' : 'Edit income'}${e.bankId ? `<span class="tag">from ${esc(bankLabel())}</span>` : ''}</h3>
       <div class="field"><input id="nAmt" class="amount-input num" inputmode="decimal" placeholder="0,00" value="${e.amount || ''}"></div>
       <div class="field-row">
         <div class="field"><label>Source</label><input id="nSrc" list="srcList" value="${esc(e.source)}"><datalist id="srcList">${['Salary', 'Advance', 'Bonus', 'Side job', 'Gift', 'Refund', 'Other'].map((s) => `<option value="${s}">`).join('')}</datalist></div>
@@ -660,24 +686,39 @@
     });
   }
 
-  function openOnboarding() {
+  function openOnboarding(keep) {
     const s = state.settings;
+    const k = keep || {};
+    const usd = s.currency === 'USD';
     openSheet(`<h3>Set up</h3>
-      <div class="field"><label>Pay day (day of month salary arrives)</label><input id="oPay" inputmode="numeric" value="${s.payDay}"></div>
-      <div class="field"><label>Gross monthly salary (bruto), € <span class="muted">optional</span></label><input id="oGross" inputmode="decimal" value="${s.salary.gross || ''}"><div class="hint" id="oNet"></div></div>
+      <div class="field"><label>Currency</label><select id="oCur"><option value="EUR" ${usd ? '' : 'selected'}>Euro (€), Latvia</option><option value="USD" ${usd ? 'selected' : ''}>US dollar ($)</option></select></div>
+      <div class="field"><label>Pay day (day of month salary arrives)</label><input id="oPay" inputmode="numeric" value="${k.pay || s.payDay}"></div>
+      ${usd
+        ? `<div class="field"><label>Expected take-home pay per month, ${SYM} <span class="muted">optional</span></label><input id="oNetIn" inputmode="decimal" value="${k.net || s.expectedNet || ''}"></div>`
+        : `<div class="field"><label>Gross monthly salary (bruto), ${SYM} <span class="muted">optional</span></label><input id="oGross" inputmode="decimal" value="${k.gross || s.salary.gross || ''}"><div class="hint" id="oNet"></div></div>`}
       <div class="field-row">
-        <div class="field"><label>Save per month, €</label><input id="oSave" inputmode="decimal" value="${s.monthlySaving}"></div>
-        <div class="field"><label>Savings goal, €</label><input id="oGoal" inputmode="decimal" value="${s.goal}"></div>
+        <div class="field"><label>Save per month, ${SYM}</label><input id="oSave" inputmode="decimal" value="${k.save ?? s.monthlySaving}"></div>
+        <div class="field"><label>Savings goal, ${SYM}</label><input id="oGoal" inputmode="decimal" value="${k.goal ?? s.goal}"></div>
       </div>
-      <div class="field"><label>Already saved, €</label><input id="oStart" inputmode="decimal" value="${s.startingSaved || 0}"></div>
-      <button class="btn primary block" id="oGo">Start budgeting</button>`, (b) => {
-      const showNet = () => { const g = L.num($('#oGross', b).value); $('#oNet', b).textContent = g ? 'Net after 2026 taxes: ' + money(L.salaryNet(g, s.salary).net) : ''; };
-      $('#oGross', b).oninput = showNet; showNet();
+      <div class="field"><label>Already saved, ${SYM}</label><input id="oStart" inputmode="decimal" value="${k.start ?? (s.startingSaved || 0)}"></div>
+      <button class="btn primary block" id="oGo">Start budgeting</button>
+      <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="oRestore">I already used Budžets: restore my backup</button></div>`, (b) => {
+      const read = () => ({ pay: $('#oPay', b).value, gross: $('#oGross', b) ? $('#oGross', b).value : '', net: $('#oNetIn', b) ? $('#oNetIn', b).value : '', save: $('#oSave', b).value, goal: $('#oGoal', b).value, start: $('#oStart', b).value });
+      $('#oCur', b).onchange = (e) => { s.currency = e.target.value; setCurrency(); save(); openOnboarding(read()); };
+      $('#oRestore', b).onclick = () => openRestore();
+      if (!usd) {
+        const showNet = () => { const g = L.num($('#oGross', b).value); $('#oNet', b).textContent = g ? 'Net after 2026 taxes: ' + money(L.salaryNet(g, s.salary).net) : ''; };
+        $('#oGross', b).oninput = showNet; showNet();
+      }
       $('#oGo', b).onclick = () => {
         s.payDay = Math.min(31, Math.max(1, parseInt($('#oPay', b).value, 10) || 1));
-        s.salary.gross = L.num($('#oGross', b).value);
-        if (s.salary.gross) { s.expectedNet = L.salaryNet(s.salary.gross, s.salary).net; s.useExpected = true; }
+        if (usd) { s.expectedNet = L.num($('#oNetIn', b).value); s.useExpected = s.expectedNet > 0; }
+        else {
+          s.salary.gross = L.num($('#oGross', b).value);
+          if (s.salary.gross) { s.expectedNet = L.salaryNet(s.salary.gross, s.salary).net; s.useExpected = true; }
+        }
         s.monthlySaving = L.num($('#oSave', b).value); s.goal = L.num($('#oGoal', b).value); s.startingSaved = L.num($('#oStart', b).value);
+        s.backup.id = s.backup.id || uid() + uid();
         s.startDate = today; s.statsFrom = today; save(); closeSheet(); render(); toast('All set');
       };
     });
@@ -686,43 +727,86 @@
   function openSettings() {
     const s = state.settings, bk = s.bank;
     const connected = !!bk.sessionId;
+    const plaidMode = bk.provider === 'plaid';
+    const label = bankLabel();
+    const lastBk = bkmeta.lastOkMs ? `${dShort(L.todayStr(new Date(bkmeta.lastOkMs)))} ${new Date(bkmeta.lastOkMs).toTimeString().slice(0, 5)}` : 'never';
     openSheet(`<h3>Settings</h3>
       <div class="field"><label>Pay day</label><input id="stPay" inputmode="numeric" value="${s.payDay}"><div class="hint">Budget months run from this day to the day before the next pay day.</div></div>
       <div class="field"><label>Budget start date</label><input id="stStart" type="date" value="${s.startDate || today}"><div class="hint">Months before this are ignored.</div></div>
       <div class="field"><label>Statistics start date</label><input id="stStats" type="date" value="${s.statsFrom || s.startDate || today}"><div class="hint">Days before this don't count in any graph or average.</div></div>
-      <div class="field"><label>Opening carry, € (negative = debt to make up)</label><input id="stCarry" inputmode="decimal" value="${s.openingCarry || 0}"></div>
+      <div class="field"><label>Opening carry, ${SYM} (negative = debt to make up)</label><input id="stCarry" inputmode="decimal" value="${s.openingCarry || 0}"></div>
+      <div class="field"><label>Currency</label><select id="stCur"><option value="EUR" ${s.currency === 'USD' ? '' : 'selected'}>Euro (€)</option><option value="USD" ${s.currency === 'USD' ? 'selected' : ''}>US dollar ($)</option></select></div>
 
-      <h3 style="margin-top:22px">SEB bank sync</h3>
-      <div class="small muted" style="margin-bottom:10px">${connected ? `Connected · ${bk.accounts.length} account(s) · last sync ${bk.lastSync ? dShort(bk.lastSync.slice(0, 10)) + ' ' + bk.lastSync.slice(11, 16) : 'never'}${bk.validUntil ? ' · consent until ' + dShort(bk.validUntil.slice(0, 10)) : ''}` : 'Not connected. See README for the 10 minute setup.'}</div>
-      <div class="field"><label>Bridge URL (your Cloudflare Worker)</label><input id="bkUrl" value="${esc(bk.workerUrl)}" placeholder="https://budget-bridge.yourname.workers.dev"></div>
+      <h3 style="margin-top:22px">Your bridge</h3>
+      <div class="small muted" style="margin-bottom:10px">Your own free Cloudflare Worker. It stores your encrypted backup and talks to your bank. See FRIENDS_SETUP.md.</div>
+      <div class="field"><label>Bridge URL</label><input id="bkUrl" value="${esc(bk.workerUrl)}" placeholder="https://budget-bridge.yourname.workers.dev" autocapitalize="none" autocorrect="off"></div>
       <div class="field"><label>Bridge password</label><input id="bkTok" type="password" value="${esc(bk.token)}"></div>
+
+      <h3 style="margin-top:22px">Encrypted backup</h3>
+      <div class="small ${bkmeta.error || bkmeta.conflict ? 'bad' : 'muted'}" style="margin-bottom:10px">${backupReady()
+        ? (bkmeta.conflict ? 'Paused: a backup from another install already exists. Restore it, or replace it with this phone\'s data (buttons below).' : `On · last backup ${lastBk} · up to 3 a day, only when something changed${bkmeta.error ? ' · last error: ' + esc(bkmeta.error) : ''}`)
+        : 'Off. Set the bridge above and a passphrase below. Everything is encrypted on this phone before upload; nobody else can read it, and a lost passphrase cannot be recovered.'}</div>
+      <div class="field"><label>Backup passphrase (8+ characters)</label><input id="bpPass" type="password" value="${esc(s.backup.pass)}" autocomplete="off"></div>
+      <div class="actions"><button class="btn primary" id="bpNow">${backupReady() ? 'Back up now' : 'Turn on backup'}</button><button class="btn" id="bpRestore">Restore latest</button></div>
+      ${bkmeta.conflict ? '<div class="actions"><button class="btn danger" id="bpReplace">Replace the old backup with this phone</button></div>' : ''}
+      <div class="actions"><button class="btn ghost" id="bpCode">Copy recovery code</button></div>
+      <div class="hint">The recovery code plus your passphrase brings everything back on a new phone or after deleting the app. Keep both in your password manager.</div>
+
+      <h3 style="margin-top:22px">Bank sync</h3>
+      <div class="field"><label>Bank</label><select id="bkProv"><option value="eb" ${plaidMode ? '' : 'selected'}>SEB (Latvia)</option><option value="plaid" ${plaidMode ? 'selected' : ''}>America First Credit Union (USA)</option></select></div>
+      <div class="small muted" style="margin-bottom:10px">${connected ? `Connected · ${bk.accounts.length} account(s) · last sync ${bk.lastSync ? dShort(bk.lastSync.slice(0, 10)) + ' ' + bk.lastSync.slice(11, 16) : 'never'}${bk.validUntil ? ' · consent until ' + dShort(bk.validUntil.slice(0, 10)) : ''}` : bk.pendingState ? 'Waiting for the bank login to finish…' : 'Not connected. See FRIENDS_SETUP.md.'}</div>
       <div class="toggle"><span>Import incoming payments as income</span><input type="checkbox" id="bkInc" ${bk.importIncome ? 'checked' : ''}></div>
       <div class="field"><label>Ignore transactions containing (comma separated)</label><input id="bkIgn" value="${esc(bk.ignore)}" placeholder="own transfer, savings, your name"></div>
-      <div class="actions"><button class="btn primary" id="bkConnect">${connected ? 'Reconnect SEB' : 'Connect SEB'}</button>${connected ? '<button class="btn" id="bkSync">Sync now</button>' : ''}</div>
+      <div class="actions"><button class="btn primary" id="bkConnect">${connected ? 'Reconnect ' + label : 'Connect ' + label}</button>${connected ? '<button class="btn" id="bkSync">Sync now</button>' : ''}${bk.pendingState ? '<button class="btn" id="bkCheck">I finished, check now</button>' : ''}</div>
 
       ${liveSettingsHtml()}
       <h3 style="margin-top:22px">Data</h3>
-      <div class="actions"><button class="btn" id="dExport">Export backup</button><button class="btn" id="dImport">Import backup</button></div>
+      <div class="actions"><button class="btn" id="dExport">Export backup file</button><button class="btn" id="dImport">Import backup file</button></div>
       <input type="file" id="dFile" accept="application/json" hidden>
       <div class="actions"><button class="btn ghost" id="dUpdate">Check for update</button><button class="btn danger" id="dReset">Erase all</button></div>
-      <p class="small muted" style="text-align:center;margin-top:16px">Version ${esc(window.APP_VERSION || 'dev')} · data stored on this phone only</p>`, (b) => {
+      <p class="small muted" style="text-align:center;margin-top:16px">Version ${esc(window.APP_VERSION || 'dev')} · data stored on this device${backupReady() ? ' + your encrypted backup' : ''}</p>`, (b) => {
+      const readBridge = () => { bk.workerUrl = $('#bkUrl', b).value.trim().replace(/\/+$/, ''); bk.token = $('#bkTok', b).value.trim(); s.backup.pass = $('#bpPass', b).value; save(); };
       $('#stPay', b).onchange = (e) => { s.payDay = Math.min(31, Math.max(1, parseInt(e.target.value, 10) || 1)); save(); render(); };
       $('#stStart', b).onchange = (e) => { s.startDate = e.target.value || today; save(); render(); };
       $('#stStats', b).onchange = (e) => { s.statsFrom = e.target.value || s.startDate; save(); render(); };
       $('#stCarry', b).onchange = (e) => { s.openingCarry = L.num(e.target.value); save(); render(); };
-      $('#bkUrl', b).onchange = (e) => { bk.workerUrl = e.target.value.trim().replace(/\/+$/, ''); save(); };
-      $('#bkTok', b).onchange = (e) => { bk.token = e.target.value.trim(); save(); };
+      $('#stCur', b).onchange = (e) => { s.currency = e.target.value; setCurrency(); save(); render(); openSettings(); };
+      $('#bkUrl', b).onchange = readBridge; $('#bkTok', b).onchange = readBridge;
+      $('#bpPass', b).onchange = () => { readBridge(); setTimeout(() => runBackup(false), 200); };
+      $('#bpNow', b).onclick = async () => {
+        readBridge();
+        if (!backupReady()) return toast('Fill in bridge URL, bridge password and a passphrase of 8+ characters', 5000);
+        toast('Backing up…'); await runBackup(true);
+        toast(bkmeta.conflict ? 'A backup from another install exists: restore it or replace it' : bkmeta.error ? 'Backup failed: ' + bkmeta.error : 'Backed up', 5000); openSettings();
+      };
+      $('#bpRestore', b).onclick = () => { readBridge(); openRestore({ workerUrl: bk.workerUrl, token: bk.token, pass: s.backup.pass }); };
+      const rp = $('#bpReplace', b);
+      if (rp) rp.onclick = async () => { if (!confirm('Replace the existing backup with the data on this phone?')) return; await runBackup(true, true); toast(bkmeta.error ? 'Backup failed: ' + bkmeta.error : 'Backup replaced'); openSettings(); };
+      $('#bpCode', b).onclick = async () => {
+        readBridge();
+        if (!bk.workerUrl || !bk.token) return toast('Set the bridge URL and password first');
+        const code = BB.makeRecoveryCode(bk.workerUrl, bk.token);
+        try { await navigator.clipboard.writeText(code); toast('Recovery code copied. Save it with your passphrase.', 4000); }
+        catch (e) { prompt('Copy this recovery code and keep it safe:', code); }
+      };
+      $('#bkProv', b).onchange = (e) => {
+        bk.provider = e.target.value;
+        if (bk.provider === 'plaid') { bk.bankName = 'America First CU'; bk.country = 'US'; } else { bk.bankName = 'SEB'; bk.country = 'LV'; }
+        bk.sessionId = ''; bk.accounts = []; bk.validUntil = ''; bk.lastSync = ''; bk.pendingState = '';
+        save(); render(); openSettings();
+      };
       $('#bkInc', b).onchange = (e) => { bk.importIncome = e.target.checked; save(); };
       $('#bkIgn', b).onchange = (e) => { bk.ignore = e.target.value; save(); };
-      $('#bkConnect', b).onclick = () => { bk.workerUrl = $('#bkUrl', b).value.trim().replace(/\/+$/, ''); bk.token = $('#bkTok', b).value.trim(); save(); bankConnect(); };
+      $('#bkConnect', b).onclick = () => { readBridge(); bankConnect(); };
       if (connected) $('#bkSync', b).onclick = () => { closeSheet(); bankSync(true); };
+      const ck = $('#bkCheck', b); if (ck) ck.onclick = async () => { const ok = await checkClaim(); toast(ok ? 'Connected' : 'Not finished yet'); if (ok) openSettings(); };
       bindLiveSettings(b);
       $('#dExport', b).onclick = exportData;
       $('#dImport', b).onclick = () => $('#dFile', b).click();
       $('#dFile', b).onchange = (e) => importData(e.target.files[0]);
       $('#dUpdate', b).onclick = checkUpdate;
       $('#dReset', b).onclick = () => {
-        if (prompt('Type ERASE to delete all budget data on this phone') === 'ERASE') { localStorage.removeItem(STORE_KEY); state = load(); closeSheet(); render(); }
+        if (prompt('Type ERASE to delete all budget data on this device (your cloud backup is kept)') === 'ERASE') { localStorage.removeItem(STORE_KEY); localStorage.removeItem(META_KEY); bkmeta = {}; state = load(); setCurrency(); closeSheet(); render(); setTimeout(openOnboarding, 300); }
       };
     });
   }
@@ -735,6 +819,10 @@
       return toast(where.startsWith('ERROR') ? 'Backup failed: ' + where.slice(7) : 'Saved to ' + where, 4000);
     }
     const blob = new Blob([JSON.stringify(state, null, 1)], { type: 'application/json' });
+    try {
+      const file = new File([blob], name, { type: 'application/json' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) { navigator.share({ files: [file], title: name }).catch(() => {}); return; }
+    } catch (e) {}
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = name; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
@@ -753,6 +841,82 @@
     r.readAsText(file);
   }
 
+  // ---------------- encrypted cloud backup (your Worker, one slot, at most 3 a day) ----------------
+  const backupReady = () => { const bk = state.settings.bank; return !!(bk.workerUrl && bk.token && state.settings.backup.pass && state.settings.backup.pass.length >= 8 && state.settings.startDate); };
+  let backingUp = false;
+  async function runBackup(force, override) {
+    if (backingUp || !BB || !backupReady() || !navigator.onLine) return;
+    if (bkmeta.conflict && !override) return; // paused until the user restores or replaces the other backup
+    const now = Date.now(), day = L.todayStr();
+    if (!BB.shouldBackup(bkmeta, now, day, force)) return;
+    backingUp = true; refreshStatus();
+    try {
+      const cfg = state.settings.backup;
+      if (!cfg.id) { cfg.id = uid() + uid(); save(); }
+      if (!bkmeta.lastOkMs && !override) {
+        // First upload from this install: never silently overwrite a backup that belongs to an earlier install.
+        const info = await bridge('/backup/info', {});
+        if (info.exists && info.id !== cfg.id) { bkmeta.conflict = info.savedAt || 1; saveMeta(); return; }
+      }
+      const seq = saveSeq;
+      const snap = JSON.parse(JSON.stringify(state));
+      const blob = await BB.encrypt({ app: 'budzets', savedAt: new Date().toISOString(), state: snap }, cfg.pass);
+      await bridge('/backup/put', { blob, id: cfg.id });
+      bkmeta = BB.afterBackup(bkmeta, now, day);
+      delete bkmeta.conflict;
+      if (saveSeq !== seq) bkmeta.dirty = true; // changed while uploading: back up again next time
+      saveMeta();
+    } catch (e) { bkmeta.error = e.message; saveMeta(); }
+    finally { backingUp = false; refreshStatus(); }
+  }
+
+  async function restoreFromBackup(workerUrl, token, pass) {
+    const res = await fetch(workerUrl + '/backup/get', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token }, body: '{}' });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 404) throw new Error('No backup found on that bridge');
+    if (!res.ok) throw new Error(data.error || ('Bridge error ' + res.status));
+    const payload = await BB.decrypt(data.blob, pass);
+    if (!payload || !payload.state || !Array.isArray(payload.state.expenses)) throw new Error('Backup is not a budget backup');
+    state = migrate(payload.state);
+    state.settings.bank.workerUrl = workerUrl; state.settings.bank.token = token; state.settings.backup.pass = pass;
+    if (data.id) state.settings.backup.id = data.id;
+    setCurrency(); save();
+    bkmeta = { dirty: false, lastOkMs: Date.now(), day: L.todayStr(), count: 1 }; saveMeta(); // just restored: nothing new to upload
+    return payload;
+  }
+
+  function openRestore(pre) {
+    const p = pre || {};
+    openSheet(`<h3>Restore from backup</h3>
+      <div class="small muted" style="margin-bottom:10px">Use this after reinstalling or on a new phone. It replaces the data on this device with your latest encrypted backup.</div>
+      ${p.workerUrl ? '' : `<div class="field"><label>Recovery code</label><input id="rcCode" placeholder="budzets:..." autocapitalize="none" autocorrect="off"><div class="hint">From Settings > Encrypted backup > Copy recovery code on your old install. Or fill in the two fields below instead.</div></div>
+      <div class="field"><label>Bridge URL (if you have no code)</label><input id="rcUrl" placeholder="https://budget-bridge.yourname.workers.dev" autocapitalize="none" autocorrect="off"></div>
+      <div class="field"><label>Bridge password (if you have no code)</label><input id="rcTok" type="password"></div>`}
+      <div class="field"><label>Backup passphrase</label><input id="rcPass" type="password" value="${esc(p.pass || '')}" autocomplete="off"></div>
+      <button class="btn primary block" id="rcGo">Restore</button>
+      <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="rcBack">Cancel</button></div>`, (b) => {
+      $('#rcBack', b).onclick = () => { closeSheet(); if (needsSetup()) setTimeout(openOnboarding, 100); };
+      $('#rcGo', b).onclick = async () => {
+        try {
+          let url = p.workerUrl, tok = p.token;
+          if (!url) {
+            const code = $('#rcCode', b).value.trim();
+            if (code) ({ workerUrl: url, token: tok } = BB.parseRecoveryCode(code));
+            else { url = $('#rcUrl', b).value.trim().replace(/\/+$/, ''); tok = $('#rcTok', b).value.trim(); }
+          }
+          if (!url || !tok) throw new Error('Enter the recovery code (or the bridge URL and password)');
+          const pass = $('#rcPass', b).value;
+          if (!pass) throw new Error('Enter your passphrase');
+          if (state.expenses.length && !confirm('This replaces the data currently on this device. Continue?')) return;
+          toast('Restoring…');
+          const payload = await restoreFromBackup(url, tok, pass);
+          closeSheet(); render(); toast(`Restored backup from ${dShort(String(payload.savedAt || today).slice(0, 10))} (${state.expenses.length} expenses)`, 5000);
+          checkClaim(); autoSync();
+        } catch (e) { toast(e.message, 5000); }
+      };
+    });
+  }
+
   // ---------------- bank sync (via your Cloudflare Worker + Enable Banking) ----------------
   async function bridge(path, body) {
     const bk = state.settings.bank;
@@ -766,15 +930,90 @@
     return data;
   }
 
+  // On iPhone the browser that shows the bank login is not the home screen app, so the login finishes on your
+  // Worker's own page and the app collects the result. Elsewhere the old redirect-back flow still works.
+  const useWorkerCallback = () => state.settings.bank.provider === 'plaid' || isIOS || isStandalone();
+
   async function bankConnect() {
     const bk = state.settings.bank;
     try {
-      const st = uid();
-      bk.pendingState = st; save();
-      const redirect = location.origin + location.pathname;
-      const r = await bridge('/start', { redirect_url: redirect, state: st, bank: bk.bankName, country: bk.country });
-      location.href = r.url; // SEB login (Smart-ID), then back here with ?code=
+      if (!bk.workerUrl || !bk.token) throw new Error('Set the bridge URL and password first');
+      let url;
+      if (bk.provider === 'plaid') {
+        const r = await bridge('/plaid/start', {});
+        url = r.url; bk.pendingState = 'plaid'; bk.pendingMode = 'worker';
+      } else if (useWorkerCallback()) {
+        const st = uid() + uid();
+        const r = await bridge('/start', { redirect_url: bk.workerUrl + '/callback', state: st, bank: bk.bankName, country: bk.country });
+        url = r.url; bk.pendingState = st; bk.pendingMode = 'worker';
+      } else {
+        const st = uid();
+        bk.pendingState = st; bk.pendingMode = 'redirect'; save();
+        const r = await bridge('/start', { redirect_url: location.origin + location.pathname, state: st, bank: bk.bankName, country: bk.country });
+        location.href = r.url; // bank login (Smart-ID), then back here with ?code=
+        return;
+      }
+      bk.pendingSince = Date.now(); save();
+      // A real link the user taps: browsers only open the bank login reliably from a tap.
+      openSheet(`<h3>Connect ${esc(bankLabel())}</h3>
+        <p class="small muted">Tap the button, log in at your bank, then come back to Budžets. It picks up the connection by itself.</p>
+        <a class="btn primary block" href="${esc(url)}" target="_blank" rel="noopener" id="bkOpen">Open bank login</a>
+        <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="bkDone">I finished, check now</button></div>`, (bd) => {
+        $('#bkDone', bd).onclick = async () => { const ok = await checkClaim(); toast(ok ? 'Connected' : 'Not finished yet'); if (ok) closeSheet(); };
+      });
+      startClaimPolling();
     } catch (e) { toast(e.message, 5000); }
+  }
+
+  function applySession(r) {
+    const bk = state.settings.bank;
+    if (bk.provider === 'plaid') {
+      const accs = (r.accounts || []).filter((a) => a.type === 'depository');
+      const checking = accs.filter((a) => a.subtype === 'checking');
+      bk.accounts = (checking.length ? checking : accs).map((a) => ({ uid: a.uid, iban: a.mask ? '••' + a.mask : '', name: a.name || '' }));
+      bk.sessionId = 'plaid'; bk.validUntil = '';
+    } else {
+      bk.sessionId = r.session_id;
+      bk.accounts = (r.accounts || []).map((a) => ({ uid: a.uid, iban: a.account_id && a.account_id.iban, name: a.name || a.product || '' }));
+      bk.validUntil = (r.access && r.access.valid_until) || '';
+    }
+    bk.pendingState = ''; bk.pendingMode = ''; save();
+    toast(`${bankLabel()} connected (${bk.accounts.length} account${bk.accounts.length === 1 ? '' : 's'})`);
+    return bankSync(true);
+  }
+
+  // Asks the Worker whether the bank login in the browser has finished.
+  let claiming = false;
+  async function checkClaim() {
+    const bk = state.settings.bank;
+    if (claiming || !bk.pendingState || bk.pendingMode !== 'worker' || !bk.workerUrl) return false;
+    claiming = true;
+    try {
+      if (bk.pendingState === 'plaid') {
+        const r = await bridge('/plaid/status', {});
+        if (!r.connected || (r.connectedAt || 0) < (bk.pendingSince || 0)) return false;
+        await applySession(r);
+      } else {
+        const r = await bridge('/claim', { state: bk.pendingState });
+        if (r.status === 'waiting') return false;
+        if (r.error) { bk.pendingState = ''; bk.pendingMode = ''; save(); toast('Bank connection failed: ' + r.error, 6000); return false; }
+        await applySession(r);
+      }
+      if ($('#bkOpen')) closeSheet();
+      return true;
+    } catch (e) { return false; }
+    finally { claiming = false; }
+  }
+  // Only while a bank login is in progress (max 15 minutes) and the app is on screen: no background cost.
+  let claimTimer = null;
+  function startClaimPolling() {
+    clearInterval(claimTimer);
+    claimTimer = setInterval(async () => {
+      const bk = state.settings.bank;
+      if (!bk.pendingState || bk.pendingMode !== 'worker' || Date.now() - (bk.pendingSince || 0) > 15 * 60e3) { clearInterval(claimTimer); return; }
+      if (document.visibilityState !== 'visible') return;
+      if (await checkClaim()) clearInterval(claimTimer);
+    }, 3000);
   }
 
   async function handleBankRedirect() {
@@ -787,12 +1026,7 @@
     if (bk.pendingState && st !== bk.pendingState) return toast('Bank connection state mismatch, try again', 5000);
     try {
       const r = await bridge('/session', { code });
-      bk.sessionId = r.session_id;
-      bk.accounts = (r.accounts || []).map((a) => ({ uid: a.uid, iban: a.account_id && a.account_id.iban, name: a.name || a.product || '' }));
-      bk.validUntil = (r.access && r.access.valid_until) || '';
-      bk.pendingState = ''; save();
-      toast(`SEB connected (${bk.accounts.length} account${bk.accounts.length === 1 ? '' : 's'})`);
-      await bankSync(true);
+      await applySession(r);
     } catch (e) { toast('Could not finish connecting: ' + e.message, 6000); }
   }
 
@@ -809,7 +1043,7 @@
       let added = 0, addedIn = 0, matched = 0;
       for (const acc of bk.accounts) {
         // present: you opened the app yourself, so the bank's 4-per-day background limit doesn't apply
-        const r = await bridge('/transactions', { account_uid: acc.uid, date_from: from, present: true });
+        const r = await bridge(bk.provider === 'plaid' ? '/plaid/transactions' : '/transactions', { account_uid: acc.uid, date_from: from, present: true });
         for (const tx of r.transactions || []) {
           const m = L.mapTransaction(tx);
           if (!m.date || m.pending || m.date < start || known.has(m.bankId)) continue;
@@ -832,7 +1066,7 @@
       syncing = false; render();
       if (manual || added || addedIn) toast(added || addedIn ? `Imported ${added} expense${added === 1 ? '' : 's'}${addedIn ? `, ${addedIn} income` : ''}${matched ? ` (${matched} already logged)` : ''}` : 'Up to date');
     } catch (e) {
-      if (/expired|session|consent|401|403/i.test(e.message)) toast('SEB access expired. Reconnect in Settings.', 6000);
+      if (/expired|session|consent|401|403/i.test(e.message)) toast(bankLabel() + ' access expired. Reconnect in Settings.', 6000);
       else if (manual) toast('Sync failed: ' + e.message, 5000);
     } finally { syncing = false; refreshStatus(); }
   }
@@ -914,6 +1148,7 @@
     if (L.todayStr() !== today) render();
     processLive(false);
     autoSync();
+    runBackup(false);
     if (!$('#sheet').hidden && $('#lvAccess')) openSettings(); // refresh access status after visiting Android settings
     else refreshStatus();
   };
@@ -958,15 +1193,21 @@
     $('#sheetBackdrop').onclick = closeSheet;
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
     // refresh numbers when the day changes or the app returns to the foreground
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (L.todayStr() !== today) render(); autoSync(); } });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') { if (L.todayStr() !== today) render(); autoSync(); checkClaim(); runBackup(false); }
+      else runBackup(false); // leaving the app: upload now if something changed and the 8 hour gap has passed
+    });
     setInterval(() => { if (L.todayStr() !== today) render(); }, 60000);
-    if (localStorage.getItem(STORE_KEY)) save(); // persist any data migration
+    { const raw = localStorage.getItem(STORE_KEY); if (raw && raw !== JSON.stringify(state)) { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } } // persist any data migration (without marking the backup dirty)
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     render();
     setupSW();
     processLive(false);
     if (liveAvailable()) { try { AB().setLiveEnabled(state.settings.liveEnabled !== false); } catch (e) {} }
     handleBankRedirect().then(autoSync);
+    if (state.settings.bank.pendingMode === 'worker') { checkClaim(); startClaimPolling(); }
+    setTimeout(() => runBackup(false), 2500);
+    setInterval(() => runBackup(false), 30 * 60e3);
     setInterval(refreshStatus, 60000); // keeps "synced x min ago" fresh; paused in the background
     if (needsSetup()) setTimeout(openOnboarding, 300);
   }

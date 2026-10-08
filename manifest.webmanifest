@@ -1,7 +1,8 @@
 {
   "name": "Budžets",
   "short_name": "Budžets",
-  "description": "Personal budget: daily allowance, savings goal, SEB sync",
+  "description": "Personal budget: daily allowance, savings goal, bank sync, encrypted backup",
+  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

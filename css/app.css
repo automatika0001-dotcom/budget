@@ -189,3 +189,12 @@ table.hist td { text-align: right; padding: 7px 4px; border-top: 1px solid var(-
 .cal .day.holiday .d { color: #6ab8f2; }
 
 .tomorrow.same b { color: var(--text); } .tomorrow.same .trend { color: var(--muted); }
+
+/* iPhone / links */
+a.btn { display: block; text-align: center; text-decoration: none; color: inherit; }
+a.btn.primary { color: var(--accent-ink); }
+.banner a { color: inherit; text-decoration: underline; margin-left: 6px; }
+@supports (-webkit-touch-callout: none) {
+  /* iOS Safari zooms the page when an input is smaller than 16px */
+  input, select, textarea { font-size: 16px; }
+}
