@@ -33,4 +33,22 @@ const t = I.byIndustry(ex, '2026-10-01', '2026-10-31');
 assert.deepStrictEqual(t.map((x) => [x.id, x.total]), [['transport', 6.3], ['convenience', 3], ['other', 30]]);
 const c = I.unclassifiedCsv(ex);
 assert.strictEqual(c.count, 1); assert.ok(c.csv.includes('2026-10-02,30.00,KAC-Pragas,"card, ""quoted""",yes'));
+assert.strictEqual(I.classify('MEGOveikals Dzirnavu', ''), 'groceries');
+assert.strictEqual(I.classify('NARVESENS 12', ''), 'convenience');
+assert.strictEqual(I.brandKey('JAUNA VECRIGA SIA'), 'VECRIGA');
+// fuzzy brand keys and the user's own classification
+assert.strictEqual(I.brandKey('MEGO RIGA BRUNINIEKU 2'), 'MEGO');
+assert.strictEqual(I.brandKey('PAYPAL *STEAM GAMES'), 'STEAM');
+assert.strictEqual(I.brandKey('N14086 aptieka "Roja"'), 'APTIEKA');
+assert.strictEqual(I.brandKey('SIA AMBER DISTRIBUTIO'), 'AMBER');
+assert.ok(I.keysMatch('MEGO', 'MEGOVEIKALS') && I.keysMatch('MILLENIUMS', 'MILLENNIUMS') && !I.keysMatch('KAC', 'KAFE') && !I.keysMatch('MEGO', 'MAXIMA'));
+const cfg = { custom: [{ id: 'c_kiosk', name: 'Snacks', color: '#123456' }], map: { KAC: 'c_kiosk', AMBER: 'convenience' } };
+assert.strictEqual(I.classify('KAC-Pragas', '', cfg), 'c_kiosk');
+assert.strictEqual(I.classify('KACPRAGAS NEW', '', cfg), 'c_kiosk'); // fuzzy: same brand, different spelling
+assert.strictEqual(I.classify('SIA AMBER DISTRIBUTIO 2', '', cfg), 'convenience');
+assert.strictEqual(I.classify('MEGOveikals Dzirnavu', '', { custom: [], map: { MEGO: 'eating' } }), 'eating'); // user rule wins over built-in
+assert.strictEqual(I.classify('KAC-Pragas', '', { custom: [], map: { KAC: 'deleted_custom' } }), null); // rule to a removed industry is ignored
+const g = I.unclassifiedGroups([{ date: 'x', amount: 2, place: 'MILLENIUMS SIA' }, { date: 'x', amount: 3, place: 'Milleniums' }, { date: 'x', amount: 9, place: 'Roja' }, { date: 'x', amount: 1, place: 'RIMI' }]);
+assert.deepStrictEqual(g.map((x) => [x.key, x.count, x.total]), [['ROJA', 1, 9], ['MILLENIUMS', 2, 5]]);
+assert.ok(I.byIndustry([{ date: '2026-10-01', amount: 5, place: 'KAC-Pragas' }], '2026-10-01', '2026-10-31', cfg)[0].name === 'Snacks');
 console.log(`ok  ${n} statement merchants classified; ${I.INDUSTRIES.length} industries`);

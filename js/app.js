@@ -16,7 +16,8 @@
       backup: { pass: '', id: '', codeSaved: false, hasPassword: false },
       account: { uid: '', secret: '' }, country: '',
       us: { state: '', filing: 'single', dependents: 0, gross: 0, per: 'year', pretaxMonth: 0 },
-      aliases: {}
+      aliases: {},
+      industry: { custom: [], map: {} }
     },
     expenses: [], incomes: [], adjustments: [], ignoredBankIds: [], liveSeen: [], liveLog: []
   });
@@ -544,7 +545,7 @@
     const palette = ['#c8f26a', '#5fd3a0', '#6ab8f2', '#b48cf2', '#f2a65f', '#f26a9a', '#f5c35b', '#7b8a84'];
     // SEB users: spending by industry, from the built-in shop classification
     const sebUser = state.settings.bank.provider === 'eb' && (!!state.settings.bank.sessionId || state.expenses.some((e) => e.bankId));
-    const inds = sebUser ? window.Industry.byIndustry(state.expenses, from > ledger.statsFrom ? from : ledger.statsFrom, to) : [];
+    const inds = sebUser ? window.Industry.byIndustry(state.expenses, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.industry) : [];
     const indTotal = inds.reduce((a, x) => a + x.total, 0);
 
     v.innerHTML = `
@@ -559,9 +560,9 @@
         <div class="list" style="margin-top:10px">${places.map((p, i) => `<div class="row"><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${palette[i % 8]};margin-right:8px"></i>${esc(p.name)}</span><span class="num">${money(p.total)} <span class="muted small">${((p.total / placeTotal) * 100).toFixed(0)}%</span></span></div>`).join('')}</div>`
         : '<div class="empty">No expenses in this range</div>'}
       </div>
-      ${sebUser ? `<div class="card"><div class="card-head"><h2>Spending by industry</h2><button class="btn small-btn" id="indExport">Export unclassified</button></div>
+      ${sebUser ? `<div class="card"><div class="card-head"><h2>Spending by industry</h2><div style="display:flex;gap:6px"><button class="btn small-btn" id="indSort">Sort shops</button><button class="btn small-btn" id="indExport">Export</button></div></div>
         ${inds.length ? `<div class="chart-box pie"><canvas id="c4"></canvas></div>
-        <div class="list" style="margin-top:10px">${inds.map((x) => `<div class="row"><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${x.color};margin-right:8px"></i>${esc(x.name)}</span><span class="num">${money(x.total)} <span class="muted small">${((x.total / indTotal) * 100).toFixed(0)}%</span></span></div>`).join('')}</div>`
+        <div class="list" style="margin-top:10px">${inds.map((x) => `<div class="row ${x.id === 'other' ? 'tappable' : ''}" data-ind="${x.id}"><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${x.color};margin-right:8px"></i>${esc(x.name)}${x.id === 'other' ? ' <span class="tag">sort ›</span>' : ''}</span><span class="num">${money(x.total)} <span class="muted small">${((x.total / indTotal) * 100).toFixed(0)}%</span></span></div>`).join('')}</div>`
         : '<div class="empty">No expenses in this range</div>'}
       </div>` : ''}
       <div class="card"><h2>Daily budget: over / under</h2>
@@ -592,10 +593,12 @@
 
     if (sebUser) {
       $('#indExport').onclick = exportUnclassified;
+      $('#indSort').onclick = () => openClassify();
+      const ur = $('.row[data-ind="other"]', v); if (ur) ur.onclick = () => openClassify();
       if (inds.length) ui.charts.c4 = new Chart($('#c4'), {
         type: 'doughnut',
         data: { labels: inds.map((x) => x.name), datasets: [{ data: inds.map((x) => x.total), backgroundColor: inds.map((x) => x.color), borderColor: css('--surface'), borderWidth: 3 }] },
-        options: { responsive: true, maintainAspectRatio: false, animation: false, cutout: '62%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${money(c.parsed)}` } } } }
+        options: { responsive: true, maintainAspectRatio: false, animation: false, cutout: '62%', onClick: (ev, els) => { if (els.length && inds[els[0].index].id === 'other') openClassify(); }, plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${money(c.parsed)}` } } } }
       });
     }
 
@@ -1090,6 +1093,94 @@
     a.href = URL.createObjectURL(blob); a.download = name; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
+  // ---------------- sort shops into industries (drag and drop) ----------------
+  const IND_COLORS = ['#ff9f7a', '#7ad1ff', '#ffd27a', '#a3f7a1', '#e59cff', '#ff7ab8', '#9db4ff', '#f2e36a', '#7affd8', '#ffb37a'];
+  let clsOpen = '';
+  function openClassify() {
+    const cfg = state.settings.industry;
+    const I = window.Industry;
+    const groups = I.unclassifiedGroups(state.expenses, cfg);
+    const inds = I.allIndustries(cfg).filter((x) => x.id !== 'other');
+    const mine = (id) => Object.keys(cfg.map).filter((k) => cfg.map[k] === id);
+    const scroller = $('#sheet'), keep = scroller.hidden ? 0 : scroller.scrollTop;
+    openSheet(`<h3>Sort shops</h3>
+      <p class="small muted" style="margin-top:-6px">Drag a shop onto an industry (or tap it). Tap an industry to see what you put there and remove mistakes. Similar names (MEGO, MEGOveikals) are matched automatically.</p>
+      <div class="cls-shops" id="clsShops">${groups.length ? groups.map((g) => `<div class="shop-chip" data-key="${esc(g.key)}"><b>${esc(g.name)}</b><span>${g.count}× · ${money(g.total)}</span></div>`).join('') : '<div class="empty" style="padding:12px">Every shop is sorted 🎉</div>'}</div>
+      <div class="small muted" style="margin:14px 0 8px">Industries</div>
+      <div class="ind-grid">${inds.map((x) => {
+        const m = mine(x.id);
+        return `<div class="ind-drop ${clsOpen === x.id ? 'open' : ''}" data-ind="${x.id}" style="--c:${x.color}"><div class="ind-name"><i></i>${esc(x.name)}${m.length ? ` <span class="muted small">+${m.length}</span>` : ''}</div>
+          ${clsOpen === x.id ? `<div class="ind-mine">${m.length ? m.map((k) => `<span class="mine-chip">${esc(k)}<button data-unset="${esc(k)}" aria-label="Remove">×</button></span>`).join('') : '<span class="small muted">Nothing added by you yet</span>'}</div>` : ''}
+        </div>`;
+      }).join('')}</div>
+      <div class="actions" style="margin-top:12px" id="newIndRow"><button class="btn ghost block" id="newInd">+ New industry</button></div>`, (b) => {
+      scroller.scrollTop = keep;
+      $('#newInd', b).onclick = () => {
+        $('#newIndRow', b).innerHTML = '<input id="newIndName" placeholder="Name, e.g. Snacks" style="flex:1;background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:12px"><button class="btn primary" id="newIndAdd">Add</button>';
+        const inp = $('#newIndName', b); inp.focus();
+        const add = () => {
+          const name = inp.value.trim(); if (!name) return;
+          cfg.custom.push({ id: 'c_' + uid(), name: name.slice(0, 30), color: IND_COLORS[cfg.custom.length % IND_COLORS.length] });
+          save(); openClassify(); toast(name + ' added');
+        };
+        $('#newIndAdd', b).onclick = add; inp.onkeydown = (e) => { if (e.key === 'Enter') add(); };
+      };
+      $$('.ind-drop', b).forEach((z) => (z.onclick = (e) => {
+        if (e.target.dataset.unset) return;
+        clsOpen = clsOpen === z.dataset.ind ? '' : z.dataset.ind; openClassify();
+      }));
+      $$('[data-unset]', b).forEach((x) => (x.onclick = (e) => {
+        e.stopPropagation(); delete cfg.map[x.dataset.unset]; save(); render(); openClassify(); toast(x.dataset.unset + ' is unsorted again');
+      }));
+      const assign = (key, ind) => {
+        cfg.map[key] = ind; save(); render();
+        const nm = inds.find((x) => x.id === ind).name;
+        openClassify(); toast(key + ' → ' + nm);
+      };
+      $$('.shop-chip', b).forEach((chip) => enableDrag(chip, b, assign, inds));
+    });
+  }
+  // Touch drag: hold and move a shop chip; drop it on an industry. A quick tap opens a picker instead.
+  function enableDrag(chip, root, assign, inds) {
+    let ghost = null, start = null, over = null, timer = null;
+    const zoneAt = (x, y) => { const el = document.elementFromPoint(x, y); return el && el.closest('.ind-drop'); };
+    const end = () => { clearInterval(timer); if (ghost) ghost.remove(); ghost = null; if (over) over.classList.remove('hot'); over = null; chip.classList.remove('lifted'); };
+    chip.addEventListener('pointerdown', (e) => {
+      start = { x: e.clientX, y: e.clientY, id: e.pointerId };
+      chip.setPointerCapture(e.pointerId);
+    });
+    chip.addEventListener('pointermove', (e) => {
+      if (!start) return;
+      if (!ghost) {
+        if (Math.hypot(e.clientX - start.x, e.clientY - start.y) < 8) return;
+        ghost = chip.cloneNode(true); ghost.classList.add('ghost'); document.body.appendChild(ghost);
+        chip.classList.add('lifted'); if (navigator.vibrate) navigator.vibrate(12);
+        const sc = $('#sheet');
+        timer = setInterval(() => { // scroll the panel while dragging near its top or bottom edge
+          if (!ghost) return; const y = parseFloat(ghost.style.top) || 0, r = sc.getBoundingClientRect();
+          if (y > r.bottom - 90) sc.scrollTop += 14; else if (y < r.top + 70) sc.scrollTop -= 14;
+        }, 30);
+      }
+      ghost.style.left = e.clientX - 60 + 'px'; ghost.style.top = e.clientY - 24 + 'px';
+      const z = zoneAt(e.clientX, e.clientY);
+      if (z !== over) { if (over) over.classList.remove('hot'); over = z; if (over) over.classList.add('hot'); }
+    });
+    chip.addEventListener('pointerup', (e) => {
+      const wasDrag = !!ghost, target = over; start = null; end();
+      if (wasDrag && target) assign(chip.dataset.key, target.dataset.ind);
+      else if (!wasDrag) pickIndustry(chip.dataset.key, inds, assign);
+    });
+    chip.addEventListener('pointercancel', () => { start = null; end(); });
+  }
+  function pickIndustry(key, inds, assign) {
+    openSheet(`<h3>${esc(key)}</h3><p class="small muted" style="margin-top:-6px">Which industry is this shop?</p>
+      <div class="ind-pick">${inds.map((x) => `<button class="choice" data-ind="${x.id}" style="margin-top:6px"><b><i class="dot" style="background:${x.color}"></i>${esc(x.name)}</b></button>`).join('')}</div>
+      <div class="actions" style="margin-top:12px"><button class="btn ghost block" id="pkBack">Back</button></div>`, (b) => {
+      $$('.choice', b).forEach((c) => (c.onclick = () => assign(key, c.dataset.ind)));
+      $('#pkBack', b).onclick = () => openClassify();
+    });
+  }
+
   // Save a text file: Android app saves to Downloads, iPhone opens the share sheet, browsers download it.
   function saveText(name, text, mime) {
     if (window.AndroidBridge && window.AndroidBridge.saveFile) {
@@ -1106,7 +1197,7 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
   function exportUnclassified() {
-    const r = window.Industry.unclassifiedCsv(state.expenses);
+    const r = window.Industry.unclassifiedCsv(state.expenses, state.settings.industry);
     if (!r.count) return toast('Every payment is classified already');
     if (!(window.AndroidBridge && window.AndroidBridge.saveFile)) toast(`${r.count} payments from ${r.shops} unclassified shops`, 4000);
     saveText(`cbudget-unclassified-${today}.csv`, r.csv, 'text/csv');
