@@ -217,4 +217,57 @@ t('tomorrow preview: unspent today does not raise it, overspend lowers it, lefto
   ts = L.todayStatus(L.buildLedger(s1, '2026-01-02'), '2026-01-02');
   near(ts.dailyAllowance, (930 - 10) / 30, 'leftover counted the next day');
 });
+
+// ---- bank sync merge (pending -> final, duplicates, dropped pending) ----
+{
+  let i = 0; const newId = () => 'n' + (++i);
+  const tx = (id, amount, date, o = {}) => L.mapTransaction({ transaction_id: id, transaction_amount: { amount: String(amount) }, credit_debit_indicator: o.in ? 'CRDT' : 'DBIT', booking_date: date, creditor: { name: o.name || 'Walmart' }, debtor: { name: o.name || 'ACME' }, status: o.pending ? 'PDNG' : 'BOOK', pending_ref: o.ref || null });
+  const opts = { start: '2026-10-01', from: '2026-10-01', ignore: '', importIncome: true, withPending: true, newId };
+  t('pending card payment shows at once, then becomes final in place', () => {
+    const d = { expenses: [], incomes: [], ignoredBankIds: [] };
+    let r = L.applyBankTransactions(d, [tx('p1', 12.3, '2026-10-07', { pending: true })], opts);
+    assert.strictEqual(r.added, 1); assert.strictEqual(d.expenses[0].pending, true);
+    r = L.applyBankTransactions(d, [tx('p1', 12.3, '2026-10-07', { pending: true })], opts); // same again: nothing new
+    assert.strictEqual(r.added, 0); assert.strictEqual(d.expenses.length, 1);
+    r = L.applyBankTransactions(d, [tx('f1', 12.8, '2026-10-08', { ref: 'p1' })], opts); // tip added, now final
+    assert.strictEqual(d.expenses.length, 1); assert.strictEqual(r.updated, 1);
+    assert.deepStrictEqual([d.expenses[0].bankId, d.expenses[0].amount, d.expenses[0].date, d.expenses[0].pending], ['f1', 12.8, '2026-10-08', undefined]);
+  });
+  t('final and its pending in the same sync count once', () => {
+    const d = { expenses: [], incomes: [], ignoredBankIds: [] };
+    L.applyBankTransactions(d, [tx('p2', 5, '2026-10-06', { pending: true }), tx('f2', 5, '2026-10-07', { ref: 'p2' })], opts);
+    assert.strictEqual(d.expenses.length, 1); assert.strictEqual(d.expenses[0].bankId, 'f2');
+  });
+  t('pending that the bank drops (declined) disappears, edited ones stay', () => {
+    const d = { expenses: [], incomes: [], ignoredBankIds: [] };
+    L.applyBankTransactions(d, [tx('p3', 9, '2026-10-06', { pending: true }), tx('p4', 7, '2026-10-06', { pending: true })], opts);
+    d.expenses.find((e) => e.bankId === 'p4').edited = true;
+    const r = L.applyBankTransactions(d, [], opts);
+    assert.strictEqual(r.removed, 1); assert.deepStrictEqual(d.expenses.map((e) => e.bankId), ['p4']);
+  });
+  t('deleting a pending entry keeps its final version away too', () => {
+    const d = { expenses: [], incomes: [], ignoredBankIds: ['p5'] };
+    L.applyBankTransactions(d, [tx('f5', 3, '2026-10-07', { ref: 'p5' })], opts);
+    assert.strictEqual(d.expenses.length, 0); assert.ok(d.ignoredBankIds.includes('f5'));
+  });
+  t('hand-typed expense is linked, not duplicated, and never auto-removed', () => {
+    const d = { expenses: [{ id: 'm', date: '2026-10-07', amount: 20, place: 'Gas' }], incomes: [], ignoredBankIds: [] };
+    L.applyBankTransactions(d, [tx('p6', 20, '2026-10-07', { pending: true })], opts);
+    assert.strictEqual(d.expenses.length, 1); assert.strictEqual(d.expenses[0].bankId, 'p6');
+    L.applyBankTransactions(d, [], opts);
+    assert.strictEqual(d.expenses.length, 1);
+    L.applyBankTransactions(d, [tx('f6', 20, '2026-10-08', { ref: 'p6' })], opts);
+    assert.strictEqual(d.expenses.length, 1); assert.strictEqual(d.expenses[0].bankId, 'f6');
+  });
+  t('SEB mode ignores pending and imports income', () => {
+    const d = { expenses: [], incomes: [], ignoredBankIds: [] };
+    const r = L.applyBankTransactions(d, [tx('a', 4, '2026-10-07', { pending: true }), tx('b', 1500, '2026-10-05', { in: true }), tx('c', 2, '2026-09-20')], { ...opts, withPending: false });
+    assert.deepStrictEqual([r.added, r.addedIn, d.expenses.length], [0, 1, 0]);
+  });
+  t('ignore list skips transfers', () => {
+    const d = { expenses: [], incomes: [], ignoredBankIds: [] };
+    L.applyBankTransactions(d, [tx('t1', 100, '2026-10-07', { name: 'Transfer to Savings' })], { ...opts, ignore: 'savings' });
+    assert.strictEqual(d.expenses.length, 0);
+  });
+}
 console.log('tomorrow tests passed');

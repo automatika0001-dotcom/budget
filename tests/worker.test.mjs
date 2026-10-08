@@ -34,11 +34,13 @@ globalThis.fetch = async (url, init = {}) => {
   if (u.endsWith('/link/token/create')) return ok({ link_token: 'link-sandbox-123' });
   if (u.endsWith('/item/public_token/exchange')) return ok({ access_token: 'access-xyz', item_id: 'item-1' });
   if (u.endsWith('/accounts/get')) return ok({ accounts: [{ account_id: 'p-chk', name: 'Free Checking', mask: '1234', type: 'depository', subtype: 'checking' }, { account_id: 'p-sav', name: 'Savings', mask: '9999', type: 'depository', subtype: 'savings' }] });
+  if (u.endsWith('/transactions/refresh')) return ok({ request_id: 'r' });
   if (u.endsWith('/transactions/get')) {
     const all = [
       { transaction_id: 'x1', amount: 12.34, date: '2026-10-05', name: 'WALMART #123', merchant_name: 'Walmart', iso_currency_code: 'USD', pending: false },
       { transaction_id: 'x2', amount: -1500, date: '2026-10-01', name: 'PAYROLL ACME', merchant_name: null, iso_currency_code: 'USD', pending: false },
-      { transaction_id: 'x3', amount: 4.5, date: '2026-10-06', name: 'COFFEE', pending: true, iso_currency_code: 'USD' }
+      { transaction_id: 'x3', amount: 4.5, date: '2026-10-06', name: 'COFFEE', pending: true, iso_currency_code: 'USD' },
+      { transaction_id: 'x4', amount: 4.75, date: '2026-10-07', name: 'COFFEE', pending: false, pending_transaction_id: 'x0', iso_currency_code: 'USD' }
     ];
     return ok({ total_transactions: all.length, transactions: all.slice(body.options.offset, body.options.offset + body.options.count) });
   }
@@ -137,13 +139,25 @@ await t('Plaid: OAuth return resumes the same link token', async () => {
 
 await t('Plaid: transactions are normalised to the app format (sign, name, pending, paging)', async () => {
   const r = await (await call('/plaid/transactions', { account_uid: 'p-chk', date_from: '2026-10-01' })).json();
-  assert.strictEqual(r.transactions.length, 3);
-  const [spend, pay, pend] = r.transactions;
+  assert.strictEqual(r.transactions.length, 4);
+  const [spend, pay, pend, fin] = r.transactions;
+  assert.strictEqual(fin.pending_ref, 'x0');
   assert.deepStrictEqual([spend.credit_debit_indicator, spend.transaction_amount.amount, spend.creditor.name, spend.booking_date], ['DBIT', '12.34', 'Walmart', '2026-10-05']);
   assert.deepStrictEqual([pay.credit_debit_indicator, pay.transaction_amount.amount, pay.debtor.name], ['CRDT', '1500', 'PAYROLL ACME']);
   assert.strictEqual(pend.status, 'PDNG');
   const tx = outbound.filter((o) => o.url.endsWith('/transactions/get')).pop();
   assert.deepStrictEqual(tx.body.options.account_ids, ['p-chk']);
+});
+
+await t('Plaid: refresh is requested at most every 15 minutes', async () => {
+  const count = () => outbound.filter((o) => o.url.endsWith('/transactions/refresh')).length;
+  const before = count();
+  await call('/plaid/transactions', { account_uid: 'p-chk', date_from: '2026-10-01', refresh: true });
+  await call('/plaid/transactions', { account_uid: 'p-chk', date_from: '2026-10-01', refresh: true });
+  assert.strictEqual(count() - before, 1);
+  await STORE.put('plaid_refresh_at', String(Date.now() - 16 * 60e3));
+  await call('/plaid/transactions', { account_uid: 'p-chk', date_from: '2026-10-01', refresh: true });
+  assert.strictEqual(count() - before, 2);
 });
 
 console.log(`${n} worker tests passed`);

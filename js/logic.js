@@ -323,7 +323,7 @@
     const remit = (tx.remittance_information || []).join(' ');
     const counter = dir === 'DBIT' ? (tx.creditor && tx.creditor.name) : (tx.debtor && tx.debtor.name);
     const place = cleanPlace(counter || remit || tx.bank_transaction_code?.description || 'Unknown');
-    return { bankId: txId(tx), dir: dir === 'DBIT' ? 'out' : 'in', amount: r2(amount), date, place, note: remit.slice(0, 140), pending: tx.status === 'PDNG' };
+    return { bankId: txId(tx), dir: dir === 'DBIT' ? 'out' : 'in', amount: r2(amount), date, place, note: remit.slice(0, 140), pending: tx.status === 'PDNG', pendingRef: tx.pending_ref || null };
   }
 
   function matchesIgnore(m, rules) {
@@ -403,11 +403,69 @@
       (e.bankId || (e.created && Math.abs(e.created - timeMs) <= 3600e3))) || null;
   }
 
+  /**
+   * Merge one sync's bank transactions into the data. Mutates data.expenses / data.incomes / data.ignoredBankIds.
+   * withPending (Plaid): pending card payments are shown at once (tagged pending); when the bank finalises one,
+   * the final transaction points back to it (pendingRef) and the same entry is updated instead of duplicated.
+   * Pending entries the bank dropped (declined, expired) are removed, unless you edited them.
+   */
+  function applyBankTransactions(data, mapped, o) {
+    const res = { added: 0, addedIn: 0, matched: 0, updated: 0, removed: 0 };
+    const ignored = new Set(data.ignoredBankIds);
+    const byBankId = new Map();
+    for (const e of data.expenses) if (e.bankId) byBankId.set(e.bankId, e);
+    for (const e of data.incomes) if (e.bankId) byBankId.set(e.bankId, e);
+    const seenPending = new Set();
+    // posted ones first, so a payment that is already final never gets added as pending
+    const list = mapped.slice().sort((a, b) => (a.pending ? 1 : 0) - (b.pending ? 1 : 0));
+    const finalisedRefs = new Set(list.filter((m) => !m.pending && m.pendingRef).map((m) => m.pendingRef));
+    for (const m of list) {
+      if (!m.date || m.date < o.start) continue;
+      if (m.pending && (!o.withPending || m.dir !== 'out')) continue;
+      if (m.pending) {
+        seenPending.add(m.bankId);
+        if (finalisedRefs.has(m.bankId) || ignored.has(m.bankId)) continue;
+        const ex = byBankId.get(m.bankId);
+        if (ex) { if (!ex.edited && (ex.amount !== m.amount || ex.date !== m.date)) { ex.amount = m.amount; ex.date = m.date; res.updated++; } continue; }
+      } else {
+        if (ignored.has(m.bankId) || byBankId.has(m.bankId)) continue;
+        if (m.pendingRef && ignored.has(m.pendingRef)) { data.ignoredBankIds.push(m.bankId); ignored.add(m.bankId); continue; }
+        const was = m.pendingRef && byBankId.get(m.pendingRef);
+        if (was) { // the pending payment became final
+          byBankId.delete(m.pendingRef); byBankId.set(m.bankId, was);
+          was.bankId = m.bankId; delete was.pending;
+          if (!was.edited) { was.amount = m.amount; was.date = m.date; }
+          res.updated++; continue;
+        }
+      }
+      if (matchesIgnore(m, o.ignore)) { continue; }
+      if (m.dir === 'out') {
+        const dup = findDuplicateForBank(data.expenses, m);
+        if (dup) { dup.bankId = m.bankId; dup.bankPlace = m.place; byBankId.set(m.bankId, dup); res.matched++; continue; }
+        const rec = { id: o.newId(), date: m.date, amount: m.amount, place: m.place, note: m.note, bankId: m.bankId };
+        if (m.pending) rec.pending = true;
+        data.expenses.push(rec); byBankId.set(m.bankId, rec); res.added++;
+      } else if (o.importIncome) {
+        const dupIn = findDuplicateForBank(data.incomes, m);
+        if (dupIn) { dupIn.bankId = m.bankId; byBankId.set(m.bankId, dupIn); res.matched++; continue; }
+        const rec = { id: o.newId(), date: m.date, amount: m.amount, source: m.place, note: m.note, bankId: m.bankId };
+        if (o.kindOf) rec.kind = o.kindOf(rec);
+        data.incomes.push(rec); byBankId.set(m.bankId, rec); res.addedIn++;
+      }
+    }
+    if (o.withPending) {
+      const before = data.expenses.length;
+      data.expenses = data.expenses.filter((e) => !(e.pending && !e.edited && e.bankId && e.date >= o.from && !seenPending.has(e.bankId)));
+      res.removed = before - data.expenses.length;
+    }
+    return res;
+  }
+
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
     incomeKind, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
-    cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive
+    cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive, applyBankTransactions
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BudgetLogic = api;

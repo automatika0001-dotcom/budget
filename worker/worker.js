@@ -68,7 +68,6 @@ export default {
 
       // ---- Enable Banking (SEB and other European banks) ----
       if (path === '/start') {
-        needKV(env);
         const st = String(body.state || crypto.randomUUID());
         const redirect = body.redirect_url || (new URL(req.url).origin + '/callback');
         const make = (days) => ({
@@ -80,7 +79,7 @@ export default {
         });
         let r = await eb(env, 'POST', '/auth', make(180));
         if (!r.ok) r = await eb(env, 'POST', '/auth', make(90)); // some banks allow shorter consent only
-        if (r.ok) await env.STORE.put('pending:' + st, '1', { expirationTtl: 3600 });
+        if (r.ok && env.STORE) await env.STORE.put('pending:' + st, '1', { expirationTtl: 3600 }); // only needed for the iPhone flow
         return pass(r, json);
       }
       if (path === '/session') return pass(await eb(env, 'POST', '/sessions', { code: body.code }), json);
@@ -289,7 +288,8 @@ function normalizePlaidTx(t) {
     booking_date: t.date,
     value_date: t.authorized_date || t.date,
     remittance_information: t.name ? [t.name] : [],
-    status: t.pending ? 'PDNG' : 'BOOK'
+    status: t.pending ? 'PDNG' : 'BOOK',
+    pending_ref: t.pending_transaction_id || null
   };
   if (out) tx.creditor = { name }; else tx.debtor = { name };
   return tx;
@@ -300,6 +300,15 @@ async function plaidTransactions(env, body, json) {
   const raw = await env.STORE.get('plaid_item');
   if (!raw) return json({ error: 'Not connected: connect your bank in Settings' }, 400);
   const it = JSON.parse(raw);
+  if (body.refresh) {
+    // Ask Plaid to pull fresh data from the bank now (included in the free plan). At most every 15 minutes;
+    // the new data arrives a little later and is picked up by the next sync.
+    const last = Number(await env.STORE.get('plaid_refresh_at')) || 0;
+    if (Date.now() - last > 15 * 60e3) {
+      await env.STORE.put('plaid_refresh_at', String(Date.now()));
+      await plaid(env, '/transactions/refresh', { access_token: it.access_token }).catch(() => null);
+    }
+  }
   const end = new Date().toISOString().slice(0, 10);
   const all = [];
   let total = Infinity;

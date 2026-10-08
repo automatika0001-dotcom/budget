@@ -135,7 +135,7 @@
 
   function euroBig(x) {
     const a = Math.abs(x);
-    return `${fmtEUR0.format(Math.floor(a))}<span class="cur">${state.settings.currency === 'USD' ? '' : ','}${String(Math.round((a - Math.floor(a)) * 100)).padStart(2, '0')} ${SYM}</span>`;
+    return `${fmtEUR0.format(Math.floor(a))}<span class="cur">${state.settings.currency === 'USD' ? '.' : ','}${String(Math.round((a - Math.floor(a)) * 100)).padStart(2, '0')} ${SYM}</span>`;
   }
 
   function nextBoxHtml(ts) {
@@ -644,6 +644,7 @@
         if (amt <= 0) return toast('Enter an amount');
         const rec = Object.assign(item || { id: uid(), created: Date.now() }, { amount: L.r2(amt), place: $('#ePlace', b).value.trim() || 'Unknown', date: $('#eDate', b).value || today, note: $('#eNote', b).value.trim() });
         if (isNew) state.expenses.push(rec);
+        else if (rec.bankId) rec.edited = true; // your edit wins over later bank updates
         save(); closeSheet(); render(); toast(isNew ? 'Saved' : 'Updated');
       };
       if (!isNew) $('#eDel', b).onclick = () => {
@@ -1039,29 +1040,20 @@
       const start = state.settings.startDate || today;
       let from = bk.lastSync ? L.addDays(bk.lastSync.slice(0, 10), -5) : start;
       if (from < start) from = start;
-      const known = new Set([...state.expenses, ...state.incomes].map((x) => x.bankId).filter(Boolean).concat(state.ignoredBankIds));
-      let added = 0, addedIn = 0, matched = 0;
+      const plaidMode = bk.provider === 'plaid';
+      const mapped = [];
       for (const acc of bk.accounts) {
-        // present: you opened the app yourself, so the bank's 4-per-day background limit doesn't apply
-        const r = await bridge(bk.provider === 'plaid' ? '/plaid/transactions' : '/transactions', { account_uid: acc.uid, date_from: from, present: true });
-        for (const tx of r.transactions || []) {
-          const m = L.mapTransaction(tx);
-          if (!m.date || m.pending || m.date < start || known.has(m.bankId)) continue;
-          known.add(m.bankId);
-          if (L.matchesIgnore(m, bk.ignore)) continue;
-          if (m.dir === 'out') {
-            // Same purchase already logged live (Google Wallet) or by hand? Link it instead of adding a duplicate.
-            const dup = L.findDuplicateForBank(state.expenses, m);
-            if (dup) { dup.bankId = m.bankId; dup.bankPlace = m.place; matched++; continue; }
-            state.expenses.push({ id: uid(), date: m.date, amount: m.amount, place: m.place, note: m.note, bankId: m.bankId }); added++;
-          } else if (bk.importIncome) {
-            const dupIn = L.findDuplicateForBank(state.incomes, m);
-            if (dupIn) { dupIn.bankId = m.bankId; matched++; continue; }
-            const rec = { id: uid(), date: m.date, amount: m.amount, source: m.place, note: m.note, bankId: m.bankId };
-            rec.kind = guessKind(rec, state.settings); state.incomes.push(rec); addedIn++;
-          }
-        }
+        // present: you opened the app yourself, so the bank's 4-per-day background limit doesn't apply (SEB).
+        // refresh: ask Plaid to fetch fresh data from the bank now (the Worker limits this to once per 15 minutes).
+        const r = await bridge(plaidMode ? '/plaid/transactions' : '/transactions', { account_uid: acc.uid, date_from: from, present: true, refresh: true });
+        for (const tx of r.transactions || []) mapped.push(L.mapTransaction(tx));
       }
+      // Same purchase already logged live (Google Wallet) or by hand? It is linked instead of added twice.
+      const res = L.applyBankTransactions(state, mapped, {
+        start, from, ignore: bk.ignore, importIncome: bk.importIncome, withPending: plaidMode,
+        newId: uid, kindOf: (rec) => guessKind(rec, state.settings)
+      });
+      const added = res.added, addedIn = res.addedIn, matched = res.matched;
       bk.lastSync = new Date().toISOString(); save();
       syncing = false; render();
       if (manual || added || addedIn) toast(added || addedIn ? `Imported ${added} expense${added === 1 ? '' : 's'}${addedIn ? `, ${addedIn} income` : ''}${matched ? ` (${matched} already logged)` : ''}` : 'Up to date');
