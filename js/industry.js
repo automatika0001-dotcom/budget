@@ -7,6 +7,7 @@
     { id: 'groceries', name: 'Groceries', color: '#c8f26a' },
     { id: 'convenience', name: 'Kiosks & convenience', color: '#9fd356' },
     { id: 'eating', name: 'Cafes & fast food', color: '#f2a65f' },
+    { id: 'nicotine', name: 'Nicotine & vape', color: '#c2603a' },
     { id: 'delivery', name: 'Food delivery', color: '#f5c35b' },
     { id: 'transport', name: 'Public transport', color: '#6ab8f2' },
     { id: 'taxi', name: 'Taxi & rides', color: '#4f8fd6' },
@@ -42,8 +43,10 @@
     [/AUTOTRANSPORT|AUTOOSTA|STARPTAUTISKA AUT|AUTO REISS|AUTOBUSU P|DAUTRANS|PAS\.?STACIJA|PASAZIERU|PASAŽIERU|VIVI\b|\bLDZ\b|STACIJAS |RIGAS SATIKSME|SATIKSME|MOBILLY|AUTOPARKS|REZEKNES AP|\bAP\/REZEKNE|NORDEKA|LUX EXPRESS|ECOLINES|FLIXBUS|AIRBALTIC|RYANAIR|WIZZ/, 'transport'],
     // fuel
     [/\bDUS\b|NAFTA|CIRCLE ?K|\bNESTE\b|\bVIADA\b|VIRSI|VIRŠI|GOTIKA|LUKOIL|ORLEN|KOOL/, 'fuel'],
+    // nicotine (before groceries: these names contain "VEIKALS")
+    [/ECODUMAS|ECO DUMAS|VAPE|VAPOR|TABAKA|TOBACCO|IQOS|SMOKE|NIKOTIN|ELFBAR|E-CIG/, 'nicotine'],
     // groceries and supermarkets
-    [/\bRIMI\b|MAXIMA|\bLIDL\b|\bELVI\b|ELLI V VEIKALS|\bTOP\b|TOP-VEIKALS|VEIKALS TOP|CITRO|\bAIBE\b|\bMEGO\b|\bLATS\b|\bSPAR\b|ARTIMA|KIPITIS|KĪPĪTIS|ECODUMAS|MASTER-VEIKALS|VEIKALS-|BRIVIBAS IELA VEIKALS|PRISMA/, 'groceries'],
+    [/\bRIMI\b|MAXIMA|\bLIDL\b|\bELVI\b|ELLI V VEIKALS|\bTOP\b|TOP-VEIKALS|VEIKALS TOP|CITRO|\bAIBE\b|\bMEGO\b|\bLATS\b|\bSPAR\b|ARTIMA|KIPITIS|KĪPĪTIS|MASTER-VEIKALS|VEIKALS-|BRIVIBAS IELA VEIKALS|PRISMA/, 'groceries'],
     // kiosks, convenience, coffee-to-go
     [/NARVESEN|TO ?GO\b|TO GO -|INMEDIO|PRESSPOINT|JAUNA PERLE/, 'convenience'],
     // eating out
