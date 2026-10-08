@@ -224,4 +224,25 @@ await t('signups can be switched off', async () => {
   delete env.SIGNUPS;
 });
 
+await t("users' own Plaid keys are used, don't count against the server cap, and are required without server keys", async () => {
+  const C = { uid: 'e'.repeat(32), secret: mk('5') };
+  const own = { client_id: 'ownclient123', secret: 'ownsecret4567' };
+  const count = Number(await STORE.get('plaid_count'));
+  const s = await (await ucall(C, '/plaid/start', { plaid: own })).json();
+  assert.ok(s.url, 'own keys work even when the server cap is full');
+  const lc = outbound.filter((o) => o.url.endsWith('/link/token/create')).pop();
+  assert.deepStrictEqual([lc.body.client_id, lc.body.secret], [own.client_id, own.secret]);
+  await worker.fetch(new Request(`${B}/plaid/done?k=${new URL(s.url).searchParams.get('k')}`, { method: 'POST', body: JSON.stringify({ public_token: 'pc' }) }), env);
+  const ex = outbound.filter((o) => o.url.endsWith('/item/public_token/exchange')).pop();
+  assert.strictEqual(ex.body.client_id, own.client_id);
+  assert.strictEqual(Number(await STORE.get('plaid_count')), count);
+  assert.ok(!(await STORE.get('plaidlink:' + new URL(s.url).searchParams.get('k'))), 'link record with keys deleted');
+  await ucall(C, '/plaid/transactions', { date_from: '2026-10-01', plaid: own });
+  assert.strictEqual(outbound.filter((o) => o.url.endsWith('/transactions/get')).pop().body.client_id, own.client_id);
+  const saved = { id: env.PLAID_CLIENT_ID, s: env.PLAID_SECRET }; delete env.PLAID_CLIENT_ID; delete env.PLAID_SECRET;
+  const r = await ucall({ uid: 'f'.repeat(32), secret: mk('6') }, '/plaid/start', {});
+  assert.strictEqual(r.status, 400); assert.ok(/Plaid keys/.test((await r.json()).error));
+  env.PLAID_CLIENT_ID = saved.id; env.PLAID_SECRET = saved.s;
+});
+
 console.log(`${n} worker tests passed`);

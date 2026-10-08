@@ -12,7 +12,7 @@
       payDay: 10, monthlySaving: 500, goal: 20000, startingSaved: 0, openingCarry: 0, startDate: null,
       useExpected: true, expectedNet: 0, statsFrom: null, liveEnabled: true, vacations: [],
       salary: { gross: 0, taxBook: true, dependents: 0, disability: 'none' }, currency: 'EUR',
-      bank: { workerUrl: '', token: '', provider: 'eb', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '', pendingMode: '', pendingSince: 0 },
+      bank: { workerUrl: '', token: '', provider: 'eb', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '', pendingMode: '', pendingSince: 0, plaidId: '', plaidSecret: '' },
       backup: { pass: '', id: '', codeSaved: false },
       account: { uid: '', secret: '' },
       aliases: {}
@@ -771,6 +771,7 @@
 
       <h3 style="margin-top:22px">Bank sync</h3>
       ${isOwner() ? `<div class="field"><label>Bank</label><select id="bkProv"><option value="eb" ${plaidMode ? '' : 'selected'}>SEB (Latvia)</option><option value="plaid" ${plaidMode ? 'selected' : ''}>America First Credit Union (USA)</option></select></div>` : '<div class="small" style="margin-bottom:6px">America First Credit Union (USA)</div>'}
+      ${plaidMode ? plaidKeysHtml() : ''}
       <div class="small muted" style="margin-bottom:10px">${connected ? `Connected · ${bk.accounts.length} account(s) · last sync ${bk.lastSync ? dShort(bk.lastSync.slice(0, 10)) + ' ' + bk.lastSync.slice(11, 16) : 'never'}${bk.validUntil ? ' · consent until ' + dShort(bk.validUntil.slice(0, 10)) : ''}` : bk.pendingState ? 'Waiting for the bank login to finish…' : 'Not connected.'}</div>
       <div class="toggle"><span>Import incoming payments as income</span><input type="checkbox" id="bkInc" ${bk.importIncome ? 'checked' : ''}></div>
       <div class="field"><label>Ignore transactions containing (comma separated)</label><input id="bkIgn" value="${esc(bk.ignore)}" placeholder="own transfer, savings, your name"></div>
@@ -814,7 +815,12 @@
       };
       $('#bkInc', b).onchange = (e) => { bk.importIncome = e.target.checked; save(); };
       $('#bkIgn', b).onchange = (e) => { bk.ignore = e.target.value; save(); };
-      $('#bkConnect', b).onclick = () => { readBridge(); bankConnect(); };
+      const readKeys = plaidMode ? bindPlaidKeys(b) : () => {};
+      $('#bkConnect', b).onclick = () => {
+        readBridge(); readKeys();
+        if (plaidMode && (!bk.plaidId || !bk.plaidSecret)) return toast('Paste your Plaid client_id and secret first', 4000);
+        bankConnect();
+      };
       if (connected) $('#bkSync', b).onclick = () => { closeSheet(); bankSync(true); };
       const ck = $('#bkCheck', b); if (ck) ck.onclick = async () => { const ok = await checkClaim(); toast(ok ? 'Connected' : 'Not finished yet'); if (ok) openSettings(); };
       bindLiveSettings(b);
@@ -858,6 +864,28 @@
     r.readAsText(file);
   }
 
+  const PLAID_REDIRECT = () => bridgeUrl() + '/plaid/link';
+  function plaidKeysHtml() {
+    const bk = state.settings.bank;
+    return `<details ${bk.plaidId && bk.plaidSecret ? '' : 'open'} style="margin-bottom:10px"><summary class="small muted" style="cursor:pointer">Your Plaid keys ${bk.plaidId && bk.plaidSecret ? '(saved)' : '(needed once)'}</summary>
+      <ol class="small muted" style="padding-left:18px;margin:8px 0">
+        <li>Sign up free at <b>dashboard.plaid.com</b> (Trial plan).</li>
+        <li>Developers &gt; Keys: copy <b>client_id</b> and the <b>Production secret</b> into the boxes below.</li>
+        <li>Developers &gt; API &gt; Allowed redirect URIs: add the address below (tap Copy).</li>
+      </ol>
+      <div class="field"><label>Plaid client_id</label><input id="pkId" value="${esc(bk.plaidId)}" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
+      <div class="field"><label>Plaid Production secret</label><input id="pkSec" type="text" value="${esc(bk.plaidSecret)}" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+      <div class="field"><label>Redirect URI for Plaid</label><div style="display:flex;gap:8px"><input id="pkRedir" value="${esc(PLAID_REDIRECT())}" readonly><button class="btn" id="pkCopy" type="button">Copy</button></div></div>
+    </details>`;
+  }
+  function bindPlaidKeys(b) {
+    const bk = state.settings.bank;
+    const read = () => { bk.plaidId = $('#pkId', b).value.trim(); bk.plaidSecret = $('#pkSec', b).value.trim(); save(); };
+    $('#pkId', b).onchange = read; $('#pkSec', b).onchange = read;
+    $('#pkCopy', b).onclick = async () => { try { await navigator.clipboard.writeText(PLAID_REDIRECT()); toast('Copied'); } catch (e) { $('#pkRedir', b).select(); } };
+    return read;
+  }
+
   async function copyRecoveryCode() {
     const code = recoveryCode();
     let ok = false;
@@ -869,9 +897,16 @@
   function openConnectPrompt() {
     openSheet(`<h3>Connect your bank?</h3>
       <p class="small muted">Link America First Credit Union and your spending fills in by itself. You can also do it later in Settings.</p>
+      ${plaidKeysHtml()}
       <button class="btn primary block" id="cpGo">Connect America First CU</button>
       <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="cpLater">Later</button></div>`, (b) => {
-      $('#cpGo', b).onclick = () => { const bk = state.settings.bank; bk.provider = 'plaid'; bk.bankName = 'America First CU'; bk.country = 'US'; save(); bankConnect(); };
+      const readKeys = bindPlaidKeys(b);
+      $('#cpGo', b).onclick = () => {
+        readKeys();
+        const bk = state.settings.bank; bk.provider = 'plaid'; bk.bankName = 'America First CU'; bk.country = 'US'; save();
+        if (!bk.plaidId || !bk.plaidSecret) return toast('Paste your Plaid client_id and secret first', 4000);
+        bankConnect();
+      };
       $('#cpLater', b).onclick = closeSheet;
     });
   }
@@ -958,9 +993,11 @@
   async function bridge(path, body) {
     const bk = state.settings.bank;
     if (!bridgeUrl()) throw new Error('No server set');
+    const b = { ...(body || {}) };
+    if (path.startsWith('/plaid/') && bk.plaidId && bk.plaidSecret) b.plaid = { client_id: bk.plaidId, secret: bk.plaidSecret };
     const res = await fetch(bridgeUrl() + path, {
       method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders() },
-      body: JSON.stringify(body || {})
+      body: JSON.stringify(b)
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || data.message || ('Bridge error ' + res.status));

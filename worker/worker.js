@@ -10,8 +10,8 @@
  * Secrets / settings (Cloudflare: Settings > Variables and Secrets):
  *   APP_TOKEN        Owner password (your own app, plus SEB via Enable Banking which is owner-only)
  *   ALLOWED_ORIGIN   https://automatika0001-dotcom.github.io   (no path, no trailing slash)
- *   PLAID_CLIENT_ID  America First CU / US banks, from the Plaid dashboard
- *   PLAID_SECRET     the Production secret
+ *   PLAID_CLIENT_ID  optional fallback: users normally paste their OWN Plaid keys in the app (Settings > Bank sync)
+ *   PLAID_SECRET     optional fallback, the Production secret
  *   PLAID_ENV        optional: "production" (default) or "sandbox"
  *   PLAID_MAX_ITEMS  optional: bank logins allowed in total (default 10, Plaid's free Trial plan cap)
  *   EB_APP_ID        optional, owner's SEB: Enable Banking Application ID
@@ -70,7 +70,7 @@ export default {
       }
 
       // ---- Plaid (America First Credit Union and other US banks), every user ----
-      if (path === '/plaid/start') return await plaidStart(env, u, req, json);
+      if (path === '/plaid/start') return await plaidStart(env, u, req, body, json);
       if (path === '/plaid/status') return await plaidStatus(env, u, json);
       if (path === '/plaid/transactions') return await plaidTransactions(env, u, body, json);
 
@@ -211,11 +211,17 @@ function b64url(bytes) {
 
 // ================= Plaid (all users) =================
 const plaidBase = (env) => (env.PLAID_ENV === 'sandbox' ? 'https://sandbox.plaid.com' : 'https://production.plaid.com');
-async function plaid(env, path, body) {
-  if (!env.PLAID_CLIENT_ID || !env.PLAID_SECRET) throw new Error('US bank sync is not set up on the server yet');
+// The user's own Plaid keys (sent by their app) win; the server's keys are only a fallback.
+function plaidCreds(env, b) {
+  const p = b && b.plaid;
+  if (p && /^[A-Za-z0-9]{10,64}$/.test(p.client_id || '') && /^[A-Za-z0-9]{10,64}$/.test(p.secret || '')) return { client_id: p.client_id, secret: p.secret, own: true };
+  if (env.PLAID_CLIENT_ID && env.PLAID_SECRET) return { client_id: env.PLAID_CLIENT_ID, secret: env.PLAID_SECRET, own: false };
+  const e = new Error('Add your Plaid keys in Settings > Bank sync'); e.status = 400; throw e;
+}
+async function plaid(env, path, body, creds) {
   const res = await fetch(plaidBase(env) + path, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ client_id: env.PLAID_CLIENT_ID, secret: env.PLAID_SECRET, ...body })
+    body: JSON.stringify({ client_id: creds.client_id, secret: creds.secret, ...body })
   });
   const data = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, data };
@@ -228,7 +234,8 @@ const plaidErr = (r) => {
 };
 const rand = () => Array.from(crypto.getRandomValues(new Uint8Array(18)), (b) => b.toString(16).padStart(2, '0')).join('');
 
-async function plaidStart(env, u, req, json) {
+async function plaidStart(env, u, req, body, json) {
+  const creds = plaidCreds(env, body);
   const origin = new URL(req.url).origin;
   const existing = JSON.parse((await env.STORE.get(key(u, 'plaid_item'))) || 'null');
   const req0 = {
@@ -236,7 +243,8 @@ async function plaidStart(env, u, req, json) {
     user: { client_user_id: u.uid }, redirect_uri: origin + '/plaid/link'
   };
   // Reconnecting reuses the same bank login ("update mode"), so it doesn't use up one of the free slots.
-  if (existing) req0.access_token = existing.access_token;
+  if (existing && existing.client_id === creds.client_id) req0.access_token = existing.access_token;
+  else if (creds.own) { req0.products = ['transactions']; req0.transactions = { days_requested: 365 }; }
   else {
     const used = Number(await env.STORE.get('plaid_count')) || 0;
     const max = Number(env.PLAID_MAX_ITEMS) || 10;
@@ -244,10 +252,11 @@ async function plaidStart(env, u, req, json) {
     req0.products = ['transactions'];
     req0.transactions = { days_requested: 365 };
   }
-  const r = await plaid(env, '/link/token/create', req0);
+  const r = await plaid(env, '/link/token/create', req0, creds);
+  const update = !!req0.access_token;
   if (!r.ok) return json({ error: plaidErr(r), details: r.data }, r.status);
   const k = rand();
-  await env.STORE.put('plaidlink:' + k, JSON.stringify({ token: r.data.link_token, uid: u.uid, owner: !!u.owner, update: !!existing }), { expirationTtl: 3600 });
+  await env.STORE.put('plaidlink:' + k, JSON.stringify({ token: r.data.link_token, uid: u.uid, owner: !!u.owner, update, creds }), { expirationTtl: 3600 });
   return json({ url: origin + '/plaid/link?k=' + k });
 }
 
@@ -293,15 +302,16 @@ async function plaidDone(env, url, req, json) {
   const u = link.owner ? { owner: true, uid: 'owner' } : { uid: link.uid };
   const body = await req.json().catch(() => ({}));
   let item = JSON.parse((await env.STORE.get(key(u, 'plaid_item'))) || 'null');
+  const creds = link.creds;
   if (link.update && item) {
     item.connectedAt = Date.now(); // same bank login, just re-authorised
   } else {
-    const ex = await plaid(env, '/item/public_token/exchange', { public_token: body.public_token });
+    const ex = await plaid(env, '/item/public_token/exchange', { public_token: body.public_token }, creds);
     if (!ex.ok) return json({ error: plaidErr(ex) }, ex.status);
-    item = { access_token: ex.data.access_token, item_id: ex.data.item_id, connectedAt: Date.now() };
-    await env.STORE.put('plaid_count', String((Number(await env.STORE.get('plaid_count')) || 0) + 1));
+    item = { access_token: ex.data.access_token, item_id: ex.data.item_id, client_id: creds.client_id, connectedAt: Date.now() };
+    if (!creds.own) await env.STORE.put('plaid_count', String((Number(await env.STORE.get('plaid_count')) || 0) + 1));
   }
-  const acc = await plaid(env, '/accounts/get', { access_token: item.access_token });
+  const acc = await plaid(env, '/accounts/get', { access_token: item.access_token }, creds);
   if (acc.ok) item.accounts = (acc.data.accounts || []).map((a) => ({ uid: a.account_id, name: a.name || a.official_name || '', mask: a.mask || '', type: a.type, subtype: a.subtype }));
   await env.STORE.put(key(u, 'plaid_item'), JSON.stringify(item));
   await env.STORE.delete('plaidlink:' + k);
@@ -337,6 +347,7 @@ async function plaidTransactions(env, u, body, json) {
   const raw = await env.STORE.get(key(u, 'plaid_item'));
   if (!raw) return json({ error: 'Not connected: connect your bank in Settings' }, 400);
   const it = JSON.parse(raw);
+  const creds = plaidCreds(env, body);
   if (body.refresh) {
     // Ask Plaid to pull fresh data from the bank now (included in the free plan). At most every 15 minutes per user;
     // the new data arrives a little later and is picked up by the next sync.
@@ -344,7 +355,7 @@ async function plaidTransactions(env, u, body, json) {
     const last = Number(await env.STORE.get(rk)) || 0;
     if (Date.now() - last > 15 * 60e3) {
       await env.STORE.put(rk, String(Date.now()));
-      await plaid(env, '/transactions/refresh', { access_token: it.access_token }).catch(() => null);
+      await plaid(env, '/transactions/refresh', { access_token: it.access_token }, creds).catch(() => null);
     }
   }
   const end = new Date().toISOString().slice(0, 10);
@@ -353,7 +364,7 @@ async function plaidTransactions(env, u, body, json) {
   for (let pg = 0; all.length < total && pg < 40; pg++) {
     const opts = { count: 250, offset: all.length };
     if (body.account_uid) opts.account_ids = [body.account_uid];
-    const r = await plaid(env, '/transactions/get', { access_token: it.access_token, start_date: body.date_from, end_date: end, options: opts });
+    const r = await plaid(env, '/transactions/get', { access_token: it.access_token, start_date: body.date_from, end_date: end, options: opts }, creds);
     if (!r.ok) return json({ error: plaidErr(r), details: r.data }, r.status === 400 && r.data.error_code === 'PRODUCT_NOT_READY' ? 503 : r.status);
     total = r.data.total_transactions || 0;
     const batch = r.data.transactions || [];
