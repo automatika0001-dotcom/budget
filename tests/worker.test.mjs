@@ -131,7 +131,10 @@ await t('Plaid: forged link or done calls are refused', async () => {
 
 await t('Plaid: OAuth return resumes the same link token', async () => {
   const s = await (await call('/plaid/start', {})).json();
-  const page = await call('/plaid/link?oauth_state_id=abc', null, { method: 'GET', auth: false });
+  const first = await call(s.url.replace(B, ''), null, { method: 'GET', auth: false });
+  const cookie = first.headers.get('set-cookie');
+  assert.ok(/bk=[a-f0-9]+; Path=\/plaid/.test(cookie) && /HttpOnly/.test(cookie) && /Secure/.test(cookie));
+  const page = await worker.fetch(new Request(B + '/plaid/link?oauth_state_id=abc', { headers: { cookie: cookie.split(';')[0] } }), env);
   const html = await page.text();
   assert.ok(html.includes('receivedRedirectUri') && html.includes('"received":"' + B + '/plaid/link?oauth_state_id=abc"'));
   assert.ok(s.url);
@@ -158,6 +161,67 @@ await t('Plaid: refresh is requested at most every 15 minutes', async () => {
   await STORE.put('plaid_refresh_at', String(Date.now() - 16 * 60e3));
   await call('/plaid/transactions', { account_uid: 'p-chk', date_from: '2026-10-01', refresh: true });
   assert.strictEqual(count() - before, 2);
+});
+
+// ---------------- shared server: many users on one Worker ----------------
+const mk = (c) => c.repeat(32);
+const A = { uid: 'a'.repeat(32), secret: mk('1') }, Bu = { uid: 'b'.repeat(32), secret: mk('2') };
+const ucall = (u, path, body) => worker.fetch(new Request(B + path, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + u.secret, 'x-user': u.uid }, body: JSON.stringify(body || {}) }), env);
+
+await t('new users are created automatically and only a hash of their secret is stored', async () => {
+  assert.strictEqual((await ucall(A, '/backup/info')).status, 200);
+  const rec = await STORE.get('user:' + A.uid);
+  assert.ok(rec && !rec.includes(A.secret));
+});
+await t('wrong secret for an existing user is refused', async () => {
+  assert.strictEqual((await ucall({ uid: A.uid, secret: mk('9') }, '/backup/get')).status, 401);
+});
+await t('malformed ids or short secrets are refused', async () => {
+  assert.strictEqual((await ucall({ uid: 'x', secret: mk('1') }, '/backup/info')).status, 401);
+  assert.strictEqual((await ucall({ uid: 'c'.repeat(32), secret: 'short' }, '/backup/info')).status, 401);
+});
+await t('each user has their own backup slot; the owner keeps the original one', async () => {
+  await ucall(A, '/backup/put', { blob: 'A-DATA', id: 'la' });
+  await ucall(Bu, '/backup/put', { blob: 'B-DATA', id: 'lb' });
+  assert.strictEqual((await (await ucall(A, '/backup/get')).json()).blob, 'A-DATA');
+  assert.strictEqual((await (await ucall(Bu, '/backup/get')).json()).blob, 'B-DATA');
+  assert.strictEqual((await (await call('/backup/get')).json()).blob, 'ENCRYPTED-TWO');
+});
+await t('SEB (Enable Banking) is owner only', async () => {
+  assert.strictEqual((await ucall(A, '/start', { state: 'z' })).status, 403);
+  assert.strictEqual((await ucall(A, '/transactions', {})).status, 403);
+});
+await t('Plaid per user: separate bank logins, reconnect reuses the login (no extra slot)', async () => {
+  const before = Number(await STORE.get('plaid_count')) || 0;
+  const s1 = await (await ucall(A, '/plaid/start')).json();
+  const k1 = new URL(s1.url).searchParams.get('k');
+  const lc = outbound.filter((o) => o.url.endsWith('/link/token/create')).pop();
+  assert.strictEqual(lc.body.user.client_user_id, A.uid); assert.deepStrictEqual(lc.body.products, ['transactions']);
+  await worker.fetch(new Request(`${B}/plaid/done?k=${k1}`, { method: 'POST', body: JSON.stringify({ public_token: 'pa' }) }), env);
+  assert.strictEqual(Number(await STORE.get('plaid_count')), before + 1);
+  assert.strictEqual((await (await ucall(A, '/plaid/status')).json()).connected, true);
+  assert.strictEqual((await ucall(Bu, '/plaid/status')).status, 202); // B is not connected
+  assert.strictEqual((await ucall(Bu, '/plaid/transactions', { date_from: '2026-10-01' })).status, 400);
+  // reconnect: update mode
+  const s2 = await (await ucall(A, '/plaid/start')).json();
+  const lc2 = outbound.filter((o) => o.url.endsWith('/link/token/create')).pop();
+  assert.strictEqual(lc2.body.access_token, 'access-xyz'); assert.strictEqual(lc2.body.products, undefined);
+  const exBefore = outbound.filter((o) => o.url.endsWith('/item/public_token/exchange')).length;
+  await worker.fetch(new Request(`${B}/plaid/done?k=${new URL(s2.url).searchParams.get('k')}`, { method: 'POST', body: JSON.stringify({ public_token: 'pa2' }) }), env);
+  assert.strictEqual(outbound.filter((o) => o.url.endsWith('/item/public_token/exchange')).length, exBefore);
+  assert.strictEqual(Number(await STORE.get('plaid_count')), before + 1);
+});
+await t('Plaid cap: when the free logins are used up, new users get a clear message', async () => {
+  await STORE.put('plaid_count', '10');
+  const r = await ucall(Bu, '/plaid/start');
+  assert.strictEqual(r.status, 409); assert.ok(/all used \(10\)/.test((await r.json()).error));
+  assert.strictEqual((await ucall(A, '/plaid/start')).status, 200); // existing user can still reconnect
+});
+await t('signups can be switched off', async () => {
+  env.SIGNUPS = 'off';
+  assert.strictEqual((await ucall({ uid: 'd'.repeat(32), secret: mk('4') }, '/backup/info')).status, 401);
+  assert.strictEqual((await ucall(A, '/backup/info')).status, 200);
+  delete env.SIGNUPS;
 });
 
 console.log(`${n} worker tests passed`);

@@ -1,88 +1,43 @@
-# Budžets: set up for a new person
+# Budžets: how to start
 
-Everyone gets their own private budget. Your numbers live on your phone and in your own encrypted backup; nobody else (not even the person who shared the app) can see them.
-
-What it costs: nothing. GitHub Pages, Cloudflare Workers + KV and Enable Banking's personal mode are free tiers. For America First Credit Union, Plaid's free Trial plan is used (see the note at the end).
-
-Time: 5 minutes for the app, about 20 more for backup and bank, once.
-
----
-
-## 1. Install the app
+## For a new user (2 minutes)
 
 **iPhone**
-1. Open **Safari** (it must be Safari) and go to `https://automatika0001-dotcom.github.io/budget/`
-2. Tap the **Share** button, then **Add to Home Screen**, then **Add**.
-3. Open **Budžets from the home screen** and do the setup there. Data typed into the Safari tab stays in Safari; the home screen app has its own.
+1. Open this link in **Safari**: `https://automatika0001-dotcom.github.io/budget/`
+2. Tap **Share**, then **Add to Home Screen**.
+3. Open **Budžets** from the home screen, fill in the short setup, tap **Connect America First CU** and log in to your bank.
+4. When the app says **Save your recovery code**, tap **Copy it** and paste it into your Notes.
 
-**Android**
-1. Open `https://github.com/automatika0001-dotcom/budget/releases` and install **Budzets.apk** (allow installs from this source when asked).
+**Android**: install **Budzets.apk** from `https://github.com/automatika0001-dotcom/budget/releases`, then steps 3 and 4.
 
-Updates arrive by themselves: when the app is opened, it loads the newest version.
+That's all. No accounts, no passwords to invent. Your budget is private: it's kept on your phone, and the automatic backup is encrypted on your phone before it leaves, so nobody else can read it.
 
-In setup, pick your currency: **Euro** (includes the Latvian salary calculator) or **US dollar**.
-
----
-
-## 2. Your bridge (free Cloudflare Worker)
-
-The bridge is your own small server. It keeps your encrypted backup and talks to your bank. Each person makes their own.
-
-1. Sign up free at **https://dash.cloudflare.com/sign-up**.
-2. **Storage & Databases > KV > Create** a namespace, name it `budget-store`.
-3. **Workers & Pages > Create > Worker**, name it `budget-bridge`, **Deploy**.
-4. **Edit code**, delete everything, paste the whole file `worker/worker.js` (from `https://github.com/automatika0001-dotcom/budget/blob/main/worker/worker.js`, use the **Copy raw file** button), **Deploy**.
-5. **Settings > Bindings > Add > KV namespace**: variable name `STORE` (exactly), namespace `budget-store`. Save.
-6. **Settings > Variables and Secrets**, add as **Secret**:
-   - `APP_TOKEN`: a long random password you invent (40+ letters and digits). This is your **bridge password**.
-   - `ALLOWED_ORIGIN`: `https://automatika0001-dotcom.github.io`
-7. Note your Worker address, e.g. `https://budget-bridge.yourname.workers.dev`. Opening it in a browser should show `"kv":true`.
-
-## 3. Encrypted backup (strongly recommended)
-
-In the app: **Settings > Your bridge**: paste the Worker address and the bridge password. Then **Encrypted backup**: choose a passphrase (8+ characters) and tap **Turn on backup**.
-
-- Your data is encrypted on the phone before upload. The Worker only stores scrambled bytes.
-- There is one backup slot; each new backup replaces the last one.
-- It backs up when something changed, at most 3 times a day (8+ hours apart), whenever the app is open or you leave it. **Back up now** does it immediately.
-- Tap **Copy recovery code** and save it with your passphrase in your password manager (iPhone: Passwords app). **If you lose the passphrase, the backup cannot be opened by anyone.**
-
-**Getting your data back** (deleted the app, new phone): install the app as in step 1, and on the setup screen tap **I already used Budžets: restore my backup**. Paste the recovery code and your passphrase. Everything returns, including your bank connection settings.
-
-Safety: a fresh install never overwrites an existing backup. If you set up from scratch by mistake, Settings shows "Backup paused" and lets you restore the old one or deliberately replace it.
+**Deleted the app or new phone?** Install it again, tap **I already used Budžets: restore my backup** and paste your recovery code.
 
 ---
 
-## 4. Bank sync
+## For the owner: running the shared server (once)
 
-Pick your bank in **Settings > Bank sync**.
+One Cloudflare Worker (`https://budget-bridge.automatika-0001.workers.dev`) serves everyone. Its address is built into the app in `js/config.js`.
 
-### SEB (Latvia), via Enable Banking
+Worker settings (Cloudflare > Workers & Pages > budget-bridge > Settings):
+- **Bindings**: KV namespace `STORE` (done).
+- **Variables and Secrets** (Secret type):
+  - `APP_TOKEN`: your owner password (already set; your own app uses it, and SEB sync is owner-only)
+  - `ALLOWED_ORIGIN`: `https://automatika0001-dotcom.github.io`
+  - `PLAID_CLIENT_ID` and `PLAID_SECRET`: for America First Credit Union, see below
+  - `EB_APP_ID` and `EB_PRIVATE_KEY`: your SEB (already set)
 
-1. Follow **BANK_SETUP.md** steps 1 and 2 (Enable Banking application, link your SEB account). In **Allowed redirect URLs** add both:
-   - `https://automatika0001-dotcom.github.io/budget/`
-   - `https://budget-bridge.yourname.workers.dev/callback` (your Worker address + `/callback`; needed on iPhone)
-2. Add two more Worker secrets: `EB_APP_ID` (Application ID) and `EB_PRIVATE_KEY` (the whole .pem file, including the BEGIN/END lines).
-3. In the app: **Settings > Bank sync > SEB > Connect SEB > Open bank login**, approve with Smart-ID, come back to the app. It connects by itself within a few seconds.
+### Plaid (America First CU for all users)
+1. Sign up at **https://dashboard.plaid.com/signup**. A new team gets the free **Trial plan**. If asked for a company or app profile, describe it as a small personal budgeting app.
+2. **Developers > Keys**: copy **client_id** and the **Production secret** into the Worker secrets above.
+3. **Developers > API > Allowed redirect URIs**: add `https://budget-bridge.automatika-0001.workers.dev/plaid/link`.
 
-The consent lasts up to 180 days; the app warns you a week before.
+Limits to know:
+- The free plan allows **10 bank logins in total** across all users. Reconnecting the same person doesn't use a new one. When all 10 are used, new users see "The server's free bank connections are all used" and can still use the app without bank sync.
+- Plaid calls this plan a trial. It lists no end date, but it could change its terms.
+- As the server owner you hold each user's Plaid access, so they're trusting you with read access to their transactions. Their backups stay encrypted with their own key; you can't read those.
+- To stop new users from being created, add the secret `SIGNUPS` = `off`.
 
-### America First Credit Union (USA), via Plaid
-
-1. Sign up at **https://dashboard.plaid.com/signup**. A new team gets the free **Trial plan** (real bank data, up to 10 bank logins). If Plaid asks for a company or app profile, describe it as a personal budgeting app for your own accounts.
-2. **Developers > Keys**: copy the **client_id** and the **Production secret**.
-3. **Developers > API > Allowed redirect URIs**: add `https://budget-bridge.yourname.workers.dev/plaid/link` (your Worker address + `/plaid/link`). America First uses its own login page, which needs this.
-4. Add Worker secrets: `PLAID_CLIENT_ID` and `PLAID_SECRET`.
-5. In the app: **Settings > Bank sync > America First Credit Union > Connect AFCU > Open bank login**, log in, come back. It connects by itself.
-
-What it syncs: your checking account(s). Card payments appear as soon as AFCU reports them (usually minutes to a few hours) and count straight away; when the bank finalises a payment it updates the same entry, so nothing is counted twice. Each time you open the app, Plaid is asked to fetch fresh data (at most every 15 minutes).
-
-Tip for both banks: **Ignore transactions containing** with words like `savings` or `transfer` keeps moves between your own accounts out of your spending.
-
----
-
-## Notes
-
-- **Several people**: each person repeats this guide with their own Cloudflare (and Enable Banking or Plaid) account. Never share your Worker or its secrets: anyone with them could read your bank data.
-- **Plaid is the one free tier that is called a trial.** Plaid lists no end date and no cap on syncing already-connected accounts, but it could change its terms. If it ever does, only the Worker needs a different provider; the app and your data are not affected.
-- **Free-tier limits** (far above what one person uses): Cloudflare Workers 100,000 requests/day, KV 1,000 writes/day.
+### SEB
+Enable Banking's free mode only reaches the owner's own accounts, so SEB sync is available in the owner's app only (the one with the owner password in Settings > Backup > Advanced).

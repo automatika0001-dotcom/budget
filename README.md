@@ -2,12 +2,8 @@
 
 **Setting it up for someone new (iPhone or Android, SEB or America First CU, encrypted backup): see [FRIENDS_SETUP.md](FRIENDS_SETUP.md).** The rest of this file is the owner's guide (publishing updates, building the APK).
 
-### Owner: upgrading your existing Worker (version 1.5)
-Version 1.5 adds encrypted backups and the iPhone bank login, which need storage on your Worker:
-1. Paste the new `worker/worker.js` into your Worker and Deploy.
-2. Create a KV namespace and bind it to the Worker as `STORE` (FRIENDS_SETUP.md, step 2.2 and 2.5).
-3. Only if you'll connect SEB from an iPhone: add `https://<your worker>/callback` to the Enable Banking allowed redirect URLs.
-Then in the app: Settings > Encrypted backup, set a passphrase, tap Turn on backup, and save the recovery code.
+### Owner: one shared server
+All users share your Worker; new users need nothing but the app. Owner setup (Plaid keys, limits) is in FRIENDS_SETUP.md. After changing `worker/worker.js`, paste it into the Worker and Deploy again.
 
 A real Android app (APK) you install once. Every time you push from your PC, the installed app updates itself the next time you open it, including big changes. Your data stays on the phone and survives updates.
 

@@ -59,12 +59,17 @@ const t = async (name, fn) => { await fn(); n++; console.log('ok  ' + name); };
   await t('schedule: force (Back up now) ignores the gap', () => {
     assert.strictEqual(B.shouldBackup({ dirty: false, lastOkMs: 1e12 - 1000, day: '2026-10-08', count: 3 }, 1e12, '2026-10-08', true), true);
   });
-  await t('recovery code round trip and bad input', () => {
-    const code = B.makeRecoveryCode('https://budget-bridge.me.workers.dev', 'tok/with+odd=chars');
+  await t('recovery code: automatic user and owner forms, bad input', () => {
+    const user = { workerUrl: 'https://budget-bridge.me.workers.dev', uid: 'a'.repeat(32), secret: 'b'.repeat(64) };
+    const code = B.makeRecoveryCode(user);
     assert.ok(code.startsWith('budzets:') && !/[+/=]/.test(code.slice(8)));
-    assert.deepStrictEqual(B.parseRecoveryCode(code), { workerUrl: 'https://budget-bridge.me.workers.dev', token: 'tok/with+odd=chars' });
+    assert.deepStrictEqual(B.parseRecoveryCode(code), { ...user, token: '' });
+    assert.deepStrictEqual(B.parseRecoveryCode(' ' + code.slice(0, 20) + '\n' + code.slice(20) + ' '), { ...user, token: '' }); // pasted with line breaks
+    const owner = { workerUrl: 'https://x.workers.dev', token: 'tok/with+odd=chars', uid: 'c'.repeat(32), secret: 'd'.repeat(64) };
+    assert.deepStrictEqual(B.parseRecoveryCode(B.makeRecoveryCode(owner)), owner);
     assert.throws(() => B.parseRecoveryCode('hello'), /not a recovery code/);
     assert.throws(() => B.parseRecoveryCode('budzets:AAAA'), /damaged/);
+    assert.throws(() => B.parseRecoveryCode(B.makeRecoveryCode({ workerUrl: 'https://x.dev' })), /damaged/);
   });
   console.log(`${n} backup tests passed`);
 })().catch((e) => { console.error(e); process.exit(1); });

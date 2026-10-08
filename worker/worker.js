@@ -1,22 +1,27 @@
 /*
- * Budget bridge: one small Cloudflare Worker per person. It
- *   1. keeps your bank keys off the phone and out of the public website (Enable Banking for SEB, Plaid for America First CU),
- *   2. finishes the bank login for the app (needed on iPhone, where the browser and the home screen app do not share storage),
- *   3. stores ONE encrypted backup of your budget (the app encrypts it; this Worker only ever sees scrambled data).
+ * Budget bridge: ONE Cloudflare Worker that serves every Budžets user.
+ *   1. Keeps the bank keys (Plaid; Enable Banking for the owner's SEB) off the phones and out of the public website.
+ *   2. Finishes bank logins for the app (needed on iPhone, where the browser and the home screen app don't share storage).
+ *   3. Stores one encrypted backup per user. The phone encrypts it first; this Worker only ever sees scrambled bytes.
+ *
+ * Users never sign up: on first run the app creates a random user ID and secret. The Worker keeps only a hash of the
+ * secret and keeps every user's data under their own ID.
  *
  * Secrets / settings (Cloudflare: Settings > Variables and Secrets):
- *   APP_TOKEN        Any long random password; type the same one into the app's Settings
- *   ALLOWED_ORIGIN   Your app address, e.g. https://yourname.github.io  (no path, no trailing slash)
- *   EB_APP_ID        (SEB / Europe) Application ID from the Enable Banking control panel
- *   EB_PRIVATE_KEY   (SEB / Europe) Full contents of the downloaded .pem private key (PKCS#8)
- *   PLAID_CLIENT_ID  (America First CU / USA) from the Plaid dashboard
- *   PLAID_SECRET     (America First CU / USA) the secret for the environment you use
+ *   APP_TOKEN        Owner password (your own app, plus SEB via Enable Banking which is owner-only)
+ *   ALLOWED_ORIGIN   https://automatika0001-dotcom.github.io   (no path, no trailing slash)
+ *   PLAID_CLIENT_ID  America First CU / US banks, from the Plaid dashboard
+ *   PLAID_SECRET     the Production secret
  *   PLAID_ENV        optional: "production" (default) or "sandbox"
- * KV namespace binding (Settings > Bindings > KV namespace):
- *   STORE            create a namespace, bind it with exactly this variable name
+ *   PLAID_MAX_ITEMS  optional: bank logins allowed in total (default 10, Plaid's free Trial plan cap)
+ *   EB_APP_ID        optional, owner's SEB: Enable Banking Application ID
+ *   EB_PRIVATE_KEY   optional, owner's SEB: the .pem private key (PKCS#8)
+ *   SIGNUPS          optional: set to "off" to stop new users from being created
+ * KV namespace binding:
+ *   STORE
  */
 const EB = 'https://api.enablebanking.com';
-const MAX_BACKUP_BYTES = 8 * 1024 * 1024;
+const MAX_BACKUP_BYTES = 3 * 1024 * 1024;
 
 export default {
   async fetch(req, env) {
@@ -24,99 +29,93 @@ export default {
     const path = url.pathname;
     const cors = {
       'access-control-allow-origin': env.ALLOWED_ORIGIN || '*',
-      'access-control-allow-headers': 'content-type, authorization',
+      'access-control-allow-headers': 'content-type, authorization, x-user',
       'access-control-allow-methods': 'POST, GET, OPTIONS',
       'vary': 'origin'
     };
     const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, 'content-type': 'application/json' } });
-    const html = (body, status = 200) => new Response(page(body), { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+    const html = (body, status = 200, extra) => new Response(page(body), { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...(extra || {}) } });
     if (req.method === 'OPTIONS') return new Response(null, { headers: cors });
 
     try {
-      // ---- pages opened in the browser by the bank / Plaid (no password; protected by one-time secrets) ----
+      // ---- pages opened in the browser by the bank / Plaid (protected by one-time secrets) ----
       if (req.method === 'GET' && path === '/callback') return await ebCallback(env, url, html);
-      if (req.method === 'GET' && path === '/plaid/link') return await plaidLinkPage(env, url, html);
+      if (req.method === 'GET' && path === '/plaid/link') return await plaidLinkPage(env, req, url, html);
       if (req.method === 'POST' && path === '/plaid/done') return await plaidDone(env, url, req, json);
-      if (req.method === 'GET') return json({ ok: true, name: 'Budget bridge', kv: !!env.STORE }, 200);
-
+      if (req.method === 'GET') return json({ ok: true, name: 'Budget bridge', kv: !!env.STORE, plaid: !!env.PLAID_CLIENT_ID }, 200);
       if (req.method !== 'POST') return json({ error: 'Not allowed' }, 405);
-      if (!env.APP_TOKEN || req.headers.get('authorization') !== 'Bearer ' + env.APP_TOKEN) return json({ error: 'Wrong bridge password' }, 401);
+
+      const u = await who(req, env);
+      if (!u) return json({ error: 'Not authorised' }, 401);
       let body = {};
       try { body = await req.json(); } catch (_) {}
 
-      // ---- encrypted backup: exactly one slot, each upload replaces the previous one ----
+      // ---- encrypted backup: one slot per user, each upload replaces the previous one ----
       if (path === '/backup/put') {
-        needKV(env);
         const blob = typeof body.blob === 'string' ? body.blob : '';
         if (!blob || blob.length > MAX_BACKUP_BYTES) return json({ error: 'Backup missing or too large' }, 400);
-        await env.STORE.put('backup', JSON.stringify({ blob, id: String(body.id || ''), savedAt: Date.now() }));
+        await env.STORE.put(key(u, 'backup'), JSON.stringify({ blob, id: String(body.id || ''), savedAt: Date.now() }));
         return json({ ok: true, savedAt: Date.now() });
       }
       if (path === '/backup/get') {
-        needKV(env);
-        const raw = await env.STORE.get('backup');
+        const raw = await env.STORE.get(key(u, 'backup'));
         if (!raw) return json({ error: 'No backup found' }, 404);
         return json(JSON.parse(raw));
       }
       if (path === '/backup/info') {
-        needKV(env);
-        const raw = await env.STORE.get('backup');
+        const raw = await env.STORE.get(key(u, 'backup'));
         if (!raw) return json({ exists: false });
         const b = JSON.parse(raw);
         return json({ exists: true, id: b.id, savedAt: b.savedAt });
       }
 
-      // ---- Enable Banking (SEB and other European banks) ----
+      // ---- Plaid (America First Credit Union and other US banks), every user ----
+      if (path === '/plaid/start') return await plaidStart(env, u, req, json);
+      if (path === '/plaid/status') return await plaidStatus(env, u, json);
+      if (path === '/plaid/transactions') return await plaidTransactions(env, u, body, json);
+
+      // ---- Enable Banking (SEB): its free mode only reaches the owner's own accounts, so owner only ----
+      if (['/start', '/session', '/claim', '/transactions', '/aspsps'].includes(path) && !u.owner) {
+        return json({ error: 'SEB sync is only available to the app owner' }, 403);
+      }
       if (path === '/start') {
         const st = String(body.state || crypto.randomUUID());
-        const redirect = body.redirect_url || (new URL(req.url).origin + '/callback');
+        const redirect = body.redirect_url || (url.origin + '/callback');
         const make = (days) => ({
           access: { valid_until: new Date(Date.now() + days * 864e5).toISOString() },
           aspsp: { name: body.bank || 'SEB', country: body.country || 'LV' },
-          state: st,
-          redirect_url: redirect,
-          psu_type: 'personal'
+          state: st, redirect_url: redirect, psu_type: 'personal'
         });
         let r = await eb(env, 'POST', '/auth', make(180));
         if (!r.ok) r = await eb(env, 'POST', '/auth', make(90)); // some banks allow shorter consent only
-        if (r.ok && env.STORE) await env.STORE.put('pending:' + st, '1', { expirationTtl: 3600 }); // only needed for the iPhone flow
+        if (r.ok) await env.STORE.put('pending:' + st, '1', { expirationTtl: 3600 });
         return pass(r, json);
       }
       if (path === '/session') return pass(await eb(env, 'POST', '/sessions', { code: body.code }), json);
       if (path === '/claim') {
-        // The app collects the result of a bank login that finished in the browser.
-        needKV(env);
-        const key = 'claim:' + String(body.state || '');
-        const raw = await env.STORE.get(key);
+        const k = 'claim:' + String(body.state || '');
+        const raw = await env.STORE.get(k);
         if (!raw) return json({ status: 'waiting' }, 202);
-        await env.STORE.delete(key);
+        await env.STORE.delete(k);
         return json(JSON.parse(raw));
       }
       if (path === '/transactions') {
         const all = [];
-        let key = '';
-        for (let page = 0; page < 30; page++) {
+        let cont = '';
+        for (let pg = 0; pg < 30; pg++) {
           const q = new URLSearchParams({ date_from: body.date_from });
-          if (key) q.set('continuation_key', key);
+          if (cont) q.set('continuation_key', cont);
           // When you open the app yourself, tell the bank you're present (PSD2: no 4-per-day limit then).
-          const psu = body.present ? {
-            'psu-ip-address': req.headers.get('cf-connecting-ip') || '',
-            'psu-user-agent': req.headers.get('user-agent') || 'Budzets'
-          } : null;
+          const psu = body.present ? { 'psu-ip-address': req.headers.get('cf-connecting-ip') || '', 'psu-user-agent': req.headers.get('user-agent') || 'Budzets' } : null;
           const r = await eb(env, 'GET', `/accounts/${encodeURIComponent(body.account_uid)}/transactions?${q}`, null, psu);
           if (!r.ok) return pass(r, json);
           all.push(...(r.data.transactions || []));
-          key = r.data.continuation_key;
-          if (!key) break;
+          cont = r.data.continuation_key;
+          if (!cont) break;
         }
         return json({ transactions: all });
       }
       if (path === '/aspsps') return pass(await eb(env, 'GET', `/aspsps?country=${encodeURIComponent(body.country || 'LV')}`), json);
-
-      // ---- Plaid (America First Credit Union and other US banks) ----
-      if (path === '/plaid/start') return await plaidStart(env, req, body, json);
-      if (path === '/plaid/status') return await plaidStatus(env, body, json);
-      if (path === '/plaid/transactions') return await plaidTransactions(env, body, json);
 
       return json({ error: 'Unknown route' }, 404);
     } catch (e) {
@@ -125,16 +124,39 @@ export default {
   }
 };
 
-function needKV(env) {
-  if (!env.STORE) { const e = new Error('Storage is not set up on the Worker: add a KV namespace binding named STORE (see FRIENDS_SETUP.md)'); e.status = 500; throw e; }
+// ================= users =================
+// Owner: "Authorization: Bearer <APP_TOKEN>" (keeps the original single-user keys, so nothing moves).
+// Everyone else: "x-user: <id>" + "Authorization: Bearer <secret>". The first request with a new id creates the user.
+async function who(req, env) {
+  needKV(env);
+  const tok = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  if (env.APP_TOKEN && tok === env.APP_TOKEN && !req.headers.get('x-user')) return { owner: true, uid: 'owner' };
+  const uid = req.headers.get('x-user') || '';
+  if (!/^[a-z0-9]{20,64}$/.test(uid) || tok.length < 32) return null;
+  const h = await sha256(tok);
+  const raw = await env.STORE.get('user:' + uid);
+  if (!raw) {
+    if (env.SIGNUPS === 'off') return null;
+    await env.STORE.put('user:' + uid, JSON.stringify({ h, created: Date.now() }));
+    return { uid };
+  }
+  return JSON.parse(raw).h === h ? { uid } : null;
+}
+const key = (u, name) => (u.owner ? name : name + ':' + u.uid);
+async function sha256(s) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+function needKV(env) {
+  if (!env.STORE) { const e = new Error('Storage is not set up on the Worker: add a KV namespace binding named STORE'); e.status = 500; throw e; }
+}
 function pass(r, json) {
   if (r.ok) return json(r.data);
   return json({ error: r.data.message || r.data.error || r.data.detail || ('Enable Banking error ' + r.status), details: r.data }, r.status);
 }
 
-// ================= Enable Banking =================
+// ================= Enable Banking (owner) =================
 async function ebCallback(env, url, html) {
   needKV(env);
   const st = url.searchParams.get('state') || '';
@@ -166,7 +188,6 @@ async function eb(env, method, path, body, extraHeaders) {
   return { ok: res.ok, status: res.status, data };
 }
 
-// ---- RS256 JWT for Enable Banking ----
 let cachedKey = null;
 async function jwt(env) {
   if (!env.EB_PRIVATE_KEY || !env.EB_APP_ID) throw new Error('SEB is not set up on this Worker (EB_APP_ID / EB_PRIVATE_KEY missing)');
@@ -188,10 +209,10 @@ function b64url(bytes) {
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-// ================= Plaid =================
+// ================= Plaid (all users) =================
 const plaidBase = (env) => (env.PLAID_ENV === 'sandbox' ? 'https://sandbox.plaid.com' : 'https://production.plaid.com');
 async function plaid(env, path, body) {
-  if (!env.PLAID_CLIENT_ID || !env.PLAID_SECRET) throw new Error('Plaid is not set up on this Worker (PLAID_CLIENT_ID / PLAID_SECRET missing)');
+  if (!env.PLAID_CLIENT_ID || !env.PLAID_SECRET) throw new Error('US bank sync is not set up on the server yet');
   const res = await fetch(plaidBase(env) + path, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ client_id: env.PLAID_CLIENT_ID, secret: env.PLAID_SECRET, ...body })
@@ -207,30 +228,40 @@ const plaidErr = (r) => {
 };
 const rand = () => Array.from(crypto.getRandomValues(new Uint8Array(18)), (b) => b.toString(16).padStart(2, '0')).join('');
 
-async function plaidStart(env, req, body, json) {
-  needKV(env);
+async function plaidStart(env, u, req, json) {
   const origin = new URL(req.url).origin;
-  const r = await plaid(env, '/link/token/create', {
+  const existing = JSON.parse((await env.STORE.get(key(u, 'plaid_item'))) || 'null');
+  const req0 = {
     client_name: 'Budzets', language: 'en', country_codes: ['US'],
-    user: { client_user_id: 'budzets-owner' }, products: ['transactions'],
-    transactions: { days_requested: 365 },
-    redirect_uri: origin + '/plaid/link'
-  });
+    user: { client_user_id: u.uid }, redirect_uri: origin + '/plaid/link'
+  };
+  // Reconnecting reuses the same bank login ("update mode"), so it doesn't use up one of the free slots.
+  if (existing) req0.access_token = existing.access_token;
+  else {
+    const used = Number(await env.STORE.get('plaid_count')) || 0;
+    const max = Number(env.PLAID_MAX_ITEMS) || 10;
+    if (used >= max) return json({ error: `The server's free bank connections are all used (${max}). Ask the app owner.` }, 409);
+    req0.products = ['transactions'];
+    req0.transactions = { days_requested: 365 };
+  }
+  const r = await plaid(env, '/link/token/create', req0);
   if (!r.ok) return json({ error: plaidErr(r), details: r.data }, r.status);
   const k = rand();
-  await env.STORE.put('plaidlink:' + k, r.data.link_token, { expirationTtl: 3600 });
-  await env.STORE.put('plaid_last', k, { expirationTtl: 3600 });
-  return json({ url: origin + '/plaid/link?k=' + k, state: body.state || k });
+  await env.STORE.put('plaidlink:' + k, JSON.stringify({ token: r.data.link_token, uid: u.uid, owner: !!u.owner, update: !!existing }), { expirationTtl: 3600 });
+  return json({ url: origin + '/plaid/link?k=' + k });
 }
 
-async function plaidLinkPage(env, url, html) {
+async function plaidLinkPage(env, req, url, html) {
   needKV(env);
-  // After a bank's own login (OAuth) Plaid sends the user back here with oauth_state_id; we resume the same session.
+  // After the bank's own login page (OAuth), Plaid sends the user back here with oauth_state_id.
+  // The cookie set on the first visit tells us which login to resume.
   const oauth = url.searchParams.get('oauth_state_id');
-  const k = url.searchParams.get('k') || (oauth ? await env.STORE.get('plaid_last') : '');
-  const token = k && (await env.STORE.get('plaidlink:' + k));
-  if (!token) return html('<h1>Link expired</h1><p>Go back to Budžets and start the bank connection again.</p>', 400);
-  const cfg = JSON.stringify({ token, k, received: oauth ? url.href : null }).replace(/</g, '\\u003c');
+  const cookieK = ((req.headers.get('cookie') || '').match(/(?:^|;\s*)bk=([a-f0-9]+)/) || [])[1];
+  const k = url.searchParams.get('k') || (oauth ? cookieK : '');
+  const raw = k && (await env.STORE.get('plaidlink:' + k));
+  if (!raw) return html('<h1>Link expired</h1><p>Go back to Budžets and start the bank connection again.</p>', 400);
+  const link = JSON.parse(raw);
+  const cfg = JSON.stringify({ token: link.token, k, received: oauth ? url.href : null }).replace(/</g, '\\u003c');
   return html(`<h1>Connect your bank</h1><p id="msg">Opening secure bank login…</p>
 <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 <script>
@@ -249,32 +280,39 @@ const opts = {
   onExit: (err) => { msg.textContent = err ? ('Cancelled: ' + (err.display_message || err.error_message || err.error_code)) : 'Closed. Go back to Budžets to try again.'; }
 };
 if (cfg.received) opts.receivedRedirectUri = cfg.received;
-const h = Plaid.create(opts);
-h.open();
-</script>`);
+Plaid.create(opts).open();
+</script>`, 200, { 'set-cookie': `bk=${k}; Path=/plaid; Max-Age=3600; Secure; HttpOnly; SameSite=Lax` });
 }
 
 async function plaidDone(env, url, req, json) {
   needKV(env);
   const k = url.searchParams.get('k') || '';
-  const token = k && (await env.STORE.get('plaidlink:' + k));
-  if (!token) return json({ error: 'Link expired, start again in the app' }, 400);
+  const raw = k && (await env.STORE.get('plaidlink:' + k));
+  if (!raw) return json({ error: 'Link expired, start again in the app' }, 400);
+  const link = JSON.parse(raw);
+  const u = link.owner ? { owner: true, uid: 'owner' } : { uid: link.uid };
   const body = await req.json().catch(() => ({}));
-  const ex = await plaid(env, '/item/public_token/exchange', { public_token: body.public_token });
-  if (!ex.ok) return json({ error: plaidErr(ex) }, ex.status);
-  const acc = await plaid(env, '/accounts/get', { access_token: ex.data.access_token });
-  const accounts = (acc.data.accounts || []).map((a) => ({ uid: a.account_id, name: a.name || a.official_name || '', mask: a.mask || '', type: a.type, subtype: a.subtype }));
-  await env.STORE.put('plaid_item', JSON.stringify({ access_token: ex.data.access_token, item_id: ex.data.item_id, accounts, connectedAt: Date.now() }));
+  let item = JSON.parse((await env.STORE.get(key(u, 'plaid_item'))) || 'null');
+  if (link.update && item) {
+    item.connectedAt = Date.now(); // same bank login, just re-authorised
+  } else {
+    const ex = await plaid(env, '/item/public_token/exchange', { public_token: body.public_token });
+    if (!ex.ok) return json({ error: plaidErr(ex) }, ex.status);
+    item = { access_token: ex.data.access_token, item_id: ex.data.item_id, connectedAt: Date.now() };
+    await env.STORE.put('plaid_count', String((Number(await env.STORE.get('plaid_count')) || 0) + 1));
+  }
+  const acc = await plaid(env, '/accounts/get', { access_token: item.access_token });
+  if (acc.ok) item.accounts = (acc.data.accounts || []).map((a) => ({ uid: a.account_id, name: a.name || a.official_name || '', mask: a.mask || '', type: a.type, subtype: a.subtype }));
+  await env.STORE.put(key(u, 'plaid_item'), JSON.stringify(item));
   await env.STORE.delete('plaidlink:' + k);
   return json({ ok: true });
 }
 
-async function plaidStatus(env, body, json) {
-  needKV(env);
-  const raw = await env.STORE.get('plaid_item');
+async function plaidStatus(env, u, json) {
+  const raw = await env.STORE.get(key(u, 'plaid_item'));
   if (!raw) return json({ connected: false }, 202);
   const it = JSON.parse(raw);
-  return json({ connected: true, accounts: it.accounts, connectedAt: it.connectedAt });
+  return json({ connected: true, accounts: it.accounts || [], connectedAt: it.connectedAt });
 }
 
 // Plaid amounts are positive for money leaving the account. Convert to the shape the app already understands.
@@ -295,24 +333,24 @@ function normalizePlaidTx(t) {
   return tx;
 }
 
-async function plaidTransactions(env, body, json) {
-  needKV(env);
-  const raw = await env.STORE.get('plaid_item');
+async function plaidTransactions(env, u, body, json) {
+  const raw = await env.STORE.get(key(u, 'plaid_item'));
   if (!raw) return json({ error: 'Not connected: connect your bank in Settings' }, 400);
   const it = JSON.parse(raw);
   if (body.refresh) {
-    // Ask Plaid to pull fresh data from the bank now (included in the free plan). At most every 15 minutes;
+    // Ask Plaid to pull fresh data from the bank now (included in the free plan). At most every 15 minutes per user;
     // the new data arrives a little later and is picked up by the next sync.
-    const last = Number(await env.STORE.get('plaid_refresh_at')) || 0;
+    const rk = key(u, 'plaid_refresh_at');
+    const last = Number(await env.STORE.get(rk)) || 0;
     if (Date.now() - last > 15 * 60e3) {
-      await env.STORE.put('plaid_refresh_at', String(Date.now()));
+      await env.STORE.put(rk, String(Date.now()));
       await plaid(env, '/transactions/refresh', { access_token: it.access_token }).catch(() => null);
     }
   }
   const end = new Date().toISOString().slice(0, 10);
   const all = [];
   let total = Infinity;
-  for (let page = 0; all.length < total && page < 40; page++) {
+  for (let pg = 0; all.length < total && pg < 40; pg++) {
     const opts = { count: 250, offset: all.length };
     if (body.account_uid) opts.account_ids = [body.account_uid];
     const r = await plaid(env, '/transactions/get', { access_token: it.access_token, start_date: body.date_from, end_date: end, options: opts });
@@ -330,4 +368,3 @@ function page(body) {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Budžets</title>
 <style>body{font:17px/1.5 system-ui,-apple-system,sans-serif;background:#101312;color:#eef2ef;margin:0;padding:48px 24px;text-align:center}h1{font-size:24px}p{color:#aab4af}</style></head><body>${body}</body></html>`;
 }
-

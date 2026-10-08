@@ -13,7 +13,8 @@
       useExpected: true, expectedNet: 0, statsFrom: null, liveEnabled: true, vacations: [],
       salary: { gross: 0, taxBook: true, dependents: 0, disability: 'none' }, currency: 'EUR',
       bank: { workerUrl: '', token: '', provider: 'eb', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '', pendingMode: '', pendingSince: 0 },
-      backup: { pass: '', id: '' },
+      backup: { pass: '', id: '', codeSaved: false },
+      account: { uid: '', secret: '' },
       aliases: {}
     },
     expenses: [], incomes: [], adjustments: [], ignoredBankIds: [], liveSeen: [], liveLog: []
@@ -60,6 +61,18 @@
   let bkmeta = (() => { try { return JSON.parse(localStorage.getItem(META_KEY)) || {}; } catch (e) { return {}; } })();
   function saveMeta() { try { localStorage.setItem(META_KEY, JSON.stringify(bkmeta)); } catch (e) {} }
   const BB = window.BudgetBackup;
+  const hex = (n) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => b.toString(16).padStart(2, '0')).join('');
+  // Every install gets its own automatic ID and secret on the shared server: no sign up, no passwords to type.
+  if (!state.settings.account.uid) { state.settings.account = { uid: hex(16), secret: hex(32) }; localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+  const DEFAULT_BRIDGE = (window.BUDGET_CONFIG && window.BUDGET_CONFIG.bridge) || '';
+  const bridgeUrl = () => state.settings.bank.workerUrl || DEFAULT_BRIDGE;
+  const isOwner = () => !!state.settings.bank.token;
+  function authHeaders(cfg) {
+    const c = cfg || { token: state.settings.bank.token, uid: state.settings.account.uid, secret: state.settings.account.secret };
+    return c.token ? { authorization: 'Bearer ' + c.token } : { authorization: 'Bearer ' + c.secret, 'x-user': c.uid };
+  }
+  const backupKey = () => state.settings.backup.pass || state.settings.account.secret;
+  const recoveryCode = () => BB.makeRecoveryCode({ workerUrl: bridgeUrl(), token: state.settings.bank.token, uid: state.settings.account.uid, secret: state.settings.account.secret });
 
   const ui = { tab: 'today', statsMode: 'month', statsOffset: 0, calOffset: 0, charts: {} };
   let ledger, today;
@@ -224,7 +237,8 @@
       ${per.incomeExpected ? `<div class="banner">${per.advance > 0 ? `Advance ${money(per.advance)} received. Still expecting ${money(per.salaryToCome)} of salary.` : `Using expected salary ${money(per.salaryToCome)} until you log this month's salary.`}</div>` : ''}
       ${per.income === 0 ? `<div class="banner bad">No income logged for this period yet. Add it in Income.</div>` : ''}
       ${isIOS && !isStandalone() && !localStorage.getItem('budget.hideInstall') ? `<div class="banner" id="installTip"><b>Install on iPhone:</b> tap the Share button in Safari, then <b>Add to Home Screen</b>, and open Budžets from your home screen. Enter your data only there: the Safari tab and the home screen app keep separate data. <a href="#" id="hideTip">Hide</a></div>` : ''}
-      ${consentDays !== null && consentDays <= 7 ? `<div class="banner bad">${esc(bankLabel())} connection expires in ${Math.max(0, consentDays)} days. Reconnect in Settings.</div>` : ''}
+      ${backupReady() && bkmeta.lastOkMs && !state.settings.backup.codeSaved ? `<div class="banner" id="codeTip"><b>Save your recovery code.</b> It brings your budget back if you delete the app or change phone. <a href="#" id="codeCopy">Copy it</a></div>` : ''}
+            ${consentDays !== null && consentDays <= 7 ? `<div class="banner bad">${esc(bankLabel())} connection expires in ${Math.max(0, consentDays)} days. Reconnect in Settings.</div>` : ''}
       ${heroHtml(ts, over)}
 
       <div class="quick">
@@ -267,6 +281,7 @@
       ${vacationHtml()}
     `;
     $('#qExp').onclick = () => openExpense(null);
+    const cc = $('#codeCopy'); if (cc) cc.onclick = (ev) => { ev.preventDefault(); copyRecoveryCode(); };
     const ht = $('#hideTip'); if (ht) ht.onclick = (ev) => { ev.preventDefault(); try { localStorage.setItem('budget.hideInstall', '1'); } catch (e) {} $('#installTip').remove(); };
     $('#qInc').onclick = () => openIncome(null);
     $('#vacCard').addEventListener('toggle', (e) => (ui.vacOpen = e.target.open));
@@ -721,6 +736,8 @@
         s.monthlySaving = L.num($('#oSave', b).value); s.goal = L.num($('#oGoal', b).value); s.startingSaved = L.num($('#oStart', b).value);
         s.backup.id = s.backup.id || uid() + uid();
         s.startDate = today; s.statsFrom = today; save(); closeSheet(); render(); toast('All set');
+        setTimeout(() => runBackup(false), 500);
+        if (usd && !isOwner() && DEFAULT_BRIDGE) setTimeout(openConnectPrompt, 400);
       };
     });
   }
@@ -728,6 +745,7 @@
   function openSettings() {
     const s = state.settings, bk = s.bank;
     const connected = !!bk.sessionId;
+    if (!isOwner() && bk.provider !== 'plaid') { bk.provider = 'plaid'; bk.bankName = 'America First CU'; bk.country = 'US'; }
     const plaidMode = bk.provider === 'plaid';
     const label = bankLabel();
     const lastBk = bkmeta.lastOkMs ? `${dShort(L.todayStr(new Date(bkmeta.lastOkMs)))} ${new Date(bkmeta.lastOkMs).toTimeString().slice(0, 5)}` : 'never';
@@ -738,24 +756,22 @@
       <div class="field"><label>Opening carry, ${SYM} (negative = debt to make up)</label><input id="stCarry" inputmode="decimal" value="${s.openingCarry || 0}"></div>
       <div class="field"><label>Currency</label><select id="stCur"><option value="EUR" ${s.currency === 'USD' ? '' : 'selected'}>Euro (€)</option><option value="USD" ${s.currency === 'USD' ? 'selected' : ''}>US dollar ($)</option></select></div>
 
-      <h3 style="margin-top:22px">Your bridge</h3>
-      <div class="small muted" style="margin-bottom:10px">Your own free Cloudflare Worker. It stores your encrypted backup and talks to your bank. See FRIENDS_SETUP.md.</div>
-      <div class="field"><label>Bridge URL</label><input id="bkUrl" value="${esc(bk.workerUrl)}" placeholder="https://budget-bridge.yourname.workers.dev" autocapitalize="none" autocorrect="off"></div>
-      <div class="field"><label>Bridge password</label><input id="bkTok" type="password" value="${esc(bk.token)}"></div>
-
-      <h3 style="margin-top:22px">Encrypted backup</h3>
+      <h3 style="margin-top:22px">Backup</h3>
       <div class="small ${bkmeta.error || bkmeta.conflict ? 'bad' : 'muted'}" style="margin-bottom:10px">${backupReady()
-        ? (bkmeta.conflict ? 'Paused: a backup from another install already exists. Restore it, or replace it with this phone\'s data (buttons below).' : `On · last backup ${lastBk} · up to 3 a day, only when something changed${bkmeta.error ? ' · last error: ' + esc(bkmeta.error) : ''}`)
-        : 'Off. Set the bridge above and a passphrase below. Everything is encrypted on this phone before upload; nobody else can read it, and a lost passphrase cannot be recovered.'}</div>
-      <div class="field"><label>Backup passphrase (8+ characters)</label><input id="bpPass" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" value="${esc(s.backup.pass)}" autocomplete="off"></div>
-      <div class="actions"><button class="btn primary" id="bpNow">${backupReady() ? 'Back up now' : 'Turn on backup'}</button><button class="btn" id="bpRestore">Restore latest</button></div>
-      ${bkmeta.conflict ? '<div class="actions"><button class="btn danger" id="bpReplace">Replace the old backup with this phone</button></div>' : ''}
-      <div class="actions"><button class="btn ghost" id="bpCode">Copy recovery code</button></div>
-      <div class="hint">The recovery code plus your passphrase brings everything back on a new phone or after deleting the app. Keep both in your password manager.</div>
+        ? (bkmeta.conflict ? 'Paused: a backup from another install already exists. Restore it, or replace it with this phone\'s data (buttons below).' : `Automatic and encrypted · last backup ${lastBk}${bkmeta.error ? ' · last error: ' + esc(bkmeta.error) : ''}`)
+        : 'Starts automatically after setup.'}</div>
+      <div class="actions"><button class="btn primary" id="bpCode">Copy recovery code</button><button class="btn" id="bpNow">Back up now</button></div>
+      <div class="hint" style="margin-bottom:8px">Save the recovery code in your notes or password manager. If you delete the app or get a new phone, paste it to get everything back.</div>
+      ${bkmeta.conflict ? '<div class="actions"><button class="btn danger" id="bpReplace">Replace the old backup with this phone</button><button class="btn" id="bpRestore">Restore it</button></div>' : ''}
+      <details style="margin:8px 0"><summary class="small muted" style="cursor:pointer">Advanced: extra passphrase, own server</summary>
+        <div class="field" style="margin-top:10px"><label>Extra passphrase <span class="muted">optional, 8+ characters</span></label><input id="bpPass" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" value="${esc(s.backup.pass)}" autocomplete="off"><div class="hint">If set, restoring needs the recovery code AND this passphrase. If you forget it, the backup cannot be opened.</div></div>
+        <div class="field"><label>Server URL <span class="muted">empty = Budžets server</span></label><input id="bkUrl" value="${esc(bk.workerUrl)}" placeholder="${esc(DEFAULT_BRIDGE)}" autocapitalize="none" autocorrect="off"></div>
+        <div class="field"><label>Owner password <span class="muted">app owner only</span></label><input id="bkTok" type="password" value="${esc(bk.token)}"></div>
+      </details>
 
       <h3 style="margin-top:22px">Bank sync</h3>
-      <div class="field"><label>Bank</label><select id="bkProv"><option value="eb" ${plaidMode ? '' : 'selected'}>SEB (Latvia)</option><option value="plaid" ${plaidMode ? 'selected' : ''}>America First Credit Union (USA)</option></select></div>
-      <div class="small muted" style="margin-bottom:10px">${connected ? `Connected · ${bk.accounts.length} account(s) · last sync ${bk.lastSync ? dShort(bk.lastSync.slice(0, 10)) + ' ' + bk.lastSync.slice(11, 16) : 'never'}${bk.validUntil ? ' · consent until ' + dShort(bk.validUntil.slice(0, 10)) : ''}` : bk.pendingState ? 'Waiting for the bank login to finish…' : 'Not connected. See FRIENDS_SETUP.md.'}</div>
+      ${isOwner() ? `<div class="field"><label>Bank</label><select id="bkProv"><option value="eb" ${plaidMode ? '' : 'selected'}>SEB (Latvia)</option><option value="plaid" ${plaidMode ? 'selected' : ''}>America First Credit Union (USA)</option></select></div>` : '<div class="small" style="margin-bottom:6px">America First Credit Union (USA)</div>'}
+      <div class="small muted" style="margin-bottom:10px">${connected ? `Connected · ${bk.accounts.length} account(s) · last sync ${bk.lastSync ? dShort(bk.lastSync.slice(0, 10)) + ' ' + bk.lastSync.slice(11, 16) : 'never'}${bk.validUntil ? ' · consent until ' + dShort(bk.validUntil.slice(0, 10)) : ''}` : bk.pendingState ? 'Waiting for the bank login to finish…' : 'Not connected.'}</div>
       <div class="toggle"><span>Import incoming payments as income</span><input type="checkbox" id="bkInc" ${bk.importIncome ? 'checked' : ''}></div>
       <div class="field"><label>Ignore transactions containing (comma separated)</label><input id="bkIgn" value="${esc(bk.ignore)}" placeholder="own transfer, savings, your name"></div>
       <div class="actions"><button class="btn primary" id="bkConnect">${connected ? 'Reconnect ' + label : 'Connect ' + label}</button>${connected ? '<button class="btn" id="bkSync">Sync now</button>' : ''}${bk.pendingState ? '<button class="btn" id="bkCheck">I finished, check now</button>' : ''}</div>
@@ -765,32 +781,32 @@
       <div class="actions"><button class="btn" id="dExport">Export backup file</button><button class="btn" id="dImport">Import backup file</button></div>
       <input type="file" id="dFile" accept="application/json" hidden>
       <div class="actions"><button class="btn ghost" id="dUpdate">Check for update</button><button class="btn danger" id="dReset">Erase all</button></div>
-      <p class="small muted" style="text-align:center;margin-top:16px">Version ${esc(window.APP_VERSION || 'dev')} · data stored on this device${backupReady() ? ' + your encrypted backup' : ''}</p>`, (b) => {
-      const readBridge = () => { bk.workerUrl = $('#bkUrl', b).value.trim().replace(/\/+$/, ''); bk.token = $('#bkTok', b).value.trim(); s.backup.pass = $('#bpPass', b).value; save(); };
+      <p class="small muted" style="text-align:center;margin-top:16px">Version ${esc(window.APP_VERSION || 'dev')} · data on this device + encrypted backup${isOwner() ? ' · owner' : ''}</p>`, (b) => {
+      const readBridge = () => {
+        bk.workerUrl = $('#bkUrl', b).value.trim().replace(/\/+$/, ''); bk.token = $('#bkTok', b).value.trim();
+        const p = $('#bpPass', b).value;
+        if (p && p.length < 8) { toast('Passphrase needs 8+ characters'); return; }
+        if (p !== s.backup.pass) { s.backup.pass = p; bkmeta.dirty = true; saveMeta(); }
+        save();
+      };
       $('#stPay', b).onchange = (e) => { s.payDay = Math.min(31, Math.max(1, parseInt(e.target.value, 10) || 1)); save(); render(); };
       $('#stStart', b).onchange = (e) => { s.startDate = e.target.value || today; save(); render(); };
       $('#stStats', b).onchange = (e) => { s.statsFrom = e.target.value || s.startDate; save(); render(); };
       $('#stCarry', b).onchange = (e) => { s.openingCarry = L.num(e.target.value); save(); render(); };
       $('#stCur', b).onchange = (e) => { s.currency = e.target.value; setCurrency(); save(); render(); openSettings(); };
       $('#bkUrl', b).onchange = readBridge; $('#bkTok', b).onchange = readBridge;
-      $('#bpPass', b).onchange = () => { readBridge(); setTimeout(() => runBackup(false), 200); };
+      $('#bpPass', b).onchange = () => { readBridge(); setTimeout(() => runBackup(true), 200); };
       $('#bpNow', b).onclick = async () => {
         readBridge();
-        if (!backupReady()) return toast('Fill in bridge URL, bridge password and a passphrase of 8+ characters', 5000);
+        if (!backupReady()) return toast('Backup starts after setup');
         toast('Backing up…'); await runBackup(true);
         toast(bkmeta.conflict ? 'A backup from another install exists: restore it or replace it' : bkmeta.error ? 'Backup failed: ' + bkmeta.error : 'Backed up', 5000); openSettings();
       };
-      $('#bpRestore', b).onclick = () => { readBridge(); openRestore({ workerUrl: bk.workerUrl, token: bk.token, pass: s.backup.pass }); };
+      const rs = $('#bpRestore', b); if (rs) rs.onclick = () => openRestore(true);
       const rp = $('#bpReplace', b);
       if (rp) rp.onclick = async () => { if (!confirm('Replace the existing backup with the data on this phone?')) return; await runBackup(true, true); toast(bkmeta.error ? 'Backup failed: ' + bkmeta.error : 'Backup replaced'); openSettings(); };
-      $('#bpCode', b).onclick = async () => {
-        readBridge();
-        if (!bk.workerUrl || !bk.token) return toast('Set the bridge URL and password first');
-        const code = BB.makeRecoveryCode(bk.workerUrl, bk.token);
-        try { await navigator.clipboard.writeText(code); toast('Recovery code copied. Save it with your passphrase.', 4000); }
-        catch (e) { prompt('Copy this recovery code and keep it safe:', code); }
-      };
-      $('#bkProv', b).onchange = (e) => {
+      $('#bpCode', b).onclick = () => copyRecoveryCode();
+      const pv = $('#bkProv', b); if (pv) pv.onchange = (e) => {
         bk.provider = e.target.value;
         if (bk.provider === 'plaid') { bk.bankName = 'America First CU'; bk.country = 'US'; } else { bk.bankName = 'SEB'; bk.country = 'LV'; }
         bk.sessionId = ''; bk.accounts = []; bk.validUntil = ''; bk.lastSync = ''; bk.pendingState = '';
@@ -842,8 +858,27 @@
     r.readAsText(file);
   }
 
+  async function copyRecoveryCode() {
+    const code = recoveryCode();
+    let ok = false;
+    try { await navigator.clipboard.writeText(code); ok = true; } catch (e) {}
+    if (!ok) prompt('Copy this recovery code and keep it safe:', code);
+    else toast('Recovery code copied. Paste it into your notes.', 4000);
+    state.settings.backup.codeSaved = true; save(); render();
+  }
+  function openConnectPrompt() {
+    openSheet(`<h3>Connect your bank?</h3>
+      <p class="small muted">Link America First Credit Union and your spending fills in by itself. You can also do it later in Settings.</p>
+      <button class="btn primary block" id="cpGo">Connect America First CU</button>
+      <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="cpLater">Later</button></div>`, (b) => {
+      $('#cpGo', b).onclick = () => { const bk = state.settings.bank; bk.provider = 'plaid'; bk.bankName = 'America First CU'; bk.country = 'US'; save(); bankConnect(); };
+      $('#cpLater', b).onclick = closeSheet;
+    });
+  }
+
   // ---------------- encrypted cloud backup (your Worker, one slot, at most 3 a day) ----------------
-  const backupReady = () => { const bk = state.settings.bank; return !!(bk.workerUrl && bk.token && state.settings.backup.pass && state.settings.backup.pass.length >= 8 && state.settings.startDate); };
+  // On by default for everyone: encrypted with your own passphrase if you set one, otherwise with this install's secret.
+  const backupReady = () => !!(bridgeUrl() && (isOwner() || state.settings.account.uid) && backupKey() && backupKey().length >= 8 && state.settings.startDate);
   let backingUp = false;
   async function runBackup(force, override) {
     if (backingUp || !BB || !backupReady() || !navigator.onLine) return;
@@ -861,7 +896,7 @@
       }
       const seq = saveSeq;
       const snap = JSON.parse(JSON.stringify(state));
-      const blob = await BB.encrypt({ app: 'budzets', savedAt: new Date().toISOString(), state: snap }, cfg.pass);
+      const blob = await BB.encrypt({ app: 'budzets', savedAt: new Date().toISOString(), state: snap }, backupKey());
       await bridge('/backup/put', { blob, id: cfg.id });
       bkmeta = BB.afterBackup(bkmeta, now, day);
       delete bkmeta.conflict;
@@ -871,46 +906,47 @@
     finally { backingUp = false; refreshStatus(); }
   }
 
-  async function restoreFromBackup(workerUrl, token, pass) {
-    const res = await fetch(workerUrl + '/backup/get', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token }, body: '{}' });
+  // c: { workerUrl, token, uid, secret } from a recovery code (or the current install)
+  async function restoreFromBackup(c, pass) {
+    const url = c.workerUrl || DEFAULT_BRIDGE;
+    const res = await fetch(url + '/backup/get', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders(c) }, body: '{}' });
     const data = await res.json().catch(() => ({}));
-    if (res.status === 404) throw new Error('No backup found on that bridge');
-    if (!res.ok) throw new Error(data.error || ('Bridge error ' + res.status));
-    const payload = await BB.decrypt(data.blob, pass);
+    if (res.status === 404) throw new Error('No backup found for this recovery code');
+    if (res.status === 401) throw new Error('The server did not recognise this recovery code');
+    if (!res.ok) throw new Error(data.error || ('Server error ' + res.status));
+    let payload;
+    try { payload = await BB.decrypt(data.blob, pass || c.secret); }
+    catch (e) { throw new Error(pass ? 'Wrong passphrase' : 'This backup has its own passphrase: type it in'); }
     if (!payload || !payload.state || !Array.isArray(payload.state.expenses)) throw new Error('Backup is not a budget backup');
     state = migrate(payload.state);
-    state.settings.bank.workerUrl = workerUrl; state.settings.bank.token = token; state.settings.backup.pass = pass;
+    state.settings.bank.workerUrl = url === DEFAULT_BRIDGE ? '' : url;
+    state.settings.bank.token = c.token || '';
+    if (c.uid) state.settings.account = { uid: c.uid, secret: c.secret };
+    state.settings.backup.pass = pass || '';
+    state.settings.backup.codeSaved = true;
     if (data.id) state.settings.backup.id = data.id;
     setCurrency(); save();
     bkmeta = { dirty: false, lastOkMs: Date.now(), day: L.todayStr(), count: 1 }; saveMeta(); // just restored: nothing new to upload
     return payload;
   }
 
-  function openRestore(pre) {
-    const p = pre || {};
+  function openRestore(fromSettings) {
     openSheet(`<h3>Restore from backup</h3>
-      <div class="small muted" style="margin-bottom:10px">Use this after reinstalling or on a new phone. It replaces the data on this device with your latest encrypted backup.</div>
-      ${p.workerUrl ? '' : `<div class="field"><label>Recovery code</label><input id="rcCode" placeholder="budzets:..." autocapitalize="none" autocorrect="off"><div class="hint">From Settings > Encrypted backup > Copy recovery code on your old install. Or fill in the two fields below instead.</div></div>
-      <div class="field"><label>Bridge URL (if you have no code)</label><input id="rcUrl" placeholder="https://budget-bridge.yourname.workers.dev" autocapitalize="none" autocorrect="off"></div>
-      <div class="field"><label>Bridge password (if you have no code)</label><input id="rcTok" type="password"></div>`}
-      <div class="field"><label>Backup passphrase</label><input id="rcPass" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" value="${esc(p.pass || '')}" autocomplete="off"></div>
+      <div class="small muted" style="margin-bottom:10px">Paste the recovery code you saved. It replaces the data on this device with your latest backup.</div>
+      ${fromSettings ? '' : `<div class="field"><label>Recovery code</label><textarea id="rcCode" rows="3" placeholder="budzets:..." autocapitalize="none" autocorrect="off" spellcheck="false"></textarea></div>`}
+      <div class="field"><label>Passphrase <span class="muted">only if you set one</span></label><input id="rcPass" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"></div>
       <button class="btn primary block" id="rcGo">Restore</button>
       <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="rcBack">Cancel</button></div>`, (b) => {
       $('#rcBack', b).onclick = () => { closeSheet(); if (needsSetup()) setTimeout(openOnboarding, 100); };
       $('#rcGo', b).onclick = async () => {
         try {
-          let url = p.workerUrl, tok = p.token;
-          if (!url) {
-            const code = $('#rcCode', b).value.trim();
-            if (code) ({ workerUrl: url, token: tok } = BB.parseRecoveryCode(code));
-            else { url = $('#rcUrl', b).value.trim().replace(/\/+$/, ''); tok = $('#rcTok', b).value.trim(); }
-          }
-          if (!url || !tok) throw new Error('Enter the recovery code (or the bridge URL and password)');
+          const c = fromSettings
+            ? { workerUrl: bridgeUrl(), token: state.settings.bank.token, uid: state.settings.account.uid, secret: state.settings.account.secret }
+            : BB.parseRecoveryCode($('#rcCode', b).value);
           const pass = $('#rcPass', b).value;
-          if (!pass) throw new Error('Enter your passphrase');
           if (state.expenses.length && !confirm('This replaces the data currently on this device. Continue?')) return;
           toast('Restoring…');
-          const payload = await restoreFromBackup(url, tok, pass);
+          const payload = await restoreFromBackup(c, pass);
           closeSheet(); render(); toast(`Restored backup from ${dShort(String(payload.savedAt || today).slice(0, 10))} (${state.expenses.length} expenses)`, 5000);
           checkClaim(); autoSync();
         } catch (e) { toast(e.message, 5000); }
@@ -921,9 +957,9 @@
   // ---------------- bank sync (via your Cloudflare Worker + Enable Banking) ----------------
   async function bridge(path, body) {
     const bk = state.settings.bank;
-    if (!bk.workerUrl) throw new Error('Set the bridge URL in Settings');
-    const res = await fetch(bk.workerUrl + path, {
-      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + bk.token },
+    if (!bridgeUrl()) throw new Error('No server set');
+    const res = await fetch(bridgeUrl() + path, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body || {})
     });
     const data = await res.json().catch(() => ({}));
@@ -938,14 +974,15 @@
   async function bankConnect() {
     const bk = state.settings.bank;
     try {
-      if (!bk.workerUrl || !bk.token) throw new Error('Set the bridge URL and password first');
+      if (!bridgeUrl()) throw new Error('No server set');
+      if (bk.provider === 'eb' && !isOwner()) bk.provider = 'plaid';
       let url;
       if (bk.provider === 'plaid') {
         const r = await bridge('/plaid/start', {});
         url = r.url; bk.pendingState = 'plaid'; bk.pendingMode = 'worker';
       } else if (useWorkerCallback()) {
         const st = uid() + uid();
-        const r = await bridge('/start', { redirect_url: bk.workerUrl + '/callback', state: st, bank: bk.bankName, country: bk.country });
+        const r = await bridge('/start', { redirect_url: bridgeUrl() + '/callback', state: st, bank: bk.bankName, country: bk.country });
         url = r.url; bk.pendingState = st; bk.pendingMode = 'worker';
       } else {
         const st = uid();
@@ -987,7 +1024,7 @@
   let claiming = false;
   async function checkClaim() {
     const bk = state.settings.bank;
-    if (claiming || !bk.pendingState || bk.pendingMode !== 'worker' || !bk.workerUrl) return false;
+    if (claiming || !bk.pendingState || bk.pendingMode !== 'worker' || !bridgeUrl()) return false;
     claiming = true;
     try {
       if (bk.pendingState === 'plaid') {
@@ -1034,7 +1071,7 @@
   let syncing = false;
   async function bankSync(manual) {
     const bk = state.settings.bank;
-    if (syncing || !bk.sessionId || !bk.workerUrl) return;
+    if (syncing || !bk.sessionId || !bridgeUrl()) return;
     syncing = true; refreshStatus();
     try {
       const start = state.settings.startDate || today;

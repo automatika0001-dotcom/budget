@@ -61,19 +61,22 @@
     return { ...meta, dirty: false, lastOkMs: nowMs, day: dayStr, count: count + 1, error: '' };
   }
 
-  // ---- recovery code: lets a fresh install find your Worker with one paste ----
-  function makeRecoveryCode(workerUrl, token) {
-    return 'budzets:' + toB64(enc.encode(JSON.stringify({ u: workerUrl, t: token }))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  // ---- recovery code: lets a fresh install find its data with one paste ----
+  // { u: server address, i + s: this user's automatic ID and secret, t: owner password (owner only) }
+  function makeRecoveryCode(o) {
+    const c = { u: o.workerUrl || '' };
+    if (o.token) c.t = o.token;
+    if (o.uid) { c.i = o.uid; c.s = o.secret; }
+    return 'budzets:' + toB64(enc.encode(JSON.stringify(c))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
   function parseRecoveryCode(code) {
-    const m = String(code || '').trim().match(/^budzets:([A-Za-z0-9_-]+)$/);
+    const m = String(code || '').replace(/\s+/g, '').match(/^budzets:([A-Za-z0-9_-]+)$/);
     if (!m) throw new Error('That is not a recovery code');
     let b = m[1].replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '=';
-    try {
-      const o = JSON.parse(dec.decode(fromB64(b)));
-      if (!/^https:\/\//.test(o.u) || !o.t) throw new Error('bad');
-      return { workerUrl: o.u, token: o.t };
-    } catch (e) { throw new Error('That recovery code is damaged'); }
+    let o;
+    try { o = JSON.parse(dec.decode(fromB64(b))); } catch (e) { throw new Error('That recovery code is damaged'); }
+    if (!o || (o.u && !/^https:\/\//.test(o.u)) || !(o.t || (o.i && o.s))) throw new Error('That recovery code is damaged');
+    return { workerUrl: o.u || '', token: o.t || '', uid: o.i || '', secret: o.s || '' };
   }
 
   const api = { encrypt, decrypt, shouldBackup, afterBackup, makeRecoveryCode, parseRecoveryCode, GAP_MS, MAX_PER_DAY };
