@@ -747,7 +747,7 @@
       <div class="small ${bkmeta.error || bkmeta.conflict ? 'bad' : 'muted'}" style="margin-bottom:10px">${backupReady()
         ? (bkmeta.conflict ? 'Paused: a backup from another install already exists. Restore it, or replace it with this phone\'s data (buttons below).' : `On · last backup ${lastBk} · up to 3 a day, only when something changed${bkmeta.error ? ' · last error: ' + esc(bkmeta.error) : ''}`)
         : 'Off. Set the bridge above and a passphrase below. Everything is encrypted on this phone before upload; nobody else can read it, and a lost passphrase cannot be recovered.'}</div>
-      <div class="field"><label>Backup passphrase (8+ characters)</label><input id="bpPass" type="password" value="${esc(s.backup.pass)}" autocomplete="off"></div>
+      <div class="field"><label>Backup passphrase (8+ characters)</label><input id="bpPass" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" value="${esc(s.backup.pass)}" autocomplete="off"></div>
       <div class="actions"><button class="btn primary" id="bpNow">${backupReady() ? 'Back up now' : 'Turn on backup'}</button><button class="btn" id="bpRestore">Restore latest</button></div>
       ${bkmeta.conflict ? '<div class="actions"><button class="btn danger" id="bpReplace">Replace the old backup with this phone</button></div>' : ''}
       <div class="actions"><button class="btn ghost" id="bpCode">Copy recovery code</button></div>
@@ -893,7 +893,7 @@
       ${p.workerUrl ? '' : `<div class="field"><label>Recovery code</label><input id="rcCode" placeholder="budzets:..." autocapitalize="none" autocorrect="off"><div class="hint">From Settings > Encrypted backup > Copy recovery code on your old install. Or fill in the two fields below instead.</div></div>
       <div class="field"><label>Bridge URL (if you have no code)</label><input id="rcUrl" placeholder="https://budget-bridge.yourname.workers.dev" autocapitalize="none" autocorrect="off"></div>
       <div class="field"><label>Bridge password (if you have no code)</label><input id="rcTok" type="password"></div>`}
-      <div class="field"><label>Backup passphrase</label><input id="rcPass" type="password" value="${esc(p.pass || '')}" autocomplete="off"></div>
+      <div class="field"><label>Backup passphrase</label><input id="rcPass" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" value="${esc(p.pass || '')}" autocomplete="off"></div>
       <button class="btn primary block" id="rcGo">Restore</button>
       <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="rcBack">Cancel</button></div>`, (b) => {
       $('#rcBack', b).onclick = () => { closeSheet(); if (needsSetup()) setTimeout(openOnboarding, 100); };
