@@ -216,3 +216,6 @@ a.btn.primary { color: var(--accent-ink); }
 .netbox { background: var(--surface-2); border-radius: 14px; padding: 12px 14px; margin: 6px 0 12px; font-size: 14px; }
 .linkbtn { display: block; margin: 12px auto 0; background: none; border: 0; color: var(--muted); text-decoration: underline; cursor: pointer; font-size: 14px; }
 .field textarea { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break: break-all; }
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
+.card-head h2 { margin: 0; }
+.small-btn { padding: 8px 12px; font-size: 13px; border-radius: 10px; }

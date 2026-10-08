@@ -542,6 +542,10 @@
     const places = L.topPlaces(state.expenses, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.aliases, 8);
     const placeTotal = places.reduce((s, p) => s + p.total, 0);
     const palette = ['#c8f26a', '#5fd3a0', '#6ab8f2', '#b48cf2', '#f2a65f', '#f26a9a', '#f5c35b', '#7b8a84'];
+    // SEB users: spending by industry, from the built-in shop classification
+    const sebUser = state.settings.bank.provider === 'eb' && (!!state.settings.bank.sessionId || state.expenses.some((e) => e.bankId));
+    const inds = sebUser ? window.Industry.byIndustry(state.expenses, from > ledger.statsFrom ? from : ledger.statsFrom, to) : [];
+    const indTotal = inds.reduce((a, x) => a + x.total, 0);
 
     v.innerHTML = `
       <div class="seg"><button data-m="month" class="${ui.statsMode === 'month' ? 'on' : ''}">Month</button><button data-m="year" class="${ui.statsMode === 'year' ? 'on' : ''}">Year</button></div>
@@ -555,6 +559,11 @@
         <div class="list" style="margin-top:10px">${places.map((p, i) => `<div class="row"><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${palette[i % 8]};margin-right:8px"></i>${esc(p.name)}</span><span class="num">${money(p.total)} <span class="muted small">${((p.total / placeTotal) * 100).toFixed(0)}%</span></span></div>`).join('')}</div>`
         : '<div class="empty">No expenses in this range</div>'}
       </div>
+      ${sebUser ? `<div class="card"><div class="card-head"><h2>Spending by industry</h2><button class="btn small-btn" id="indExport">Export unclassified</button></div>
+        ${inds.length ? `<div class="chart-box pie"><canvas id="c4"></canvas></div>
+        <div class="list" style="margin-top:10px">${inds.map((x) => `<div class="row"><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${x.color};margin-right:8px"></i>${esc(x.name)}</span><span class="num">${money(x.total)} <span class="muted small">${((x.total / indTotal) * 100).toFixed(0)}%</span></span></div>`).join('')}</div>`
+        : '<div class="empty">No expenses in this range</div>'}
+      </div>` : ''}
       <div class="card"><h2>Daily budget: over / under</h2>
         <div class="stat-grid" style="margin-bottom:12px">
           <div class="stat"><div class="k">Average per day</div><div class="v num ${st.avgDiff > 0 ? 'bad' : 'good'}">${st.avgDiff > 0 ? 'Over ' : 'Under '}${money(Math.abs(st.avgDiff))}</div></div>
@@ -577,6 +586,15 @@
       ui.charts.c2 = new Chart($('#c2'), {
         type: 'doughnut',
         data: { labels: places.map((p) => p.name), datasets: [{ data: places.map((p) => p.total), backgroundColor: palette, borderColor: css('--surface'), borderWidth: 3 }] },
+        options: { responsive: true, maintainAspectRatio: false, animation: false, cutout: '62%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${money(c.parsed)}` } } } }
+      });
+    }
+
+    if (sebUser) {
+      $('#indExport').onclick = exportUnclassified;
+      if (inds.length) ui.charts.c4 = new Chart($('#c4'), {
+        type: 'doughnut',
+        data: { labels: inds.map((x) => x.name), datasets: [{ data: inds.map((x) => x.total), backgroundColor: inds.map((x) => x.color), borderColor: css('--surface'), borderWidth: 3 }] },
         options: { responsive: true, maintainAspectRatio: false, animation: false, cutout: '62%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${money(c.parsed)}` } } } }
       });
     }
@@ -1071,6 +1089,27 @@
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = name; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+  // Save a text file: Android app saves to Downloads, iPhone opens the share sheet, browsers download it.
+  function saveText(name, text, mime) {
+    if (window.AndroidBridge && window.AndroidBridge.saveFile) {
+      const where = window.AndroidBridge.saveFile(name, text);
+      return toast(where.startsWith('ERROR') ? 'Export failed: ' + where.slice(7) : 'Saved to ' + where, 4000);
+    }
+    const blob = new Blob([text], { type: mime });
+    try {
+      const file = new File([blob], name, { type: mime });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) { navigator.share({ files: [file], title: name }).catch(() => {}); return; }
+    } catch (e) {}
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+  function exportUnclassified() {
+    const r = window.Industry.unclassifiedCsv(state.expenses);
+    if (!r.count) return toast('Every payment is classified already');
+    if (!(window.AndroidBridge && window.AndroidBridge.saveFile)) toast(`${r.count} payments from ${r.shops} unclassified shops`, 4000);
+    saveText(`cbudget-unclassified-${today}.csv`, r.csv, 'text/csv');
   }
   function importData(file) {
     if (!file) return;
