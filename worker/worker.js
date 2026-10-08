@@ -1,5 +1,5 @@
 /*
- * Budget bridge: ONE Cloudflare Worker that serves every Budžets user.
+ * Budget bridge: ONE Cloudflare Worker that serves every CBudget user.
  *   1. Keeps the bank keys (Plaid; Enable Banking for the owner's SEB) off the phones and out of the public website.
  *   2. Finishes bank logins for the app (needed on iPhone, where the browser and the home screen app don't share storage).
  *   3. Stores one encrypted backup per user. The phone encrypts it first; this Worker only ever sees scrambled bytes.
@@ -67,6 +67,22 @@ export default {
         if (!raw) return json({ exists: false });
         const b = JSON.parse(raw);
         return json({ exists: true, id: b.id, savedAt: b.savedAt });
+      }
+
+      // ---- move everything to a new account ID (the user set or changed their password) ----
+      if (path === '/account/move') {
+        if (u.owner) return json({ error: 'The owner account cannot be moved' }, 400);
+        const nu = String(body.uid || ''), ns = String(body.secret || '');
+        if (!/^[a-z0-9]{20,64}$/.test(nu) || ns.length < 32) return json({ error: 'Bad new account' }, 400);
+        if (nu === u.uid) return json({ ok: true });
+        if (await env.STORE.get('user:' + nu)) return json({ error: 'That password is already in use. Choose another one.' }, 409);
+        await env.STORE.put('user:' + nu, JSON.stringify({ h: await sha256(ns), created: Date.now() }));
+        for (const name of ['backup', 'plaid_item', 'plaid_refresh_at']) {
+          const v = await env.STORE.get(name + ':' + u.uid);
+          if (v !== null) { await env.STORE.put(name + ':' + nu, v); await env.STORE.delete(name + ':' + u.uid); }
+        }
+        await env.STORE.delete('user:' + u.uid);
+        return json({ ok: true });
       }
 
       // ---- Plaid (America First Credit Union and other US banks), every user ----
@@ -163,19 +179,19 @@ async function ebCallback(env, url, html) {
   const code = url.searchParams.get('code');
   const err = url.searchParams.get('error');
   const known = st && (await env.STORE.get('pending:' + st));
-  if (!known) return html('<h1>Link expired</h1><p>Go back to Budžets and start the bank connection again.</p>', 400);
+  if (!known) return html('<h1>Link expired</h1><p>Go back to CBudget and start the bank connection again.</p>', 400);
   if (err || !code) {
     await env.STORE.put('claim:' + st, JSON.stringify({ error: url.searchParams.get('error_description') || err || 'Cancelled' }), { expirationTtl: 3600 });
-    return html('<h1>Not connected</h1><p>The bank connection was cancelled. Go back to Budžets and try again.</p>');
+    return html('<h1>Not connected</h1><p>The bank connection was cancelled. Go back to CBudget and try again.</p>');
   }
   const r = await eb(env, 'POST', '/sessions', { code });
   if (!r.ok) {
     await env.STORE.put('claim:' + st, JSON.stringify({ error: r.data.message || r.data.error || ('Enable Banking error ' + r.status) }), { expirationTtl: 3600 });
-    return html('<h1>Something went wrong</h1><p>Go back to Budžets and try again.</p>', 502);
+    return html('<h1>Something went wrong</h1><p>Go back to CBudget and try again.</p>', 502);
   }
   await env.STORE.put('claim:' + st, JSON.stringify(r.data), { expirationTtl: 3600 });
   await env.STORE.delete('pending:' + st);
-  return html('<h1>Connected</h1><p>You can close this page and go back to Budžets. It will pick up the connection by itself.</p>');
+  return html('<h1>Connected</h1><p>You can close this page and go back to CBudget. It will pick up the connection by itself.</p>');
 }
 
 async function eb(env, method, path, body, extraHeaders) {
@@ -239,7 +255,7 @@ async function plaidStart(env, u, req, body, json) {
   const origin = new URL(req.url).origin;
   const existing = JSON.parse((await env.STORE.get(key(u, 'plaid_item'))) || 'null');
   const req0 = {
-    client_name: 'Budzets', language: 'en', country_codes: ['US'],
+    client_name: 'CBudget', language: 'en', country_codes: ['US'],
     user: { client_user_id: u.uid }, redirect_uri: origin + '/plaid/link'
   };
   // Reconnecting reuses the same bank login ("update mode"), so it doesn't use up one of the free slots.
@@ -268,7 +284,7 @@ async function plaidLinkPage(env, req, url, html) {
   const cookieK = ((req.headers.get('cookie') || '').match(/(?:^|;\s*)bk=([a-f0-9]+)/) || [])[1];
   const k = url.searchParams.get('k') || (oauth ? cookieK : '');
   const raw = k && (await env.STORE.get('plaidlink:' + k));
-  if (!raw) return html('<h1>Link expired</h1><p>Go back to Budžets and start the bank connection again.</p>', 400);
+  if (!raw) return html('<h1>Link expired</h1><p>Go back to CBudget and start the bank connection again.</p>', 400);
   const link = JSON.parse(raw);
   const cfg = JSON.stringify({ token: link.token, k, received: oauth ? url.href : null }).replace(/</g, '\\u003c');
   return html(`<h1>Connect your bank</h1><p id="msg">Opening secure bank login…</p>
@@ -283,10 +299,10 @@ const opts = {
     try {
       const r = await fetch('/plaid/done?k=' + encodeURIComponent(cfg.k), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ public_token }) });
       const d = await r.json();
-      msg.textContent = r.ok ? 'Connected. You can close this page and go back to Budžets.' : ('Failed: ' + (d.error || r.status));
+      msg.textContent = r.ok ? 'Connected. You can close this page and go back to CBudget.' : ('Failed: ' + (d.error || r.status));
     } catch (e) { msg.textContent = 'Failed: ' + e.message; }
   },
-  onExit: (err) => { msg.textContent = err ? ('Cancelled: ' + (err.display_message || err.error_message || err.error_code)) : 'Closed. Go back to Budžets to try again.'; }
+  onExit: (err) => { msg.textContent = err ? ('Cancelled: ' + (err.display_message || err.error_message || err.error_code)) : 'Closed. Go back to CBudget to try again.'; }
 };
 if (cfg.received) opts.receivedRedirectUri = cfg.received;
 Plaid.create(opts).open();
@@ -376,6 +392,6 @@ async function plaidTransactions(env, u, body, json) {
 
 // ================= tiny page shell =================
 function page(body) {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Budžets</title>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CBudget</title>
 <style>body{font:17px/1.5 system-ui,-apple-system,sans-serif;background:#101312;color:#eef2ef;margin:0;padding:48px 24px;text-align:center}h1{font-size:24px}p{color:#aab4af}</style></head><body>${body}</body></html>`;
 }

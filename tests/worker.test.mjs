@@ -245,4 +245,14 @@ await t("users' own Plaid keys are used, don't count against the server cap, and
   env.PLAID_CLIENT_ID = saved.id; env.PLAID_SECRET = saved.s;
 });
 
+await t('account move: data follows the new password, old ID stops working, taken IDs refused', async () => {
+  const oldU = { uid: '1'.repeat(32), secret: mk('7') }, newU = { uid: '2'.repeat(32), secret: mk('8') };
+  await ucall(oldU, '/backup/put', { blob: 'OLD', id: 'x' });
+  assert.strictEqual((await ucall(oldU, '/account/move', { uid: A.uid, secret: mk('9') })).status, 409); // A exists
+  assert.strictEqual((await ucall(oldU, '/account/move', newU)).status, 200);
+  assert.strictEqual((await (await ucall(newU, '/backup/get')).json()).blob, 'OLD');
+  assert.strictEqual((await ucall(oldU, '/backup/get')).status, 404); // old ID is a fresh empty user now
+  assert.strictEqual((await call('/account/move', newU)).status, 400); // owner can't move
+});
+
 console.log(`${n} worker tests passed`);

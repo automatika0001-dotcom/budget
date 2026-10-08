@@ -1,4 +1,4 @@
-/* Budžets: UI layer. All data stays on the phone (localStorage); export a backup from Settings. */
+/* CBudget: UI layer. All data stays on the phone (localStorage); export a backup from Settings. */
 (function () {
   'use strict';
   const L = window.BudgetLogic;
@@ -13,7 +13,7 @@
       useExpected: true, expectedNet: 0, statsFrom: null, liveEnabled: true, vacations: [],
       salary: { gross: 0, taxBook: true, dependents: 0, disability: 'none' }, currency: 'EUR',
       bank: { workerUrl: '', token: '', provider: 'eb', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '', pendingMode: '', pendingSince: 0, plaidId: '', plaidSecret: '' },
-      backup: { pass: '', id: '', codeSaved: false },
+      backup: { pass: '', id: '', codeSaved: false, hasPassword: false },
       account: { uid: '', secret: '' }, country: '',
       us: { state: '', filing: 'single', dependents: 0, gross: 0, per: 'year', pretaxMonth: 0 },
       aliases: {}
@@ -237,8 +237,8 @@
     v.innerHTML = `
       ${per.incomeExpected ? `<div class="banner">${per.advance > 0 ? `Advance ${money(per.advance)} received. Still expecting ${money(per.salaryToCome)} of salary.` : `Using expected salary ${money(per.salaryToCome)} until you log this month's salary.`}</div>` : ''}
       ${per.income === 0 ? `<div class="banner bad">No income logged for this period yet. Add it in Income.</div>` : ''}
-      ${isIOS && !isStandalone() && !localStorage.getItem('budget.hideInstall') ? `<div class="banner" id="installTip"><b>Install on iPhone:</b> tap the Share button in Safari, then <b>Add to Home Screen</b>, and open Budžets from your home screen. Enter your data only there: the Safari tab and the home screen app keep separate data. <a href="#" id="hideTip">Hide</a></div>` : ''}
-      ${backupReady() && bkmeta.lastOkMs && !state.settings.backup.codeSaved ? `<div class="banner" id="codeTip"><b>Save your recovery code.</b> It brings your budget back if you delete the app or change phone. <a href="#" id="codeCopy">Copy it</a></div>` : ''}
+      ${isIOS && !isStandalone() && !localStorage.getItem('budget.hideInstall') ? `<div class="banner" id="installTip"><b>Install on iPhone:</b> tap the Share button in Safari, then <b>Add to Home Screen</b>, and open CBudget from your home screen. Enter your data only there: the Safari tab and the home screen app keep separate data. <a href="#" id="hideTip">Hide</a></div>` : ''}
+      ${!isOwner() && state.settings.startDate && !state.settings.backup.hasPassword ? `<div class="banner" id="pwTip"><b>Set a password</b> so you can get your budget back if you delete the app or change phone. <a href="#" id="pwSet">Set it</a></div>` : ''}
             ${consentDays !== null && consentDays <= 7 ? `<div class="banner bad">${esc(bankLabel())} connection expires in ${Math.max(0, consentDays)} days. Reconnect in Settings.</div>` : ''}
       ${heroHtml(ts, over)}
 
@@ -282,7 +282,7 @@
       ${vacationHtml()}
     `;
     $('#qExp').onclick = () => openExpense(null);
-    const cc = $('#codeCopy'); if (cc) cc.onclick = (ev) => { ev.preventDefault(); copyRecoveryCode(); };
+    const ps = $('#pwSet'); if (ps) ps.onclick = (ev) => { ev.preventDefault(); openPasswordSheet(); };
     const ht = $('#hideTip'); if (ht) ht.onclick = (ev) => { ev.preventDefault(); try { localStorage.setItem('budget.hideInstall', '1'); } catch (e) {} $('#installTip').remove(); };
     $('#qInc').onclick = () => openIncome(null);
     $('#vacCard').addEventListener('toggle', (e) => (ui.vacOpen = e.target.open));
@@ -718,8 +718,8 @@
   let wz = null;
   const PLAID = { signup: 'https://dashboard.plaid.com/signup', api: 'https://dashboard.plaid.com/developers/api', keys: 'https://dashboard.plaid.com/developers/keys' };
   const wzSteps = () => (wz.country === 'US'
-    ? ['country', 'plaidSignup', 'plaidRedirect', 'plaidKeys', 'connect', 'salaryUS', 'savings', 'code']
-    : wz.country === 'LV' ? ['country', 'salaryLV', 'savings', 'code'] : ['country', 'x', 'x', 'x']);
+    ? ['country', 'password', 'plaidSignup', 'plaidRedirect', 'plaidKeys', 'connect', 'salaryUS', 'savings']
+    : wz.country === 'LV' ? ['country', 'password', 'salaryLV', 'savings'] : ['country', 'x', 'x', 'x']);
   function wzSave() { try { localStorage.setItem(WZ_KEY, JSON.stringify({ step: wz.step, country: wz.country })); } catch (e) {} }
   function openOnboarding() {
     let saved = null; try { saved = JSON.parse(localStorage.getItem(WZ_KEY)); } catch (e) {}
@@ -753,16 +753,23 @@
         <p class="small muted">This sets your currency and how your take-home pay is calculated.</p>
         <button class="choice ${wz.country === 'LV' ? 'on' : ''}" data-c="LV"><b>Latvia</b><span>Euro · Latvian salary taxes</span></button>
         <button class="choice ${wz.country === 'US' ? 'on' : ''}" data-c="US"><b>United States</b><span>Dollar · federal and state taxes · America First CU bank sync</span></button>
-        <div class="actions" style="margin-top:14px"><button class="btn ghost block" id="oRestore">I already used Budžets: restore my backup</button></div>`;
+        <div class="actions" style="margin-top:14px"><button class="btn ghost block" id="oRestore">I already used CBudget: restore my backup</button></div>`;
       nextLabel = '';
+    } else if (id === 'password') {
+      body = s.backup.hasPassword
+        ? `<h3>Password</h3><div class="banner">Password set ✓ Your budget is backed up automatically.</div>`
+        : `<h3>Create a password</h3>
+        <p class="small muted">Your budget is backed up automatically and encrypted with this password. You only need it if you delete the app or get a new phone.</p>
+        <div class="field"><label>Password (8+ characters)</label><input id="wzPw" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+        <p class="small muted">Use something unique and write it down. Nobody can reset it: if it's forgotten, the backup can't be opened.</p>`;
     } else if (id === 'plaidSignup') {
       body = `<h3>Create a free Plaid account</h3>
-        <p class="small muted">Plaid is the service that lets Budžets read your America First Credit Union transactions. It's free for personal use (up to 10 bank logins).</p>
+        <p class="small muted">Plaid is the service that lets CBudget read your America First Credit Union transactions. It's free for personal use (up to 10 bank logins).</p>
         ${linkBtn(PLAID.signup, 'Open Plaid sign up', true)}
         <p class="small muted" style="margin-top:12px">Sign up with your email. If Plaid asks what you're building, choose a personal budgeting app for your own accounts. Then come back here and tap Next.</p>`;
       canSkip = 'Skip bank connection';
     } else if (id === 'plaidRedirect') {
-      body = `<h3>Allow Budžets in Plaid</h3>
+      body = `<h3>Allow CBudget in Plaid</h3>
         <p class="small muted">1. Copy this address:</p>${copyBtn('wzRedir', PLAID_REDIRECT())}
         <p class="small muted" style="margin-top:12px">2. Open Plaid's API page, find <b>Allowed redirect URIs</b>, paste it, and tap <b>Save</b>.</p>
         ${linkBtn(PLAID.api, 'Open Plaid API page', true)}`;
@@ -778,7 +785,7 @@
       body = `<h3>Connect America First CU</h3>
         ${done ? `<div class="banner">Connected ✓ ${bk.accounts.length} account${bk.accounts.length === 1 ? '' : 's'}. Your spending will fill in by itself.</div>`
           : wz.linkUrl ? `<p class="small muted">Tap the button, log in to America First, then come back here. This page notices the connection by itself.</p>${linkBtn(wz.linkUrl, 'Open bank login', true)}<div class="actions" style="margin-top:10px"><button class="btn ghost block" id="wzCheck">I finished, check now</button></div>`
-          : `<p class="small muted">Log in to your bank once. Budžets only gets read access to your transactions.</p><button class="btn primary block" id="wzConnect">Connect America First CU</button>`}`;
+          : `<p class="small muted">Log in to your bank once. CBudget only gets read access to your transactions.</p><button class="btn primary block" id="wzConnect">Connect America First CU</button>`}`;
       if (!done) canSkip = 'Skip for now';
     } else if (id === 'salaryUS') {
       body = `<h3>Your salary</h3><p class="small muted">Your take-home pay sets your monthly budget.</p>${usSalaryHtml()}
@@ -795,11 +802,6 @@
         <div class="field"><label>Save per month, ${SYM}</label><input id="wzSave" inputmode="decimal" value="${s.monthlySaving}"></div>
         <div class="field"><label>Savings goal, ${SYM}</label><input id="wzGoal" inputmode="decimal" value="${s.goal}"></div>
         <div class="field"><label>Already saved, ${SYM}</label><input id="wzStart" inputmode="decimal" value="${s.startingSaved || 0}"></div>`;
-    } else if (id === 'code') {
-      body = `<h3>Save your recovery code</h3>
-        <p class="small muted">Your budget is backed up automatically and encrypted. If you delete the app or get a new phone, this code brings everything back. Copy it into your Notes now.</p>
-        <div class="field"><textarea id="wzCode" rows="4" readonly>${esc(recoveryCode())}</textarea></div>
-        <button class="btn block" type="button" data-copy="wzCode">Copy</button>`;
     }
     const nav = `<div class="wz-nav">${wz.step > 0 ? '<button class="btn ghost" id="wzBack">Back</button>' : '<span></span>'}${nextLabel ? `<button class="btn primary" id="wzNext">${nextLabel}</button>` : ''}</div>
       ${canSkip ? `<button class="linkbtn" id="wzSkip">${canSkip}</button>` : ''}`;
@@ -815,6 +817,15 @@
           setCurrency(); save(); wzGo(1);
         }));
         $('#oRestore', b).onclick = () => { wz.open = false; openRestore(); };
+      }
+      if (id === 'password') {
+        next.onclick = async () => {
+          if (s.backup.hasPassword) return wzGo(1);
+          next.disabled = true; next.textContent = 'Setting up…';
+          try { await setPassword($('#wzPw', b).value); wzGo(1); }
+          catch (e) { toast(e.message, 5000); next.disabled = false; next.textContent = 'Next'; }
+        };
+        return;
       }
       if (id === 'plaidKeys') {
         const read = () => { bk.plaidId = $('#wzPid', b).value.trim(); bk.plaidSecret = $('#wzPsec', b).value.trim(); save(); };
@@ -854,12 +865,8 @@
         return;
       }
       if (id === 'savings') {
-        next.onclick = () => { s.monthlySaving = L.num($('#wzSave', b).value); s.goal = L.num($('#wzGoal', b).value); s.startingSaved = L.num($('#wzStart', b).value); save(); wzGo(1); };
-        return;
-      }
-      if (id === 'code') {
-        $('[data-copy]', b).addEventListener('click', () => { s.backup.codeSaved = true; save(); });
         next.onclick = () => {
+          s.monthlySaving = L.num($('#wzSave', b).value); s.goal = L.num($('#wzGoal', b).value); s.startingSaved = L.num($('#wzStart', b).value);
           s.backup.id = s.backup.id || uid() + uid();
           s.startDate = today; s.statsFrom = today; save();
           try { localStorage.removeItem(WZ_KEY); } catch (e) {}
@@ -931,12 +938,12 @@
       <div class="small ${bkmeta.error || bkmeta.conflict ? 'bad' : 'muted'}" style="margin-bottom:10px">${backupReady()
         ? (bkmeta.conflict ? 'Paused: a backup from another install already exists. Restore it, or replace it with this phone\'s data (buttons below).' : `Automatic and encrypted · last backup ${lastBk}${bkmeta.error ? ' · last error: ' + esc(bkmeta.error) : ''}`)
         : 'Starts automatically after setup.'}</div>
-      <div class="actions"><button class="btn primary" id="bpCode">Copy recovery code</button><button class="btn" id="bpNow">Back up now</button></div>
-      <div class="hint" style="margin-bottom:8px">Save the recovery code in your notes or password manager. If you delete the app or get a new phone, paste it to get everything back.</div>
+      <div class="actions">${isOwner() ? '' : `<button class="btn primary" id="bpPw">${s.backup.hasPassword ? 'Change password' : 'Set password'}</button>`}<button class="btn" id="bpNow">Back up now</button></div>
+      <div class="hint" style="margin-bottom:8px">${isOwner() ? 'Owner backup: restore with your owner password and passphrase.' : s.backup.hasPassword ? 'Deleted the app or new phone? Choose Restore on the first screen and enter your password.' : 'Set a password so you can restore your budget on a new phone.'}</div>
       ${bkmeta.conflict ? '<div class="actions"><button class="btn danger" id="bpReplace">Replace the old backup with this phone</button><button class="btn" id="bpRestore">Restore it</button></div>' : ''}
       <details style="margin:8px 0"><summary class="small muted" style="cursor:pointer">Advanced: extra passphrase, own server</summary>
-        <div class="field" style="margin-top:10px"><label>Extra passphrase <span class="muted">optional, 8+ characters</span></label><input id="bpPass" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" value="${esc(s.backup.pass)}" autocomplete="off"><div class="hint">If set, restoring needs the recovery code AND this passphrase. If you forget it, the backup cannot be opened.</div></div>
-        <div class="field"><label>Server URL <span class="muted">empty = Budžets server</span></label><input id="bkUrl" value="${esc(bk.workerUrl)}" placeholder="${esc(DEFAULT_BRIDGE)}" autocapitalize="none" autocorrect="off"></div>
+        <div class="field" style="margin-top:10px;${isOwner() ? '' : 'display:none'}"><label>Owner backup passphrase <span class="muted">8+ characters</span></label><input id="bpPass" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" value="${esc(s.backup.pass)}" autocomplete="off"><div class="hint">If set, restoring needs the recovery code AND this passphrase. If you forget it, the backup cannot be opened.</div></div>
+        <div class="field"><label>Server URL <span class="muted">empty = CBudget server</span></label><input id="bkUrl" value="${esc(bk.workerUrl)}" placeholder="${esc(DEFAULT_BRIDGE)}" autocapitalize="none" autocorrect="off"></div>
         <div class="field"><label>Owner password <span class="muted">app owner only</span></label><input id="bkTok" type="password" value="${esc(bk.token)}"></div>
       </details>
 
@@ -977,7 +984,7 @@
       const rs = $('#bpRestore', b); if (rs) rs.onclick = () => openRestore(true);
       const rp = $('#bpReplace', b);
       if (rp) rp.onclick = async () => { if (!confirm('Replace the existing backup with the data on this phone?')) return; await runBackup(true, true); toast(bkmeta.error ? 'Backup failed: ' + bkmeta.error : 'Backup replaced'); openSettings(); };
-      $('#bpCode', b).onclick = () => copyRecoveryCode();
+      const pw = $('#bpPw', b); if (pw) pw.onclick = () => openPasswordSheet();
       const pv = $('#bkProv', b); if (pv) pv.onchange = (e) => {
         bk.provider = e.target.value;
         if (bk.provider === 'plaid') { bk.bankName = 'America First CU'; bk.country = 'US'; } else { bk.bankName = 'SEB'; bk.country = 'LV'; }
@@ -1057,6 +1064,32 @@
     return read;
   }
 
+  // Move this install's server data (backup, bank link) to the account that belongs to the password.
+  async function setPassword(pw) {
+    if (!pw || pw.length < 8) throw new Error('Password needs at least 8 characters');
+    const acc = await BB.deriveAccount(pw);
+    if (acc.uid !== state.settings.account.uid) {
+      try { await bridge('/account/move', acc); }
+      catch (e) { if (/already in use/i.test(e.message)) throw new Error('That password is already taken. Choose a different one.'); throw e; }
+      state.settings.account = acc;
+    }
+    state.settings.backup.hasPassword = true; state.settings.backup.pass = ''; save();
+    bkmeta.dirty = true; saveMeta();
+    if (state.settings.startDate) await runBackup(true, true); // re-encrypt the backup with the new password right away
+  }
+  function openPasswordSheet() {
+    const has = state.settings.backup.hasPassword;
+    openSheet(`<h3>${has ? 'Change password' : 'Set a password'}</h3>
+      <p class="small muted">Your password brings your budget back if you delete the app or get a new phone. Nobody can reset it, so write it down.</p>
+      <div class="field"><label>${has ? 'New password' : 'Password'} (8+ characters)</label><input id="pwNew" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+      <button class="btn primary block" id="pwGo">Save password</button>`, (b) => {
+      $('#pwGo', b).onclick = async () => {
+        const btn = $('#pwGo', b); btn.disabled = true; btn.textContent = 'Saving…';
+        try { await setPassword($('#pwNew', b).value); closeSheet(); render(); toast('Password saved'); }
+        catch (e) { toast(e.message, 5000); btn.disabled = false; btn.textContent = 'Save password'; }
+      };
+    });
+  }
   async function copyRecoveryCode() {
     const code = recoveryCode();
     let ok = false;
@@ -1117,12 +1150,12 @@
     const url = c.workerUrl || DEFAULT_BRIDGE;
     const res = await fetch(url + '/backup/get', { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders(c) }, body: '{}' });
     const data = await res.json().catch(() => ({}));
-    if (res.status === 404) throw new Error('No backup found for this recovery code');
-    if (res.status === 401) throw new Error('The server did not recognise this recovery code');
+    if (res.status === 404) throw new Error('No backup found');
+    if (res.status === 401) throw new Error('Wrong password');
     if (!res.ok) throw new Error(data.error || ('Server error ' + res.status));
     let payload;
     try { payload = await BB.decrypt(data.blob, pass || c.secret); }
-    catch (e) { throw new Error(pass ? 'Wrong passphrase' : 'This backup has its own passphrase: type it in'); }
+    catch (e) { throw new Error(pass ? 'Wrong passphrase' : 'Wrong password'); }
     if (!payload || !payload.state || !Array.isArray(payload.state.expenses)) throw new Error('Backup is not a budget backup');
     state = migrate(payload.state);
     state.settings.bank.workerUrl = url === DEFAULT_BRIDGE ? '' : url;
@@ -1137,25 +1170,34 @@
   }
 
   function openRestore(fromSettings) {
-    openSheet(`<h3>Restore from backup</h3>
-      <div class="small muted" style="margin-bottom:10px">Paste the recovery code you saved. It replaces the data on this device with your latest backup.</div>
-      ${fromSettings ? '' : `<div class="field"><label>Recovery code</label><textarea id="rcCode" rows="3" placeholder="budzets:..." autocapitalize="none" autocorrect="off" spellcheck="false"></textarea></div>`}
-      <div class="field"><label>Passphrase <span class="muted">only if you set one</span></label><input id="rcPass" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+    openSheet(`<h3>Restore your budget</h3>
+      <div class="small muted" style="margin-bottom:10px">Enter the password you set. Your latest backup replaces the data on this device.</div>
+      <div class="field"><label>Password</label><input id="rcPw" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"></div>
       <button class="btn primary block" id="rcGo">Restore</button>
+      <details style="margin-top:12px"><summary class="small muted" style="cursor:pointer">App owner</summary>
+        <div class="field" style="margin-top:10px"><label>Owner password</label><input id="rcTok" type="password"></div>
+        <div class="field"><label>Owner backup passphrase</label><input id="rcPass" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"></div>
+      </details>
       <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="rcBack">Cancel</button></div>`, (b) => {
       $('#rcBack', b).onclick = () => { closeSheet(); if (needsSetup()) setTimeout(openOnboarding, 100); };
       $('#rcGo', b).onclick = async () => {
+        const btn = $('#rcGo', b);
         try {
-          const c = fromSettings
-            ? { workerUrl: bridgeUrl(), token: state.settings.bank.token, uid: state.settings.account.uid, secret: state.settings.account.secret }
-            : BB.parseRecoveryCode($('#rcCode', b).value);
-          const pass = $('#rcPass', b).value;
+          const tok = $('#rcTok', b).value.trim();
+          let c, pass = '';
+          if (tok) { c = { workerUrl: bridgeUrl(), token: tok, uid: state.settings.account.uid, secret: state.settings.account.secret }; pass = $('#rcPass', b).value; }
+          else { btn.disabled = true; btn.textContent = 'Checking…'; c = await BB.deriveAccount($('#rcPw', b).value); c.workerUrl = ''; }
           if (state.expenses.length && !confirm('This replaces the data currently on this device. Continue?')) return;
-          toast('Restoring…');
           const payload = await restoreFromBackup(c, pass);
+          if (!tok) state.settings.backup.hasPassword = true;
+          save();
+          try { localStorage.removeItem(WZ_KEY); } catch (e) {}
           closeSheet(); render(); toast(`Restored backup from ${dShort(String(payload.savedAt || today).slice(0, 10))} (${state.expenses.length} expenses)`, 5000);
           checkClaim(); autoSync();
-        } catch (e) { toast(e.message, 5000); }
+        } catch (e) {
+          toast(/No backup found/.test(e.message) ? 'No backup found for that password' : e.message, 5000);
+          btn.disabled = false; btn.textContent = 'Restore';
+        }
       };
     });
   }
@@ -1202,7 +1244,7 @@
       bk.pendingSince = Date.now(); save();
       // A real link the user taps: browsers only open the bank login reliably from a tap.
       openSheet(`<h3>Connect ${esc(bankLabel())}</h3>
-        <p class="small muted">Tap the button, log in at your bank, then come back to Budžets. It picks up the connection by itself.</p>
+        <p class="small muted">Tap the button, log in at your bank, then come back to CBudget. It picks up the connection by itself.</p>
         <a class="btn primary block" href="${esc(url)}" target="_blank" rel="noopener" id="bkOpen">Open bank login</a>
         <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="bkDone">I finished, check now</button></div>`, (bd) => {
         $('#bkDone', bd).onclick = async () => { const ok = await checkClaim(); toast(ok ? 'Connected' : 'Not finished yet'); if (ok) closeSheet(); };
@@ -1364,7 +1406,7 @@
     const on = liveAccess();
     const s = state.settings;
     return `<h3 style="margin-top:22px">Live payments (Google Wallet)</h3>
-      <div class="small ${on ? 'good' : 'muted'}" style="margin-bottom:10px">${on ? '● Notification access granted. Payments are logged the moment Wallet shows them.' : 'Off. Budžets needs Notification access to see Google Wallet payment notifications.'}</div>
+      <div class="small ${on ? 'good' : 'muted'}" style="margin-bottom:10px">${on ? '● Notification access granted. Payments are logged the moment Wallet shows them.' : 'Off. CBudget needs Notification access to see Google Wallet payment notifications.'}</div>
       ${on ? '' : `<div class="small muted" style="margin-bottom:10px">If the switch is greyed out ("Restricted setting"): tap <b>App info</b>, then the ⋮ menu (top right), <b>Allow restricted settings</b>, then come back and tap <b>Turn on</b> again.</div>`}
       <div class="actions"><button class="btn ${on ? 'ghost' : 'primary'}" id="lvAccess">${on ? 'Notification access' : 'Turn on'}</button><button class="btn ghost" id="lvInfo">App info</button></div>
       <div class="toggle" style="margin-top:8px"><span>Log payments from notifications</span><input type="checkbox" id="lvOn" ${s.liveEnabled ? 'checked' : ''}></div>

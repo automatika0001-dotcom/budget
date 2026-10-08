@@ -1,11 +1,11 @@
-# Connect SEB to Budžets
+# Connect SEB to CBudget
 
 About 15 minutes, done once. At the end, the app pulls your SEB transactions automatically every time you open it.
 
 ## How it fits together
 
 ```
-Budžets app  ──>  Your Cloudflare Worker  ──>  Enable Banking  ──>  SEB
+CBudget app  ──>  Your Cloudflare Worker  ──>  Enable Banking  ──>  SEB
  (phone)          (holds the secret key)       (licensed PSD2       (you approve
                                                 provider)            with Smart-ID)
 ```
@@ -76,13 +76,13 @@ Copy the 40-character result into Notepad. You'll paste it in two places.
 
 ## Step 5: Connect in the app
 
-1. On your phone, open **Budžets** and tap the **gear icon** (top right).
+1. On your phone, open **CBudget** and tap the **gear icon** (top right).
 2. Scroll to **SEB bank sync** and fill in:
    - **Bridge URL:** your worker address from Step 4.6
    - **Bridge password:** the password from Step 3
 3. Optional but recommended: in **Ignore transactions containing**, add words that appear on transfers between your own accounts, e.g. your name or `savings`. Separate with commas. These won't count as spending.
 4. Tap **Connect SEB**. The SEB login opens inside the app. Approve with **Smart-ID** (switch to the Smart-ID app, confirm, come back).
-5. You're returned to Budžets and see **"SEB connected"**, followed by **"Imported X expenses"**.
+5. You're returned to CBudget and see **"SEB connected"**, followed by **"Imported X expenses"**.
 
 Done. A small sync icon now appears at the top of the app.
 

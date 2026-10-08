@@ -1,4 +1,4 @@
-# Budžets: personal budget app for iPhone and Android
+# CBudget: personal budget app for iPhone and Android
 
 **Setting it up for someone new (iPhone or Android, SEB or America First CU, encrypted backup): see [FRIENDS_SETUP.md](FRIENDS_SETUP.md).** The rest of this file is the owner's guide (publishing updates, building the APK).
 
@@ -44,10 +44,10 @@ How it works: the APK is a small native shell. The screens and logic live on Git
 ## 3. Install on your phone (once)
 
 1. On your phone, open `https://github.com/automatika0001-dotcom/budget/releases`
-2. Under **Budžets Android app**, tap **Budzets.apk** to download it.
+2. Under **CBudget Android app**, tap **Budzets.apk** to download it.
 3. Open the downloaded file. Android will ask to allow installs from this source (Chrome or Files): tap **Settings**, switch on **Allow from this source**, go back, tap **Install**.
 4. If Play Protect warns that it doesn't recognize the app, tap **More details > Install anyway**. That's normal for apps you build yourself.
-5. Open **Budžets** from your app drawer and complete the short setup.
+5. Open **CBudget** from your app drawer and complete the short setup.
 
 If you already entered data in the browser version: there, use Settings > Export backup, then in the app use Settings > Import backup. The app and the browser keep separate data.
 
@@ -103,9 +103,9 @@ Tips:
 
 ## 6. Live payments from Google Wallet (Android app 1.1+)
 
-Pay with Google Wallet and the expense appears in Budžets within a second, even if the app is closed (it's picked up next time you open it).
+Pay with Google Wallet and the expense appears in CBudget within a second, even if the app is closed (it's picked up next time you open it).
 
-1. Settings > Live payments > **Turn on**, find Budžets in the list and allow it.
+1. Settings > Live payments > **Turn on**, find CBudget in the list and allow it.
 2. If the switch is greyed out ("Restricted setting", Android 13+): Settings > Live payments > **App info**, tap ⋮ (top right) > **Allow restricted settings**, then try again.
 
 Duplicates: when the bank sync later brings in the same purchase (same amount within 3 days), it's linked to the live entry (tags: live + SEB) instead of being added again. An expense you typed by hand within an hour of the Wallet notification also stops the notification from adding a second copy. Declined payments and refunds are ignored.

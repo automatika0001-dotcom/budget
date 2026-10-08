@@ -71,5 +71,11 @@ const t = async (name, fn) => { await fn(); n++; console.log('ok  ' + name); };
     assert.throws(() => B.parseRecoveryCode('budzets:AAAA'), /damaged/);
     assert.throws(() => B.parseRecoveryCode(B.makeRecoveryCode({ workerUrl: 'https://x.dev' })), /damaged/);
   });
+  await t('password account: same password gives the same account, different ones differ', async () => {
+    const a = await B.deriveAccount('correct horse 1'), b = await B.deriveAccount('correct horse 1'), c = await B.deriveAccount('correct horse 2');
+    assert.deepStrictEqual(a, b); assert.notStrictEqual(a.uid, c.uid);
+    assert.ok(/^[a-f0-9]{32}$/.test(a.uid) && /^[a-f0-9]{64}$/.test(a.secret));
+    await assert.rejects(() => B.deriveAccount('short'), /at least 8/);
+  });
   console.log(`${n} backup tests passed`);
 })().catch((e) => { console.error(e); process.exit(1); });

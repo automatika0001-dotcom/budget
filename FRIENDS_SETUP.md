@@ -1,17 +1,17 @@
-# Budžets: how to start
+# CBudget: how to start
 
 ## For a new user (2 minutes)
 
 **iPhone**
 1. Open this link in **Safari**: `https://automatika0001-dotcom.github.io/budget/`
 2. Tap **Share**, then **Add to Home Screen**.
-3. Open **Budžets** from the home screen. A step-by-step setup guides you through everything with buttons for every link and copy value: choose Latvia or USA, (USA) create a free Plaid account, copy its keys into the app, connect America First CU, then enter your salary and state to get your take-home pay, your savings goal, and finally copy your recovery code into Notes.
+3. Open **CBudget** from the home screen and follow the steps. You choose a password in step 2: write it down.
 
 **Android**: install **Budzets.apk** from `https://github.com/automatika0001-dotcom/budget/releases`, then step 3.
 
-No Budžets account and no passwords to invent. Your Plaid keys stay in your app (and your encrypted backup); the server only uses them to talk to Plaid for you. Your budget is private: it's kept on your phone, and the automatic backup is encrypted on your phone before it leaves, so nobody else can read it.
+No CBudget account and no passwords to invent. Your Plaid keys stay in your app (and your encrypted backup); the server only uses them to talk to Plaid for you. Your budget is private: it's kept on your phone, and the automatic backup is encrypted on your phone before it leaves, so nobody else can read it.
 
-**Deleted the app or new phone?** Install it again, tap **I already used Budžets: restore my backup** and paste your recovery code.
+**Deleted the app or new phone?** Install it again, tap **I already used CBudget: restore my backup** and enter your password.
 
 ---
 

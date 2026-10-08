@@ -79,7 +79,21 @@
     return { workerUrl: o.u || '', token: o.t || '', uid: o.i || '', secret: o.s || '' };
   }
 
-  const api = { encrypt, decrypt, shouldBackup, afterBackup, makeRecoveryCode, parseRecoveryCode, GAP_MS, MAX_PER_DAY };
+  // ---- password account: the password alone finds and unlocks your data ----
+  // A slow hash (PBKDF2, 300k rounds) turns the password into an ID (to find your backup and bank link on the server)
+  // and a secret (to prove it's you and to encrypt the backup). The server only ever stores a hash of the secret.
+  const ACCOUNT_SALT = 'cbudget-account-v1';
+  async function deriveAccount(password, iter) {
+    if (!subtle) throw new Error('Encryption is not available in this browser');
+    const pw = String(password || '');
+    if (pw.length < 8) throw new Error('Password needs at least 8 characters');
+    const base = await subtle.importKey('raw', enc.encode(pw), 'PBKDF2', false, ['deriveBits']);
+    const bits = new Uint8Array(await subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(ACCOUNT_SALT), iterations: iter || 300000 }, base, 384));
+    const hx = (a) => Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
+    return { uid: hx(bits.slice(0, 16)), secret: hx(bits.slice(16)) };
+  }
+
+  const api = { deriveAccount, encrypt, decrypt, shouldBackup, afterBackup, makeRecoveryCode, parseRecoveryCode, GAP_MS, MAX_PER_DAY };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BudgetBackup = api;
 })(typeof window !== 'undefined' ? window : globalThis);

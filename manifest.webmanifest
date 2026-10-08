@@ -1,6 +1,6 @@
 {
-  "name": "Budžets",
-  "short_name": "Budžets",
+  "name": "CBudget",
+  "short_name": "CBudget",
   "description": "Personal budget: daily allowance, savings goal, bank sync, encrypted backup",
   "id": "./",
   "start_url": "./",
