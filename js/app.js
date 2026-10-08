@@ -14,7 +14,8 @@
       salary: { gross: 0, taxBook: true, dependents: 0, disability: 'none' }, currency: 'EUR',
       bank: { workerUrl: '', token: '', provider: 'eb', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '', pendingMode: '', pendingSince: 0, plaidId: '', plaidSecret: '' },
       backup: { pass: '', id: '', codeSaved: false },
-      account: { uid: '', secret: '' },
+      account: { uid: '', secret: '' }, country: '',
+      us: { state: '', filing: 'single', dependents: 0, gross: 0, per: 'year', pretaxMonth: 0 },
       aliases: {}
     },
     expenses: [], incomes: [], adjustments: [], ignoredBankIds: [], liveSeen: [], liveLog: []
@@ -409,6 +410,12 @@
         <div class="actions" style="margin-top:12px"><button class="btn" id="sExpected">Use as expected income</button><button class="btn primary" id="sLog">Log as income today</button></div>
       </details>` : ''}
 
+      ${showCalc ? '' : `<details class="card" id="usCalcCard" ${state.settings.us.gross ? '' : 'open'}>
+        <summary><h2>Salary calculator 2026 (USA)</h2><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary>
+        ${usSalaryHtml()}
+        <div class="actions" style="margin-top:12px"><button class="btn primary" id="usExpected">Use as expected income</button></div>
+      </details>`}
+
       <div class="card">
         <h2>Add money received</h2>
         <div class="field"><label>Amount (net, what arrived), ${SYM}</label><input id="iAmt" class="amount-input num" inputmode="decimal" placeholder="0,00"></div>
@@ -455,6 +462,10 @@
       state.incomes.push({ id: uid(), date: $('#iDate').value || today, amount: L.r2(amt), source: src, kind, note: '' }); save();
       toast(kind === 'advance' ? 'Advance added, salary expectation kept' : 'Income added'); render();
     };
+    if (!showCalc) {
+      const usCalc = bindUsSalary(v);
+      $('#usExpected').onclick = () => { const r = usCalc(); if (!r.gross) return toast('Enter salary and state'); state.settings.expectedNet = r.netMonth; state.settings.useExpected = true; save(); toast('Expected income set to ' + money(r.netMonth)); render(); };
+    }
     $('#useExp').onchange = (e) => { state.settings.useExpected = e.target.checked; save(); recompute(); };
     $('#expNet').onchange = (e) => { state.settings.expectedNet = L.num(e.target.value); save(); recompute(); };
     bindItems(v);
@@ -702,44 +713,204 @@
     });
   }
 
-  function openOnboarding(keep) {
-    const s = state.settings;
-    const k = keep || {};
-    const usd = s.currency === 'USD';
-    openSheet(`<h3>Set up</h3>
-      <div class="field"><label>Currency</label><select id="oCur"><option value="EUR" ${usd ? '' : 'selected'}>Euro (€), Latvia</option><option value="USD" ${usd ? 'selected' : ''}>US dollar ($)</option></select></div>
-      <div class="field"><label>Pay day (day of month salary arrives)</label><input id="oPay" inputmode="numeric" value="${k.pay || s.payDay}"></div>
-      ${usd
-        ? `<div class="field"><label>Expected take-home pay per month, ${SYM} <span class="muted">optional</span></label><input id="oNetIn" inputmode="decimal" value="${k.net || s.expectedNet || ''}"></div>`
-        : `<div class="field"><label>Gross monthly salary (bruto), ${SYM} <span class="muted">optional</span></label><input id="oGross" inputmode="decimal" value="${k.gross || s.salary.gross || ''}"><div class="hint" id="oNet"></div></div>`}
-      <div class="field-row">
-        <div class="field"><label>Save per month, ${SYM}</label><input id="oSave" inputmode="decimal" value="${k.save ?? s.monthlySaving}"></div>
-        <div class="field"><label>Savings goal, ${SYM}</label><input id="oGoal" inputmode="decimal" value="${k.goal ?? s.goal}"></div>
-      </div>
-      <div class="field"><label>Already saved, ${SYM}</label><input id="oStart" inputmode="decimal" value="${k.start ?? (s.startingSaved || 0)}"></div>
-      <button class="btn primary block" id="oGo">Start budgeting</button>
-      <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="oRestore">I already used Budžets: restore my backup</button></div>`, (b) => {
-      const read = () => ({ pay: $('#oPay', b).value, gross: $('#oGross', b) ? $('#oGross', b).value : '', net: $('#oNetIn', b) ? $('#oNetIn', b).value : '', save: $('#oSave', b).value, goal: $('#oGoal', b).value, start: $('#oStart', b).value });
-      $('#oCur', b).onchange = (e) => { s.currency = e.target.value; setCurrency(); save(); openOnboarding(read()); };
-      $('#oRestore', b).onclick = () => openRestore();
-      if (!usd) {
-        const showNet = () => { const g = L.num($('#oGross', b).value); $('#oNet', b).textContent = g ? 'Net after 2026 taxes: ' + money(L.salaryNet(g, s.salary).net) : ''; };
-        $('#oGross', b).oninput = showNet; showNet();
+  // ---------------- first-run setup, one step at a time ----------------
+  const WZ_KEY = 'budget.wizard';
+  let wz = null;
+  const PLAID = { signup: 'https://dashboard.plaid.com/signup', api: 'https://dashboard.plaid.com/developers/api', keys: 'https://dashboard.plaid.com/developers/keys' };
+  const wzSteps = () => (wz.country === 'US'
+    ? ['country', 'plaidSignup', 'plaidRedirect', 'plaidKeys', 'connect', 'salaryUS', 'savings', 'code']
+    : wz.country === 'LV' ? ['country', 'salaryLV', 'savings', 'code'] : ['country', 'x', 'x', 'x']);
+  function wzSave() { try { localStorage.setItem(WZ_KEY, JSON.stringify({ step: wz.step, country: wz.country })); } catch (e) {} }
+  function openOnboarding() {
+    let saved = null; try { saved = JSON.parse(localStorage.getItem(WZ_KEY)); } catch (e) {}
+    wz = { step: 0, country: state.settings.country || '', ...(saved || {}), open: true };
+    wzRender();
+  }
+  function wzGo(delta) { wz.step = Math.max(0, Math.min(wzSteps().length - 1, wz.step + delta)); wzSave(); wzRender(); }
+  const copyBtn = (id, value) => `<div class="copyrow"><input id="${id}" value="${esc(value)}" readonly><button class="btn" type="button" data-copy="${id}">Copy</button></div>`;
+  const linkBtn = (href, label, primary) => `<a class="btn ${primary ? 'primary' : ''} block" href="${esc(href)}" target="_blank" rel="noopener">${label} ↗</a>`;
+  const pasteField = (id, label, value) => `<div class="field"><label>${label}</label><div class="copyrow"><input id="${id}" value="${esc(value)}" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"><button class="btn" type="button" data-paste="${id}">Paste</button></div></div>`;
+  function bindCopyPaste(b) {
+    $$('[data-copy]', b).forEach((x) => (x.onclick = async () => {
+      const inp = $('#' + x.dataset.copy, b);
+      try { await navigator.clipboard.writeText(inp.value); x.textContent = 'Copied ✓'; } catch (e) { inp.select(); document.execCommand && document.execCommand('copy'); x.textContent = 'Copied ✓'; }
+      setTimeout(() => (x.textContent = 'Copy'), 2000);
+    }));
+    $$('[data-paste]', b).forEach((x) => (x.onclick = async () => {
+      const inp = $('#' + x.dataset.paste, b);
+      try { inp.value = (await navigator.clipboard.readText()).trim(); inp.dispatchEvent(new Event('change')); } catch (e) { inp.focus(); toast('Long-press the box and tap Paste'); }
+    }));
+  }
+
+  function wzRender() {
+    const s = state.settings, bk = s.bank;
+    const steps = wzSteps(), id = steps[wz.step], total = steps.length;
+    const last = wz.step === total - 1;
+    const top = `<div class="wz-top"><span class="small muted">Step ${wz.step + 1}${wz.country ? ` of ${total}` : ''}</span><div class="wz-bar"><i style="width:${Math.round(((wz.step + 1) / total) * 100)}%"></i></div></div>`;
+    let body = '', nextLabel = last ? 'Start budgeting' : 'Next', canSkip = '';
+    if (id === 'country') {
+      body = `<h3>Where do you live?</h3>
+        <p class="small muted">This sets your currency and how your take-home pay is calculated.</p>
+        <button class="choice ${wz.country === 'LV' ? 'on' : ''}" data-c="LV"><b>Latvia</b><span>Euro · Latvian salary taxes</span></button>
+        <button class="choice ${wz.country === 'US' ? 'on' : ''}" data-c="US"><b>United States</b><span>Dollar · federal and state taxes · America First CU bank sync</span></button>
+        <div class="actions" style="margin-top:14px"><button class="btn ghost block" id="oRestore">I already used Budžets: restore my backup</button></div>`;
+      nextLabel = '';
+    } else if (id === 'plaidSignup') {
+      body = `<h3>Create a free Plaid account</h3>
+        <p class="small muted">Plaid is the service that lets Budžets read your America First Credit Union transactions. It's free for personal use (up to 10 bank logins).</p>
+        ${linkBtn(PLAID.signup, 'Open Plaid sign up', true)}
+        <p class="small muted" style="margin-top:12px">Sign up with your email. If Plaid asks what you're building, choose a personal budgeting app for your own accounts. Then come back here and tap Next.</p>`;
+      canSkip = 'Skip bank connection';
+    } else if (id === 'plaidRedirect') {
+      body = `<h3>Allow Budžets in Plaid</h3>
+        <p class="small muted">1. Copy this address:</p>${copyBtn('wzRedir', PLAID_REDIRECT())}
+        <p class="small muted" style="margin-top:12px">2. Open Plaid's API page, find <b>Allowed redirect URIs</b>, paste it, and tap <b>Save</b>.</p>
+        ${linkBtn(PLAID.api, 'Open Plaid API page', true)}`;
+      canSkip = 'Skip bank connection';
+    } else if (id === 'plaidKeys') {
+      body = `<h3>Copy your two Plaid keys</h3>
+        <p class="small muted">Open Plaid's Keys page. Copy <b>client_id</b> and the <b>Production</b> secret, and paste each one below.</p>
+        ${linkBtn(PLAID.keys, 'Open Plaid Keys page', true)}
+        <div style="margin-top:12px">${pasteField('wzPid', 'client_id', bk.plaidId)}${pasteField('wzPsec', 'Production secret', bk.plaidSecret)}</div>`;
+      canSkip = 'Skip bank connection';
+    } else if (id === 'connect') {
+      const done = !!bk.sessionId && bk.provider === 'plaid';
+      body = `<h3>Connect America First CU</h3>
+        ${done ? `<div class="banner">Connected ✓ ${bk.accounts.length} account${bk.accounts.length === 1 ? '' : 's'}. Your spending will fill in by itself.</div>`
+          : wz.linkUrl ? `<p class="small muted">Tap the button, log in to America First, then come back here. This page notices the connection by itself.</p>${linkBtn(wz.linkUrl, 'Open bank login', true)}<div class="actions" style="margin-top:10px"><button class="btn ghost block" id="wzCheck">I finished, check now</button></div>`
+          : `<p class="small muted">Log in to your bank once. Budžets only gets read access to your transactions.</p><button class="btn primary block" id="wzConnect">Connect America First CU</button>`}`;
+      if (!done) canSkip = 'Skip for now';
+    } else if (id === 'salaryUS') {
+      body = `<h3>Your salary</h3><p class="small muted">Your take-home pay sets your monthly budget.</p>${usSalaryHtml()}
+        <div class="field"><label>Pay day (day of month the money arrives)</label><input id="wzPay" inputmode="numeric" value="${s.payDay}"></div>`;
+    } else if (id === 'salaryLV') {
+      body = `<h3>Your salary</h3><p class="small muted">Your take-home (neto) pay sets your monthly budget.</p>
+        <div class="field"><label>Gross monthly salary (bruto), €</label><input id="wzGross" inputmode="decimal" value="${s.salary.gross || ''}"></div>
+        <div class="toggle"><span>Tax book submitted (algas nodokļa grāmatiņa)</span><input type="checkbox" id="wzBook" ${s.salary.taxBook ? 'checked' : ''}></div>
+        <div class="field"><label>Dependents</label><input id="wzDeps" inputmode="numeric" value="${s.salary.dependents || 0}"></div>
+        <div class="netbox" id="wzNet"></div>
+        <div class="field"><label>Pay day (day of month salary arrives)</label><input id="wzPay" inputmode="numeric" value="${s.payDay}"></div>`;
+    } else if (id === 'savings') {
+      body = `<h3>Savings</h3><p class="small muted">What you put aside each month is taken out before your daily budget.</p>
+        <div class="field"><label>Save per month, ${SYM}</label><input id="wzSave" inputmode="decimal" value="${s.monthlySaving}"></div>
+        <div class="field"><label>Savings goal, ${SYM}</label><input id="wzGoal" inputmode="decimal" value="${s.goal}"></div>
+        <div class="field"><label>Already saved, ${SYM}</label><input id="wzStart" inputmode="decimal" value="${s.startingSaved || 0}"></div>`;
+    } else if (id === 'code') {
+      body = `<h3>Save your recovery code</h3>
+        <p class="small muted">Your budget is backed up automatically and encrypted. If you delete the app or get a new phone, this code brings everything back. Copy it into your Notes now.</p>
+        <div class="field"><textarea id="wzCode" rows="4" readonly>${esc(recoveryCode())}</textarea></div>
+        <button class="btn block" type="button" data-copy="wzCode">Copy</button>`;
+    }
+    const nav = `<div class="wz-nav">${wz.step > 0 ? '<button class="btn ghost" id="wzBack">Back</button>' : '<span></span>'}${nextLabel ? `<button class="btn primary" id="wzNext">${nextLabel}</button>` : ''}</div>
+      ${canSkip ? `<button class="linkbtn" id="wzSkip">${canSkip}</button>` : ''}`;
+    openSheet(top + body + nav, (b) => {
+      bindCopyPaste(b);
+      const back = $('#wzBack', b); if (back) back.onclick = () => wzGo(-1);
+      const skip = $('#wzSkip', b); if (skip) skip.onclick = () => { wz.step = wzSteps().indexOf('salaryUS'); wzSave(); wzRender(); };
+      const next = $('#wzNext', b);
+      if (id === 'country') {
+        $$('.choice', b).forEach((x) => (x.onclick = () => {
+          wz.country = x.dataset.c; s.country = wz.country; s.currency = wz.country === 'US' ? 'USD' : 'EUR';
+          if (wz.country === 'US') { bk.provider = 'plaid'; bk.bankName = 'America First CU'; bk.country = 'US'; }
+          setCurrency(); save(); wzGo(1);
+        }));
+        $('#oRestore', b).onclick = () => { wz.open = false; openRestore(); };
       }
-      $('#oGo', b).onclick = () => {
-        s.payDay = Math.min(31, Math.max(1, parseInt($('#oPay', b).value, 10) || 1));
-        if (usd) { s.expectedNet = L.num($('#oNetIn', b).value); s.useExpected = s.expectedNet > 0; }
-        else {
-          s.salary.gross = L.num($('#oGross', b).value);
-          if (s.salary.gross) { s.expectedNet = L.salaryNet(s.salary.gross, s.salary).net; s.useExpected = true; }
-        }
-        s.monthlySaving = L.num($('#oSave', b).value); s.goal = L.num($('#oGoal', b).value); s.startingSaved = L.num($('#oStart', b).value);
-        s.backup.id = s.backup.id || uid() + uid();
-        s.startDate = today; s.statsFrom = today; save(); closeSheet(); render(); toast('All set');
-        setTimeout(() => runBackup(false), 500);
-        if (usd && !isOwner() && DEFAULT_BRIDGE) setTimeout(openConnectPrompt, 400);
-      };
+      if (id === 'plaidKeys') {
+        const read = () => { bk.plaidId = $('#wzPid', b).value.trim(); bk.plaidSecret = $('#wzPsec', b).value.trim(); save(); };
+        $('#wzPid', b).onchange = read; $('#wzPsec', b).onchange = read;
+        next.onclick = () => { read(); if (!bk.plaidId || !bk.plaidSecret) return toast('Paste both keys first'); wzGo(1); };
+        return;
+      }
+      if (id === 'connect') {
+        const c = $('#wzConnect', b);
+        if (c) c.onclick = async () => {
+          try {
+            c.disabled = true; c.textContent = 'Preparing…';
+            const r = await bridge('/plaid/start', {});
+            bk.pendingState = 'plaid'; bk.pendingMode = 'worker'; bk.pendingSince = Date.now(); save();
+            wz.linkUrl = r.url; startClaimPolling(); wzRender();
+          } catch (e) { toast(e.message, 6000); c.disabled = false; c.textContent = 'Connect America First CU'; }
+        };
+        const ck = $('#wzCheck', b); if (ck) ck.onclick = async () => { if (!(await checkClaim())) toast('Not finished yet'); };
+        next.onclick = () => (bk.sessionId ? wzGo(1) : toast('Connect first, or tap Skip for now'));
+        return;
+      }
+      const readPay = () => { const p = $('#wzPay', b); if (p) s.payDay = Math.min(31, Math.max(1, parseInt(p.value, 10) || 1)); };
+      if (id === 'salaryUS') {
+        const calc = bindUsSalary(b);
+        next.onclick = () => { const r = calc(); if (!r.gross) return toast('Enter your salary'); readPay(); s.expectedNet = r.netMonth; s.useExpected = true; save(); wzGo(1); };
+        return;
+      }
+      if (id === 'salaryLV') {
+        const calc = () => {
+          s.salary.gross = L.num($('#wzGross', b).value); s.salary.taxBook = $('#wzBook', b).checked; s.salary.dependents = parseInt($('#wzDeps', b).value, 10) || 0;
+          const r = L.salaryNet(s.salary.gross, s.salary);
+          $('#wzNet', b).innerHTML = s.salary.gross ? `Take-home <b class="num">${money(r.net)}</b> / month` : 'Enter your gross salary';
+          return r;
+        };
+        ['#wzGross', '#wzDeps'].forEach((q) => ($(q, b).oninput = calc)); $('#wzBook', b).onchange = calc; calc();
+        next.onclick = () => { const r = calc(); if (!s.salary.gross) return toast('Enter your salary'); readPay(); s.expectedNet = r.net; s.useExpected = true; save(); wzGo(1); };
+        return;
+      }
+      if (id === 'savings') {
+        next.onclick = () => { s.monthlySaving = L.num($('#wzSave', b).value); s.goal = L.num($('#wzGoal', b).value); s.startingSaved = L.num($('#wzStart', b).value); save(); wzGo(1); };
+        return;
+      }
+      if (id === 'code') {
+        $('[data-copy]', b).addEventListener('click', () => { s.backup.codeSaved = true; save(); });
+        next.onclick = () => {
+          s.backup.id = s.backup.id || uid() + uid();
+          s.startDate = today; s.statsFrom = today; save();
+          try { localStorage.removeItem(WZ_KEY); } catch (e) {}
+          wz.open = false; closeSheet(); render(); toast('All set');
+          setTimeout(() => runBackup(false), 500);
+          if (state.settings.bank.sessionId) bankSync(false);
+        };
+        return;
+      }
+      if (next) next.onclick = () => wzGo(1);
     });
+  }
+
+  // ---------------- US salary form (setup + Income tab) ----------------
+  function usSalaryHtml() {
+    const u = state.settings.us;
+    const states = window.USTax.stateList();
+    return `<div class="field"><label>State</label><select id="usState"><option value="">Choose your state</option>${states.map((x) => `<option value="${x.code}" ${u.state === x.code ? 'selected' : ''}>${esc(x.name)}${x.none ? ' (no state income tax)' : ''}</option>`).join('')}</select></div>
+      <div class="field-row">
+        <div class="field"><label>Filing status</label><select id="usFiling"><option value="single" ${u.filing === 'single' ? 'selected' : ''}>Single</option><option value="married" ${u.filing === 'married' ? 'selected' : ''}>Married, joint</option><option value="head" ${u.filing === 'head' ? 'selected' : ''}>Head of household</option></select></div>
+        <div class="field"><label>Kids / dependents</label><input id="usDeps" inputmode="numeric" value="${u.dependents || 0}"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Gross pay (before tax), $</label><input id="usGross" inputmode="decimal" value="${u.gross || ''}" placeholder="e.g. 60000"></div>
+        <div class="field"><label>Per</label><select id="usPer"><option value="year" ${u.per === 'year' ? 'selected' : ''}>Year</option><option value="month" ${u.per === 'month' ? 'selected' : ''}>Month</option><option value="biweek" ${u.per === 'biweek' ? 'selected' : ''}>2 weeks</option><option value="week" ${u.per === 'week' ? 'selected' : ''}>Week</option></select></div>
+      </div>
+      <div class="field"><label>401k / health insurance taken from pay, $ per month <span class="muted">optional</span></label><input id="usPre" inputmode="decimal" value="${u.pretaxMonth || ''}"></div>
+      <div class="netbox" id="usOut"></div>`;
+  }
+  function bindUsSalary(b) {
+    const u = state.settings.us;
+    const calc = () => {
+      u.state = $('#usState', b).value; u.filing = $('#usFiling', b).value; u.dependents = parseInt($('#usDeps', b).value, 10) || 0;
+      u.gross = L.num($('#usGross', b).value); u.per = $('#usPer', b).value; u.pretaxMonth = L.num($('#usPre', b).value); save();
+      const year = u.gross * (window.USTax.PER_YEAR[u.per] || 1);
+      const r = window.USTax.usNet(year, { state: u.state, filing: u.filing, dependents: u.dependents, pretax: u.pretaxMonth * 12 });
+      const m = (x) => money(x / 12);
+      $('#usOut', b).innerHTML = !year ? 'Enter your gross pay' : !u.state ? 'Choose your state' : `
+        <div class="row"><span class="label">Gross</span><span class="num">${m(r.gross)}</span></div>
+        ${r.pretax ? `<div class="row"><span class="label">401k / health</span><span class="num">-${m(r.pretax)}</span></div>` : ''}
+        <div class="row"><span class="label">Federal income tax</span><span class="num">-${m(r.federal)}</span></div>
+        <div class="row"><span class="label">Social Security + Medicare</span><span class="num">-${m(r.socialSecurity + r.medicare)}</span></div>
+        <div class="row"><span class="label">${esc(window.USTax.STATES[u.state].n)} income tax</span><span class="num">-${m(r.state)}</span></div>
+        <div class="row total"><span>Take-home per month</span><span class="num good" style="font-size:20px">${money(r.netMonth)}</span></div>
+        <div class="small muted" style="margin-top:4px">2026 estimate. City/local taxes and state disability deductions are not included.</div>`;
+      return year && u.state ? r : { gross: 0 };
+    };
+    ['#usState', '#usFiling', '#usPer'].forEach((q) => ($(q, b).onchange = calc));
+    ['#usDeps', '#usGross', '#usPre'].forEach((q) => ($(q, b).oninput = calc));
+    calc();
+    return calc;
   }
 
   function openSettings() {
@@ -829,7 +1000,7 @@
       $('#dFile', b).onchange = (e) => importData(e.target.files[0]);
       $('#dUpdate', b).onclick = checkUpdate;
       $('#dReset', b).onclick = () => {
-        if (prompt('Type ERASE to delete all budget data on this device (your cloud backup is kept)') === 'ERASE') { localStorage.removeItem(STORE_KEY); localStorage.removeItem(META_KEY); bkmeta = {}; state = load(); setCurrency(); closeSheet(); render(); setTimeout(openOnboarding, 300); }
+        if (prompt('Type ERASE to delete all budget data on this device (your cloud backup is kept)') === 'ERASE') { localStorage.removeItem(STORE_KEY); localStorage.removeItem(META_KEY); localStorage.removeItem('budget.wizard'); bkmeta = {}; state = load(); setCurrency(); closeSheet(); render(); setTimeout(openOnboarding, 300); }
       };
     });
   }
@@ -1075,6 +1246,7 @@
         await applySession(r);
       }
       if ($('#bkOpen')) closeSheet();
+      if (wz && wz.open) { wz.linkUrl = ''; wzRender(); }
       return true;
     } catch (e) { return false; }
     finally { claiming = false; }

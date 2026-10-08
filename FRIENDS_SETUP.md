@@ -5,11 +5,9 @@
 **iPhone**
 1. Open this link in **Safari**: `https://automatika0001-dotcom.github.io/budget/`
 2. Tap **Share**, then **Add to Home Screen**.
-3. Open **Budžets** from the home screen and fill in the short setup.
-4. **Bank (America First CU), once:** the app shows three short steps. Sign up free at **dashboard.plaid.com**, copy your **client_id** and **Production secret** into the app, and add the redirect address the app shows (tap **Copy**) under Developers > API > Allowed redirect URIs. Then tap **Connect America First CU** and log in to your bank.
-5. When the app says **Save your recovery code**, tap **Copy it** and paste it into your Notes.
+3. Open **Budžets** from the home screen. A step-by-step setup guides you through everything with buttons for every link and copy value: choose Latvia or USA, (USA) create a free Plaid account, copy its keys into the app, connect America First CU, then enter your salary and state to get your take-home pay, your savings goal, and finally copy your recovery code into Notes.
 
-**Android**: install **Budzets.apk** from `https://github.com/automatika0001-dotcom/budget/releases`, then steps 3 to 5.
+**Android**: install **Budzets.apk** from `https://github.com/automatika0001-dotcom/budget/releases`, then step 3.
 
 No Budžets account and no passwords to invent. Your Plaid keys stay in your app (and your encrypted backup); the server only uses them to talk to Plaid for you. Your budget is private: it's kept on your phone, and the automatic backup is encrypted on your phone before it leaves, so nobody else can read it.
 
