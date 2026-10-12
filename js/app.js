@@ -753,7 +753,7 @@
   const pasteField = (id, label, value) => `<div class="field"><label>${label}</label><div class="copyrow"><input id="${id}" value="${esc(value)}" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"><button class="btn" type="button" data-paste="${id}">Paste</button></div></div>`;
   function bindCopyPaste(b) {
     // In the Android app, websites like Plaid and Enable Banking open in the phone's browser (sign-in and downloads work there).
-    if (window.AndroidBridge && window.AndroidBridge.openExternal) $$('a[data-ext]', b).forEach((a) => (a.onclick = (e) => { e.preventDefault(); window.AndroidBridge.openExternal(a.href); }));
+    if (window.AndroidBridge) $$('a[data-ext]', b).forEach((a) => (a.onclick = (e) => { e.preventDefault(); openInBrowser(a.href); }));
     $$('[data-copy]', b).forEach((x) => (x.onclick = async () => {
       const inp = $('#' + x.dataset.copy, b);
       try { await navigator.clipboard.writeText(inp.value); x.textContent = 'Copied ✓'; } catch (e) { inp.select(); document.execCommand && document.execCommand('copy'); x.textContent = 'Copied ✓'; }
@@ -1448,6 +1448,21 @@
         // instead of the app), that page hands the code to the Worker and this app collects it from there.
         bk.pendingState = st; bk.pendingMode = 'worker'; bk.pendingSince = Date.now(); save();
         const r = await bridge('/start', { redirect_url: location.origin + location.pathname, state: st, bank: bk.bankName, country: bk.country });
+        if (window.AndroidBridge) {
+          // Android app: run the whole bank login in the phone's browser. Smart-ID returns to the browser, so the
+          // login must start there too (inside the app the bank session is lost and the login screen comes back).
+          openInBrowser(r.url);
+          openSheet(`<h3>Log in to ${esc(bankLabel())} in your browser</h3>
+            <p class="small muted">Your browser opened the bank login. Approve with Smart-ID there. When it says <b>Connected</b>, come back to CBudget: it picks up the connection by itself.</p>
+            <button class="btn primary block" id="bkDone">I finished, check now</button>
+            <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="bkAgain">Open the bank login again</button></div>`, (bd) => {
+            $('#bkDone', bd).onclick = async () => { const ok = await checkClaim(); toast(ok ? 'Connected' : 'Not finished yet. Finish the login in your browser first.'); if (ok) closeSheet(); };
+            $('#bkAgain', bd).onclick = () => openInBrowser(r.url);
+          });
+          $('#sheetBody').insertAdjacentHTML('afterbegin', '<span id="bkOpen" hidden></span>'); // lets checkClaim close this panel
+          startClaimPolling();
+          return;
+        }
         location.href = r.url; // bank login (Smart-ID), then back here with ?code=
         return;
       }
@@ -1455,9 +1470,10 @@
       // A real link the user taps: browsers only open the bank login reliably from a tap.
       openSheet(`<h3>Connect ${esc(bankLabel())}</h3>
         <p class="small muted">Tap the button, log in at your bank, then come back to CBudget. It picks up the connection by itself.</p>
-        <a class="btn primary block" href="${esc(url)}" target="_blank" rel="noopener" id="bkOpen">Open bank login</a>
+        <a class="btn primary block" href="${esc(url)}" target="_blank" rel="noopener" id="bkOpen" data-ext>Open bank login</a>
         <div class="actions" style="margin-top:10px"><button class="btn ghost block" id="bkDone">I finished, check now</button></div>`, (bd) => {
         $('#bkDone', bd).onclick = async () => { const ok = await checkClaim(); toast(ok ? 'Connected' : 'Not finished yet'); if (ok) closeSheet(); };
+        bindCopyPaste(bd);
       });
       startClaimPolling();
     } catch (e) { toast(e.message, 5000); }
@@ -1515,6 +1531,13 @@
     }, 3000);
   }
 
+  // Open a web address in the phone's real browser (Chrome), from the Android app.
+  function openInBrowser(url) {
+    const ab = window.AndroidBridge;
+    if (ab && ab.openExternal) return ab.openExternal(url);
+    if (ab) { location.href = 'intent://' + url.replace(/^https?:\/\//, '') + '#Intent;scheme=https;action=android.intent.action.VIEW;end'; return; } // older app versions
+    window.open(url, '_blank');
+  }
   let bankBusy = false;
   async function handleBankRedirect() {
     const p = new URLSearchParams(location.search);
