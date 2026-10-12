@@ -12,7 +12,7 @@
       payDay: 10, monthlySaving: 500, goal: 20000, startingSaved: 0, openingCarry: 0, startDate: null,
       useExpected: true, expectedNet: 0, statsFrom: null, liveEnabled: true, vacations: [],
       salary: { gross: 0, taxBook: true, dependents: 0, disability: 'none' }, currency: 'EUR',
-      bank: { workerUrl: '', token: '', provider: 'eb', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '', pendingMode: '', pendingSince: 0, plaidId: '', plaidSecret: '', ebAppId: '', ebKey: '' },
+      bank: { workerUrl: '', token: '', provider: 'eb', bankName: 'SEB', country: 'LV', sessionId: '', accounts: [], validUntil: '', lastSync: '', importIncome: true, ignore: '', pendingState: '', pendingMode: '', pendingSince: 0, lastError: '', plaidId: '', plaidSecret: '', ebAppId: '', ebKey: '' },
       backup: { pass: '', id: '', codeSaved: false, hasPassword: false },
       account: { uid: '', secret: '' }, country: '',
       us: { state: '', filing: 'single', dependents: 0, gross: 0, per: 'year', pretaxMonth: 0 },
@@ -1014,7 +1014,7 @@
       <h3 style="margin-top:22px">Bank sync</h3>
       <div class="field"><label>Bank</label><select id="bkProv"><option value="eb" ${plaidMode ? '' : 'selected'}>SEB (Latvia)</option><option value="plaid" ${plaidMode ? 'selected' : ''}>America First Credit Union (USA)</option></select></div>
       ${plaidMode ? plaidKeysHtml() : isOwner() ? '' : ebKeysHtml()}
-      <div class="small muted" style="margin-bottom:10px">${connected ? `Connected · ${bk.accounts.length} account(s) · last sync ${bk.lastSync ? dShort(bk.lastSync.slice(0, 10)) + ' ' + bk.lastSync.slice(11, 16) : 'never'}${bk.validUntil ? ' · consent until ' + dShort(bk.validUntil.slice(0, 10)) : ''}` : bk.pendingState ? 'Waiting for the bank login to finish…' : 'Not connected.'}</div>
+      <div class="small muted" style="margin-bottom:10px">${connected ? `Connected · ${bk.accounts.length} account(s) · last sync ${bk.lastSync ? dShort(bk.lastSync.slice(0, 10)) + ' ' + bk.lastSync.slice(11, 16) : 'never'}${bk.validUntil ? ' · consent until ' + dShort(bk.validUntil.slice(0, 10)) : ''}` : bk.pendingState ? 'Waiting for the bank login to finish…' : 'Not connected.'}${bk.lastError ? `<div class="bad" style="margin-top:4px">Last problem: ${esc(bk.lastError)}</div>` : ''}</div>
       <div class="toggle"><span>Import incoming payments as income</span><input type="checkbox" id="bkInc" ${bk.importIncome ? 'checked' : ''}></div>
       <div class="field"><label>Ignore transactions containing (comma separated)</label><input id="bkIgn" value="${esc(bk.ignore)}" placeholder="own transfer, savings, your name"></div>
       <div class="actions"><button class="btn primary" id="bkConnect">${connected ? 'Reconnect ' + label : 'Connect ' + label}</button>${connected ? '<button class="btn" id="bkSync">Sync now</button>' : ''}${bk.pendingState ? '<button class="btn" id="bkCheck">I finished, check now</button>' : ''}</div>
@@ -1421,7 +1421,7 @@
       body: JSON.stringify(b)
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || data.message || ('Bridge error ' + res.status));
+    if (!res.ok) { const er = new Error(data.error || data.message || ('Bridge error ' + res.status)); er.status = res.status; er.details = data.details; throw er; }
     return data;
   }
 
@@ -1444,7 +1444,9 @@
         url = r.url; bk.pendingState = st; bk.pendingMode = 'worker';
       } else {
         const st = uid();
-        bk.pendingState = st; bk.pendingMode = 'redirect'; save();
+        // The bank sends the login back to this page. If Smart-ID finishes it in another browser (e.g. Chrome
+        // instead of the app), that page hands the code to the Worker and this app collects it from there.
+        bk.pendingState = st; bk.pendingMode = 'worker'; bk.pendingSince = Date.now(); save();
         const r = await bridge('/start', { redirect_url: location.origin + location.pathname, state: st, bank: bk.bankName, country: bk.country });
         location.href = r.url; // bank login (Smart-ID), then back here with ?code=
         return;
@@ -1473,7 +1475,7 @@
       bk.accounts = (r.accounts || []).map((a) => ({ uid: a.uid, iban: a.account_id && a.account_id.iban, name: a.name || a.product || '' }));
       bk.validUntil = (r.access && r.access.valid_until) || '';
     }
-    bk.pendingState = ''; bk.pendingMode = ''; save();
+    bk.pendingState = ''; bk.pendingMode = ''; bk.lastError = ''; save();
     toast(`${bankLabel()} connected (${bk.accounts.length} account${bk.accounts.length === 1 ? '' : 's'})`);
     return bankSync(true);
   }
@@ -1513,18 +1515,28 @@
     }, 3000);
   }
 
+  let bankBusy = false;
   async function handleBankRedirect() {
     const p = new URLSearchParams(location.search);
     const code = p.get('code'), st = p.get('state'), err = p.get('error');
     if (!code && !err) return;
-    history.replaceState(null, '', location.pathname);
     const bk = state.settings.bank;
-    if (err) return toast('Bank connection cancelled: ' + (p.get('error_description') || err), 5000);
-    if (bk.pendingState && st !== bk.pendingState) return toast('Bank connection state mismatch, try again', 5000);
+    if (!bk.pendingState || st !== bk.pendingState) {
+      // This page didn't start the login (Smart-ID returned to a different browser than the app).
+      // Pass the result to the Worker; the app that started it picks it up from there by itself.
+      location.replace(bridgeUrl() + '/callback' + location.search);
+      return 'forwarded';
+    }
+    history.replaceState(null, '', location.pathname);
+    if (err) { bk.pendingState = ''; bk.pendingMode = ''; save(); return toast('Bank connection cancelled: ' + (p.get('error_description') || err), 6000); }
+    bankBusy = true;
     try {
       const r = await bridge('/session', { code });
       await applySession(r);
-    } catch (e) { toast('Could not finish connecting: ' + e.message, 6000); }
+    } catch (e) {
+      bk.lastError = 'Connecting: ' + e.message; save();
+      toast('Could not finish connecting: ' + e.message, 8000);
+    } finally { bankBusy = false; }
   }
 
   let syncing = false;
@@ -1537,25 +1549,31 @@
       let from = bk.lastSync ? L.addDays(bk.lastSync.slice(0, 10), -5) : start;
       if (from < start) from = start;
       const plaidMode = bk.provider === 'plaid';
-      const mapped = [];
+      const mapped = [], errors = [];
       for (const acc of bk.accounts) {
+        try {
         // present: you opened the app yourself, so the bank's 4-per-day background limit doesn't apply (SEB).
         // refresh: ask Plaid to fetch fresh data from the bank now (the Worker limits this to once per 15 minutes).
         const r = await bridge(plaidMode ? '/plaid/transactions' : '/transactions', { account_uid: acc.uid, date_from: from, present: true, refresh: true });
         for (const tx of r.transactions || []) mapped.push(L.mapTransaction(tx));
+        } catch (e) { errors.push(e); }
       }
+      if (errors.length && errors.length === bk.accounts.length) throw errors[0];
       // Same purchase already logged live (Google Wallet) or by hand? It is linked instead of added twice.
       const res = L.applyBankTransactions(state, mapped, {
         start, from, ignore: bk.ignore, importIncome: bk.importIncome, withPending: plaidMode,
         newId: uid, kindOf: (rec) => guessKind(rec, state.settings)
       });
       const added = res.added, addedIn = res.addedIn, matched = res.matched;
-      bk.lastSync = new Date().toISOString(); save();
+      bk.lastSync = new Date().toISOString(); bk.lastError = errors.length ? errors[0].message : ''; save();
       syncing = false; render();
       if (manual || added || addedIn) toast(added || addedIn ? `Imported ${added} expense${added === 1 ? '' : 's'}${addedIn ? `, ${addedIn} income` : ''}${matched ? ` (${matched} already logged)` : ''}` : 'Up to date');
     } catch (e) {
-      if (/expired|session|consent|401|403/i.test(e.message)) toast(bankLabel() + ' access expired. Reconnect in Settings.', 6000);
-      else if (manual) toast('Sync failed: ' + e.message, 5000);
+      bk.lastError = e.message; save();
+      // Only call it "expired" when the bank says so; otherwise show what actually went wrong.
+      const expired = e.status === 401 || e.status === 403 || /expired|consent|revoked|not authori[sz]ed|ACCESS_DENIED|ITEM_LOGIN_REQUIRED/i.test(e.message);
+      if (expired) toast(bankLabel() + ' access expired: ' + e.message + '. Reconnect in Settings.', 8000);
+      else if (manual) toast(bankLabel() + ' sync failed: ' + e.message, 8000);
     } finally { syncing = false; refreshStatus(); }
   }
   // Sync whenever the app is opened or brought back from the background, at most every 5 minutes.
@@ -1655,7 +1673,7 @@
     let reloading = false;
     const hadController = !!navigator.serviceWorker.controller; // false on the very first install
     navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (reloading || !hadController) return;
+      if (reloading || !hadController || bankBusy || /[?&](code|state)=/.test(location.search)) return;
       reloading = true; sessionStorage.setItem('justUpdated', '1'); location.reload();
     });
     navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
@@ -1692,7 +1710,7 @@
     setupSW();
     processLive(false);
     if (liveAvailable()) { try { AB().setLiveEnabled(state.settings.liveEnabled !== false); } catch (e) {} }
-    handleBankRedirect().then(autoSync);
+    handleBankRedirect().then((r) => { if (r !== 'forwarded') autoSync(); });
     if (state.settings.bank.pendingMode === 'worker') { checkClaim(); startClaimPolling(); }
     setTimeout(() => runBackup(false), 2500);
     setInterval(() => runBackup(false), 30 * 60e3);
