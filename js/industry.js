@@ -20,7 +20,8 @@
     { id: 'home', name: 'Hardware & home', color: '#c9a27a' },
     { id: 'sport', name: 'Sport & fitness', color: '#3fbfbf' },
     { id: 'post', name: 'Post & parcels', color: '#e0c060' },
-    { id: 'utilities', name: 'Phone & utilities', color: '#8fa3b8' },
+    { id: 'rent', name: 'Rent', color: '#e8875b' },
+    { id: 'utilities', name: 'Utilities', color: '#8fa3b8' },
     { id: 'fees', name: 'Bank fees', color: '#a0a0a0' },
     { id: 'cash', name: 'Cash withdrawals', color: '#d9d9d9' },
     { id: 'people', name: 'Transfers to people', color: '#b8c4bf' },
@@ -34,6 +35,9 @@
     // money movements first
     [/BRINK'?S ATM|BANKOMAT|\bATM\b|IZMAKSA/, 'cash'],
     [/^SEB BANKA\b|VP\.M\.KOM|KOMISIJA PAR|SERVICE FEE/, 'fees'],
+    // rent and utilities first: often paid by transfer, so they win over "transfers to people"
+    [/ĪRE\b|\bIRE\b|ĪRES|\bIRES\b|DZĪVOKĻ|DZIVOKL|\bRENT\b|RENTAL|LANDLORD|KOPMĪTN|KOPMITN|NOMAS MAKSA/, 'rent'],
+    [/LATVENERGO|ELEKTRUM|ENEFIT|SADALES T|LATVIJAS GĀZE|LATVIJAS GAZE|\bGASO\b|RĪGAS ŪDENS|RIGAS UDENS|ŪDENS|UDENSAPGADE|SILTUM|ADVEN|ATKRITUM|EKO KURZEME|CLEANR|ZAAO|NAMU APSAIMNIEK|APSAIMNIEKO|KOMUNĀL|KOMUNAL|\bLMT\b|TELE2|\bBITE\b|\bTET\b|BALTCOM|INTERNET/, 'utilities'],
     [/MOBILAIS MAKS/, 'people'],
     [/REVOLUT RAMP|COINBASE|BINANCE|KRAKEN|BYBIT|MOONPAY/, 'finance'],
     // food delivery and rides (before generic food words)
@@ -66,8 +70,6 @@
     [/GYMLATVIJA|MYFITNESS|MY FITNESS|LEMON GYM|\bGYM\b|FITNESS|SPORTA KLUBS|DECATHLON/, 'sport'],
     // post and parcels
     [/OMNIVA|\bDPD\b|DHL|LATVIJAS PASTS|VENIPAK|SMARTPOSTI|UNISEND|PAKOMAT/, 'post'],
-    // phone, internet, utilities
-    [/\bLMT\b|TELE2|\bBITE\b|\bTET\b|LATVENERGO|ELEKTRUM|ENEFIT|RIGAS UDENS|RĪGAS ŪDENS|GASO|ADVEN|EKO KURZEME|CLEANR|ZAAO|NAMU APSAIMNIEK/, 'utilities']
   ];
 
   // ---------- fuzzy shop matching ----------
@@ -123,7 +125,8 @@
     clothing: ['HUMANA', 'SINSAY', 'PEPCO', 'LINDEX', 'DEICHMANN', 'SPORTLAND'],
     home: ['WURTH', 'SENUKAI', 'JYSK', 'IKEA'],
     sport: ['GYMLATVIJA', 'MYFITNESS', 'LEMONGYM'],
-    post: ['OMNIVA', 'VENIPAK', 'SMARTPOSTI']
+    post: ['OMNIVA', 'VENIPAK', 'SMARTPOSTI'],
+    utilities: ['LATVENERGO', 'ELEKTRUM', 'ENEFIT', 'BALTCOM', 'TELE2', 'SILTUMS', 'APSAIMNIEKOSANA']
   };
   const BRAND_LIST = Object.entries(BRANDS).flatMap(([id, keys]) => keys.map((k) => [k, id]));
   function classify(place, note, cfg) {
@@ -181,7 +184,9 @@
     return { csv: lines.join('\n') + '\n', count: rows.length, shops: new Set(rows.map((e) => brandKey(placeOf(e)))).size };
   }
 
-  const api = { INDUSTRIES, RULES, brandKey, keysMatch, classify, classifyExpense, allIndustries, byIndustry, unclassifiedGroups, unclassifiedCsv };
+  const FIXED = new Set(['rent', 'utilities']);
+  const isFixedExpense = (e, cfg) => FIXED.has(classifyExpense(e, cfg));
+  const api = { FIXED, isFixedExpense, INDUSTRIES, RULES, brandKey, keysMatch, classify, classifyExpense, allIndustries, byIndustry, unclassifiedGroups, unclassifiedCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Industry = api;
 })(typeof window !== 'undefined' ? window : globalThis);

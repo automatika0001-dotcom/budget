@@ -27,6 +27,13 @@ for (const [id, names] of Object.entries(cases)) for (const nm of names) { asser
 // left for later on purpose: unknown shops
 for (const nm of ['SIA AMBER DISTRIBUTIO', 'MILLENIUMS SIA', 'KAC-Pragas', 'JAUNA VECRIGA SIA']) assert.strictEqual(I.classify(nm, ''), null, nm);
 assert.strictEqual(I.classify('JURIS DUNDARS', 'Mobilais maksājums'), 'people');
+assert.strictEqual(I.classify('JĀNIS BĒRZIŅŠ', 'Dzīvokļa īre oktobris'), 'rent');
+assert.strictEqual(I.classify('SIA NAMS', 'īres maksa 10.2026'), 'rent');
+assert.strictEqual(I.classify('LATVENERGO AS', 'rēķins'), 'utilities');
+assert.strictEqual(I.classify('Tele2', ''), 'utilities');
+assert.strictEqual(I.classify('RIGAS NAMU APSAIMNIEKOTAJS', ''), 'utilities');
+assert.strictEqual(I.classify('KIRENE BAR', ''), null); // 'IRE' inside a word is not rent
+assert.ok(I.isFixedExpense({ place: 'Elektrum' }) && !I.isFixedExpense({ place: 'RIMI' }));
 // chart totals and export
 const ex = [{ date: '2026-10-01', amount: 6.3, place: 'TALSU AUTOTRANSPORTS A' }, { date: '2026-10-02', amount: 3, place: 'NARVESEN 1151' }, { date: '2026-10-02', amount: 30, place: 'KAC-Pragas', note: 'card, "quoted"', bankId: 'b' }, { date: '2026-09-01', amount: 99, place: 'RIMI' }];
 const t = I.byIndustry(ex, '2026-10-01', '2026-10-31');

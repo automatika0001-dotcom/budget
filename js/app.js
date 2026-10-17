@@ -17,7 +17,7 @@
       account: { uid: '', secret: '' }, country: '',
       us: { state: '', filing: 'single', dependents: 0, gross: 0, per: 'year', pretaxMonth: 0 },
       aliases: {},
-      industry: { custom: [], map: {} }
+      industry: { custom: [], map: {} }, statsFixed: true
     },
     expenses: [], incomes: [], adjustments: [], ignoredBankIds: [], liveSeen: [], liveLog: []
   });
@@ -32,6 +32,17 @@
   function migrate(s) {
     // Future schema changes go here, keyed on s.v. Old data is always merged over current defaults.
     const out = deepMerge(defaults(), s || {});
+    // v1.12: Rent and Utilities are built in; shops you sorted into your own "Rent"/"Utilities" move there
+    const ic = out.settings.industry;
+    if (ic && Array.isArray(ic.custom)) {
+      ic.custom = ic.custom.filter((c) => {
+        const to = /^(rent|īre|ire|dzīvoklis|housing)$/i.test(String(c.name).trim()) ? 'rent'
+          : /^(utilities|komunālie|komunalie|komunālie maksājumi|bills|rēķini)$/i.test(String(c.name).trim()) ? 'utilities' : null;
+        if (!to) return true;
+        for (const k in ic.map) if (ic.map[k] === c.id) ic.map[k] = to;
+        return false;
+      });
+    }
     // v1.3: give every income a kind (salary / advance / other) so advances don't cancel the expected salary
     (out.incomes || []).forEach((i) => { if (!i.kind) i.kind = guessKind(i, out.settings); });
     // v1.2: statistics ignore days before 6 Oct 2026 (or the budget start date, whichever is later)
@@ -112,7 +123,8 @@
   // ---------------- core render ----------------
   function recompute() {
     today = L.todayStr();
-    ledger = L.buildLedger(state, today);
+    const cfg = state.settings.industry;
+    ledger = L.buildLedger(state, today, { isFixed: (e) => window.Industry.isFixedExpense(e, cfg) });
   }
 
   function render() {
@@ -345,7 +357,7 @@
     const payDay = Math.min(state.settings.payDay, L.daysInMonth(y, m));
     for (let d = 1; d <= L.daysInMonth(y, m); d++) {
       const ds = `${y}-${L.pad(m + 1)}-${L.pad(d)}`;
-      const sp = ledger.spentByDay[ds] || 0;
+      const sp = (ledger.spentByDay[ds] || 0) + (fixedOn() ? (ledger.fixedByDay[ds] || 0) : 0);
       monthSpent += sp;
       const info = days[ds];
       let cls = 'day';
@@ -360,6 +372,7 @@
       <div class="navrow"><button class="icon-btn" id="calPrev"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
         <span class="lbl">${MONTHS_LONG[m]} ${y}</span>
         <button class="icon-btn" id="calNext"><svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button></div>
+      ${fixedSwitchHtml()}
       <div class="card"><div class="cal">${cells}</div>
         <div class="legend" style="margin-top:12px"><span><i style="background:#17291f"></i>Under daily budget</span><span><i style="background:#331a18"></i>Over</span><span><span style="color:var(--accent)">${SYM}</span> Pay day</span>${(state.settings.vacations || []).length ? '<span><i style="background:transparent;border:1px dashed #6ab8f2"></i>Holiday</span>' : ''}</div></div>
       <div class="stat-grid">
@@ -367,6 +380,7 @@
         <div class="stat"><div class="k">Income in ${MONTHS[m]}</div><div class="v num good">${money(inc)}</div></div>
       </div>
       <p class="small muted" style="text-align:center">Tap a day to see or add expenses.</p>`;
+    bindFixedSwitch(v);
     $('#calPrev').onclick = () => { ui.calOffset--; render(); };
     $('#calNext').onclick = () => { ui.calOffset++; render(); };
     $$('.cal .day', v).forEach((el) => el.addEventListener('click', () => openDay(el.dataset.date)));
@@ -473,10 +487,23 @@
   }
 
   // ---------------- STATS ----------------
+  const chartAnim = () => (ui.animate ? { duration: 700, easing: 'easeOutCubic' } : false);
+  // Rent & utilities switch for statistics and the calendar
+  const fixedOn = () => state.settings.statsFixed !== false;
+  const isFixedE = (e) => window.Industry.isFixedExpense(e, state.settings.industry);
+  const fixedSwitchHtml = () => `<div class="toggle fixswitch"><span>Rent &amp; utilities</span><input type="checkbox" id="fxToggle" ${fixedOn() ? 'checked' : ''}></div>`;
+  function bindFixedSwitch(v) {
+    const t = $('#fxToggle', v);
+    if (t) t.onchange = () => {
+      state.settings.statsFixed = t.checked; save();
+      ui.animate = true; render(); ui.animate = false;
+      const nv = $('#view-' + ui.tab); nv.classList.remove('swap'); void nv.offsetWidth; nv.classList.add('swap');
+    };
+  }
   function chartBase() {
     const grid = css('--line'), muted = css('--muted');
     return {
-      responsive: true, maintainAspectRatio: false, animation: false,
+      responsive: true, maintainAspectRatio: false, animation: chartAnim(),
       interaction: { mode: 'index', intersect: false },
       plugins: { legend: { labels: { color: muted, boxWidth: 12, usePointStyle: true } },
         tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${money(c.parsed.y)}` } } },
@@ -504,8 +531,12 @@
       const startD = ledger.statsFrom > per.start ? ledger.statsFrom : per.start;
       const all = []; for (let d = startD; d <= to; d = L.addDays(d, 1)) all.push(d);
       const before0 = days.length ? days[0].before : 0;
-      const limit = L.r2(per.effective - before0);
-      const cum = {}; days.forEach((d) => (cum[d.date] = L.r2(d.cum - before0)));
+      const fx = ledger.fixedByDay || {};
+      const fixedBefore = L.sumRange(fx, per.start, L.addDays(startD, -1));
+      const fixedInRange = L.sumRange(fx, startD, per.end);
+      const limit = L.r2(per.effective - before0 - fixedBefore - (fixedOn() ? 0 : fixedInRange));
+      const cum = {}; let fc = 0;
+      days.forEach((d) => { fc += fixedOn() ? (d.fixed || 0) : 0; cum[d.date] = L.r2(d.cum - before0 + fc); });
       const n = all.length || 1;
       chart1 = {
         type: 'line',
@@ -526,7 +557,10 @@
       for (const d of all) {
         const p = ledger.periods.find((pp) => d >= pp.start && d <= pp.end);
         const counted = p && d >= ledger.statsFrom;
-        if (byDate[d]) { lastPlan = byDate[d].plan || 0; cl += lastPlan; cs += byDate[d].spent; }
+        if (byDate[d]) {
+          lastPlan = byDate[d].plan || 0; cl += lastPlan; cs += byDate[d].spent;
+          if (fixedOn()) { cs += byDate[d].fixed || 0; cl += byDate[d].fixed || 0; }
+        }
         else if (counted && d > today) cl += lastPlan; // rest of the current month at its planned pace
         spentSeries.push(counted && d <= today ? L.r2(cs) : null);
         limitSeries.push(counted ? L.r2(cl) : null);
@@ -540,16 +574,18 @@
       };
     }
     const st = L.overUnderStats(days.filter((d) => d.date <= today));
-    const places = L.topPlaces(state.expenses, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.aliases, 8);
+    const statExp = fixedOn() ? state.expenses : state.expenses.filter((e) => !isFixedE(e));
+    const places = L.topPlaces(statExp, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.aliases, 8);
     const placeTotal = places.reduce((s, p) => s + p.total, 0);
     const palette = ['#c8f26a', '#5fd3a0', '#6ab8f2', '#b48cf2', '#f2a65f', '#f26a9a', '#f5c35b', '#7b8a84'];
     // SEB users: spending by industry, from the built-in shop classification
     const sebUser = state.settings.bank.provider === 'eb' && (!!state.settings.bank.sessionId || state.expenses.some((e) => e.bankId));
-    const inds = sebUser ? window.Industry.byIndustry(state.expenses, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.industry) : [];
+    const inds = sebUser ? window.Industry.byIndustry(statExp, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.industry) : [];
     const indTotal = inds.reduce((a, x) => a + x.total, 0);
 
     v.innerHTML = `
       <div class="seg"><button data-m="month" class="${ui.statsMode === 'month' ? 'on' : ''}">Month</button><button data-m="year" class="${ui.statsMode === 'year' ? 'on' : ''}">Year</button></div>
+      ${fixedSwitchHtml()}
       <div class="navrow"><button class="icon-btn" id="stPrev"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
         <span class="lbl">${label}</span>
         <button class="icon-btn" id="stNext" ${ui.statsOffset >= 0 ? 'disabled' : ''}><svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button></div>
@@ -577,6 +613,7 @@
       </div>`;
 
     $$('.seg button', v).forEach((b) => (b.onclick = () => { ui.statsMode = b.dataset.m; ui.statsOffset = 0; render(); }));
+    bindFixedSwitch(v);
     $('#stPrev').onclick = () => { ui.statsOffset--; render(); };
     $('#stNext').onclick = () => { if (ui.statsOffset < 0) { ui.statsOffset++; render(); } };
 
@@ -587,7 +624,7 @@
       ui.charts.c2 = new Chart($('#c2'), {
         type: 'doughnut',
         data: { labels: places.map((p) => p.name), datasets: [{ data: places.map((p) => p.total), backgroundColor: palette, borderColor: css('--surface'), borderWidth: 3 }] },
-        options: { responsive: true, maintainAspectRatio: false, animation: false, cutout: '62%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${money(c.parsed)}` } } } }
+        options: { responsive: true, maintainAspectRatio: false, animation: ui.animate ? { duration: 700, easing: 'easeOutCubic', animateRotate: true } : false, cutout: '62%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${money(c.parsed)}` } } } }
       });
     }
 
@@ -598,7 +635,7 @@
       if (inds.length) ui.charts.c4 = new Chart($('#c4'), {
         type: 'doughnut',
         data: { labels: inds.map((x) => x.name), datasets: [{ data: inds.map((x) => x.total), backgroundColor: inds.map((x) => x.color), borderColor: css('--surface'), borderWidth: 3 }] },
-        options: { responsive: true, maintainAspectRatio: false, animation: false, cutout: '62%', onClick: (ev, els) => { if (els.length && inds[els[0].index].id === 'other') openClassify(); }, plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${money(c.parsed)}` } } } }
+        options: { responsive: true, maintainAspectRatio: false, animation: ui.animate ? { duration: 700, easing: 'easeOutCubic', animateRotate: true } : false, cutout: '62%', onClick: (ev, els) => { if (els.length && inds[els[0].index].id === 'other') openClassify(); }, plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${money(c.parsed)}` } } } }
       });
     }
 

@@ -237,3 +237,12 @@ a.btn.primary { color: var(--accent-ink); }
 .ind-mine { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .mine-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 99px; padding: 4px 4px 4px 10px; font-size: 13px; }
 .mine-chip button { border: 0; background: var(--line); color: var(--text); width: 22px; height: 22px; border-radius: 50%; cursor: pointer; font-size: 15px; line-height: 1; }
+
+/* rent & utilities switch */
+.fixswitch { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; }
+.view.swap .card, .view.swap .stat-grid { animation: swapIn .55s cubic-bezier(.2,.8,.2,1) both; }
+.view.swap .card:nth-of-type(2) { animation-delay: .04s; } .view.swap .card:nth-of-type(3) { animation-delay: .08s; } .view.swap .card:nth-of-type(4) { animation-delay: .12s; }
+.view.swap .cal .day .s { animation: numPop .45s ease-out both; }
+@keyframes swapIn { from { opacity: .25; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes numPop { from { opacity: 0; transform: scale(.6); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .view.swap .card, .view.swap .stat-grid, .view.swap .cal .day .s { animation: none; } }

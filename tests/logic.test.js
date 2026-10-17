@@ -271,3 +271,33 @@ t('tomorrow preview: unspent today does not raise it, overspend lowers it, lefto
   });
 }
 console.log('tomorrow tests passed');
+
+// ---- fixed costs (rent, utilities): out of the month's money, never counted as a day's spending ----
+{
+  const isFixed = (e) => /RENT|LATVENERGO/i.test(e.place || '');
+  const st = { settings: { payDay: 1, monthlySaving: 0, startDate: '2026-11-01', statsFrom: '2026-11-01', useExpected: true, expectedNet: 1000 },
+    expenses: [{ id: 'r', date: '2026-11-05', amount: 400, place: 'Rent' }, { id: 'a', date: '2026-11-05', amount: 20, place: 'Rimi' }, { id: 'u', date: '2026-11-10', amount: 30, place: 'LATVENERGO' }],
+    incomes: [], adjustments: [] };
+  t('rent day: today\'s allowance is recalculated without the rent, and rent is not today\'s spending', () => {
+    const lg = L.buildLedger(st, '2026-11-05', { isFixed });
+    const ts = L.todayStatus(lg, '2026-11-05');
+    // 1000 for 30 days = 33.33/day; days 1-4 nothing spent; on the 5th 400 rent comes off: (1000-400)/26
+    near(ts.dailyAllowance, 600 / 26, 'allowance after rent');
+    near(ts.spentToday, 20, 'only the groceries count today');
+    near(ts.remainingMonth, 1000 - 450, 'month money includes rent and the bill dated later this month');
+    near(ts.nextAllowance, (600 - Math.max(20, 600 / 26)) / 25, 'tomorrow');
+  });
+  t('day before rent is unaffected; over/under ignores fixed costs', () => {
+    const lg = L.buildLedger(st, '2026-11-10', { isFixed });
+    const days = L.daysInRange(lg, '2026-11-01', '2026-11-10', '2026-11-10');
+    near(days[3].allow, 1000 / 27, 'day 4, rent not taken yet');
+    assert.ok(days.every((d) => d.spent < 100), 'rent never shows up as spending');
+    near(days[9].fixed, 30, 'utilities recorded on its day');
+    near(lg.current.spent, 450, 'period total includes fixed'); near(lg.current.fixed, 430, 'fixed'); near(lg.current.daily, 20, 'daily');
+  });
+  t('without the classifier everything counts as before', () => {
+    const lg = L.buildLedger(st, '2026-11-05');
+    near(L.todayStatus(lg, '2026-11-05').spentToday, 420, 'old behaviour');
+  });
+}
+console.log('fixed cost tests passed');

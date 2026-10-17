@@ -99,11 +99,18 @@
    *  - Savings per closed period = monthly saving + rollover sent to savings.
    *  - Current period (live): saved = monthly saving minus any overspend so far.
    */
-  function buildLedger(state, today) {
+  /**
+   * opts.isFixed(expense): fixed costs (rent, utilities). They come out of the month's money on their day
+   * (so the daily allowance is recalculated without them) but never count as that day's spending.
+   */
+  function buildLedger(state, today, opts) {
     const s = state.settings;
     const payDay = s.payDay || 1;
     const S = num(s.monthlySaving);
-    const spentByDay = sumByDay(state.expenses || []);
+    const isFixed = (opts && opts.isFixed) || (() => false);
+    const allExp = (state.expenses || []).filter((e) => !e.ignored);
+    const spentByDay = sumByDay(allExp.filter((e) => !isFixed(e)));
+    const fixedByDay = sumByDay(allExp.filter((e) => isFixed(e)));
     const incomeByDay = sumByDay(state.incomes || []);
     const adjByDay = sumByDay(state.adjustments || []); // rebalances: change the allowance, never count as spend/income
     const statsFrom = s.statsFrom || s.startDate || today;
@@ -111,7 +118,7 @@
     const periods = [];
     let savedTotal = num(s.startingSaved);
     let carry = num(s.openingCarry);
-    if (!s.startDate || s.startDate > today) return { periods, savedTotal, current: null, spentByDay, incomeByDay, adjByDay, statsFrom, isHoliday };
+    if (!s.startDate || s.startDate > today) return { periods, savedTotal, current: null, spentByDay, fixedByDay, incomeByDay, adjByDay, statsFrom, isHoliday };
     let p = periodFor(s.startDate, payDay);
     let guard = 0;
     while (p.start <= today && guard++ < 1200) {
@@ -136,9 +143,11 @@
       const adjust = sumRange(adjByDay, p.start, p.end);
       const effectiveBase = r2(base + carry);
       const effective = r2(effectiveBase + adjust);
-      const spent = sumRange(spentByDay, p.start, p.end);
+      const fixed = sumRange(fixedByDay, p.start, p.end);
+      const daily = sumRange(spentByDay, p.start, p.end);
+      const spent = r2(daily + fixed); // all money that went out this period
       const leftover = r2(effective - spent);
-      const per = Object.assign({}, p, { income, incomeExpected, salaryToCome, advance: r2(advance), saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), adjust, effectiveBase, effective, spent, leftover, isCurrent });
+      const per = Object.assign({}, p, { income, incomeExpected, salaryToCome, advance: r2(advance), saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), adjust, effectiveBase, effective, spent, daily: r2(daily), fixed: r2(fixed), leftover, isCurrent });
       if (!isCurrent) {
         let toSavings = 0, carryOut;
         if (leftover < 0) carryOut = leftover;
@@ -153,7 +162,7 @@
       periods.push(per);
       p = periodFor(p.next, payDay);
     }
-    return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, incomeByDay, adjByDay, statsFrom, isHoliday };
+    return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, fixedByDay, incomeByDay, adjByDay, statsFrom, isHoliday };
   }
 
   const isWeekend = (d) => { const w = parse(d).getUTCDay(); return w === 0 || w === 6; };
@@ -180,8 +189,9 @@
    * left. A rebalance counts from its own day onward. `plan` is the even-pace share used for statistics;
    * it's set on the first counted day (stats start) and reset whenever a rebalance happens.
    */
-  function dailySeries(per, spentByDay, upTo, adjByDay, statsFrom, isHoliday) {
+  function dailySeries(per, spentByDay, upTo, adjByDay, statsFrom, isHoliday, fixedByDay) {
     adjByDay = adjByDay || {};
+    fixedByDay = fixedByDay || {};
     isHoliday = isHoliday || (() => false);
     const out = [];
     let before = 0;
@@ -191,15 +201,16 @@
     let budgetLeft = budgetDaysBetween(per.start, per.end, isHoliday); // budget days from d to period end
     for (let d = per.start; d <= per.end && d <= upTo; d = addDays(d, 1)) {
       const adj = adjByDay[d] || 0;
-      eff += adj;
+      const fx = fixedByDay[d] || 0; // rent/utilities paid today: taken off the month's money before today's allowance
+      eff += adj - fx;
       const holiday = isHoliday(d);
       const daysLeft = diffDays(d, per.end) + 1;
       const available = eff - before;
       const allow = holiday ? 0 : available / Math.max(1, budgetLeft);
-      if (d === anchor || (adj && d > anchor)) planRate = budgetLeft > 0 ? available / budgetLeft : 0;
+      if (d === anchor || ((adj || fx) && d > anchor)) planRate = budgetLeft > 0 ? available / budgetLeft : 0;
       const plan = planRate === null ? null : (holiday ? 0 : planRate);
       const spent = spentByDay[d] || 0;
-      out.push({ date: d, allow: r2(allow), plan, spent: r2(spent), diff: r2(spent - allow), cum: r2(before + spent), before: r2(before), daysLeft, budgetDaysLeft: budgetLeft, holiday });
+      out.push({ date: d, allow: r2(allow), plan, spent: r2(spent), fixed: r2(fx), diff: r2(spent - allow), cum: r2(before + spent), before: r2(before), daysLeft, budgetDaysLeft: budgetLeft, holiday });
       before += spent;
       if (!holiday) budgetLeft--;
     }
@@ -211,7 +222,7 @@
     const per = ledger.current;
     if (!per) return null;
     const isHoliday = ledger.isHoliday || (() => false);
-    const series = dailySeries(per, ledger.spentByDay, today, ledger.adjByDay, ledger.statsFrom, isHoliday);
+    const series = dailySeries(per, ledger.spentByDay, today, ledger.adjByDay, ledger.statsFrom, isHoliday, ledger.fixedByDay);
     const t = series[series.length - 1];
     const remainingMonth = r2(per.effective - per.spent);
     // next budget (non-holiday) day after today, and its allowance if nothing else is spent today
@@ -223,7 +234,8 @@
     // right away; money left unspent today only raises it once the day is over (the real calculation
     // tomorrow uses what was actually spent).
     const usedToday = Math.max(t.spent, t.allow);
-    const nextAllowance = next ? r2((per.effective - t.before - usedToday) / budgetDaysBetween(next, per.end, isHoliday)) : null;
+    const fixedSoFar = sumRange(ledger.fixedByDay || {}, per.start, today);
+    const nextAllowance = next ? r2((per.effective - fixedSoFar - t.before - usedToday) / budgetDaysBetween(next, per.end, isHoliday)) : null;
     return {
       period: per, holiday: t.holiday, dailyAllowance: t.allow, spentToday: t.spent, leftToday: r2(t.allow - t.spent),
       daysLeft: t.daysLeft, budgetDaysLeft: t.budgetDaysLeft, remainingMonth,
@@ -238,7 +250,7 @@
     if (ledger.statsFrom && ledger.statsFrom > from) from = ledger.statsFrom;
     for (const per of ledger.periods) {
       if (per.end < from || per.start > to) continue;
-      for (const d of dailySeries(per, ledger.spentByDay, today, ledger.adjByDay, ledger.statsFrom, ledger.isHoliday)) if (d.date >= from && d.date <= to) out.push(Object.assign({ periodStart: per.start }, d));
+      for (const d of dailySeries(per, ledger.spentByDay, today, ledger.adjByDay, ledger.statsFrom, ledger.isHoliday, ledger.fixedByDay)) if (d.date >= from && d.date <= to) out.push(Object.assign({ periodStart: per.start }, d));
     }
     return out;
   }
