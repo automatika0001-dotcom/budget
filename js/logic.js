@@ -91,11 +91,14 @@
     return t > 1.6e12 && t < 4e12 ? t : (x && x.target !== undefined ? Infinity : 0);
   }
   // A salary paid up to 7 days before pay day (pay day on a weekend or holiday) is next month's money.
-  const EARLY_SALARY_DAYS = 7;
+  // An advance paid up to 15 days before pay day is part of the next month's salary too.
+  const EARLY_SALARY_DAYS = 7, EARLY_ADVANCE_DAYS = 15;
   function budgetDateOf(it, payDay) {
-    if (incomeKind(it) !== 'salary') return it.date;
+    const k = incomeKind(it);
+    const win = k === 'salary' ? EARLY_SALARY_DAYS : k === 'advance' ? EARLY_ADVANCE_DAYS : -1;
+    if (win < 0) return it.date;
     const next = periodFor(it.date, payDay).next;
-    return diffDays(it.date, next) <= EARLY_SALARY_DAYS ? next : it.date;
+    return diffDays(it.date, next) <= win ? next : it.date;
   }
 
   function sumByDay(items) {
@@ -158,11 +161,15 @@
       // expected salary is still used (advance counts toward it). Other income adds on top.
       // `before` (a time) limits it to entries that already existed then; used to replay rebalances.
       const exp = s.useExpected ? num(s.expectedNet) : 0;
+      // Was this entry already part of the picture when the rebalance (made at time t on day d) was typed?
+      // Bank money dated before that day was already in the account; anything else counts if it existed then.
+      let rbDay = null;
+      const knownAt = (it, t) => (it.bankId && rbDay && it.date < rbDay) || createdAt(it) <= t;
       const incomeOf = (before) => {
         let salary = 0, advance = 0, other = 0, hasSalary = false;
         for (const it of incomesB) {
           if (it.bdate < p.start || it.bdate > p.end) continue;
-          if (before !== undefined && createdAt(it) > before) continue;
+          if (before !== undefined && !knownAt(it, before)) continue;
           const k = incomeKind(it), a = num(it.amount);
           if (k === 'salary') { salary += a; hasSalary = true; } else if (k === 'advance') advance += a; else other += a;
         }
@@ -181,8 +188,8 @@
       for (const x of pAdjs) {
         let delta = num(x.amount);
         if (x.target !== undefined && x.target !== null && createdAt(x) < Infinity) {
-          const t = createdAt(x);
-          const spentThen = allExp.reduce((sum, e) => (e.date >= p.start && e.date <= p.end && createdAt(e) <= t ? sum + num(e.amount) : sum), 0);
+          const t = createdAt(x); rbDay = x.date;
+          const spentThen = allExp.reduce((sum, e) => (e.date >= p.start && e.date <= p.end && knownAt(e, t) ? sum + num(e.amount) : sum), 0);
           delta = r2(num(x.target) - (incomeOf(t).income - S + carry + adjust - spentThen));
         }
         adjust = r2(adjust + delta);
@@ -490,7 +497,8 @@
     const list = mapped.slice().sort((a, b) => (a.pending ? 1 : 0) - (b.pending ? 1 : 0));
     const finalisedRefs = new Set(list.filter((m) => !m.pending && m.pendingRef).map((m) => m.pendingRef));
     for (const m of list) {
-      if (!m.date || m.date < o.start) continue;
+      const early = m.dir === 'in' && o.earlyFrom && m.date >= o.earlyFrom && textKind({ source: m.place, note: m.note });
+      if (!m.date || (m.date < o.start && !early)) continue;
       if (m.pending && (!o.withPending || m.dir !== 'out')) continue;
       if (m.pending) {
         seenPending.add(m.bankId);

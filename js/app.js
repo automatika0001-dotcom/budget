@@ -1615,8 +1615,10 @@
     syncing = true; refreshStatus();
     try {
       const start = state.settings.startDate || today;
-      let from = bk.lastSync ? L.addDays(bk.lastSync.slice(0, 10), -5) : start;
-      if (from < start) from = start;
+      // Salary or an advance paid shortly before the start date still belongs to the first month.
+      const earlyFrom = L.addDays(start, -15);
+      let from = bk.lastSync && bk.earlyDone ? L.addDays(bk.lastSync.slice(0, 10), -5) : earlyFrom;
+      if (from < earlyFrom) from = earlyFrom;
       const plaidMode = bk.provider === 'plaid';
       const mapped = [], errors = [];
       for (const acc of bk.accounts) {
@@ -1630,11 +1632,11 @@
       if (errors.length && errors.length === bk.accounts.length) throw errors[0];
       // Same purchase already logged live (Google Wallet) or by hand? It is linked instead of added twice.
       const res = L.applyBankTransactions(state, mapped, {
-        start, from, ignore: bk.ignore, importIncome: bk.importIncome, withPending: plaidMode,
+        start, from: from < start ? start : from, earlyFrom, ignore: bk.ignore, importIncome: bk.importIncome, withPending: plaidMode,
         newId: uid, kindOf: (rec) => guessKind(rec, state.settings)
       });
       const added = res.added, addedIn = res.addedIn, matched = res.matched;
-      bk.lastSync = new Date().toISOString(); bk.lastError = errors.length ? errors[0].message : ''; save();
+      bk.lastSync = new Date().toISOString(); bk.lastError = errors.length ? errors[0].message : ''; if (!errors.length) bk.earlyDone = true; save();
       syncing = false; render();
       if (manual || added || addedIn) toast(added || addedIn ? `Imported ${added} expense${added === 1 ? '' : 's'}${addedIn ? `, ${addedIn} income` : ''}${matched ? ` (${matched} already logged)` : ''}` : 'Up to date');
     } catch (e) {

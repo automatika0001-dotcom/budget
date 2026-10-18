@@ -355,4 +355,26 @@ console.log('fixed cost tests passed');
     near(left(data), 70, 'money after the rebalance counts on top');
   });
 }
+{
+  const base = { payDay: 17, monthlySaving: 0, startDate: '2026-10-06', statsFrom: '2026-10-06', useExpected: false };
+  t('advance paid 12 days before pay day counts in the next month', () => {
+    const adv = { id: 'a', date: '2026-10-05', amount: 250, source: 'SIMPLEX TECHNOLOGIES SIA', note: 'Avanss: Darba algas avanss par 08.2026.', kind: 'other', bankId: 'x' };
+    assert.strictEqual(L.budgetDateOf(adv, 17), '2026-10-17');
+    const lg = L.buildLedger({ settings: base, incomes: [adv], expenses: [], adjustments: [] }, '2026-10-19');
+    near(lg.periods[0].income, 0, 'not the old month'); near(lg.periods[1].income, 250, 'new month');
+    assert.strictEqual(L.budgetDateOf(Object.assign({}, adv, { date: '2026-09-25' }), 17), '2026-09-25'); // 22 days before: stays
+  });
+  t('bank sync brings in a salary/advance from just before the start date, nothing else', () => {
+    const d = { expenses: [], incomes: [], ignoredBankIds: [] };
+    const tx = (id, date, note, name) => L.mapTransaction({ transaction_id: id, transaction_amount: { amount: '250' }, credit_debit_indicator: 'CRDT', booking_date: date, debtor: { name }, remittance_information: [note], status: 'BOOK' });
+    L.applyBankTransactions(d, [tx('adv', '2026-10-05', 'Avanss: Darba algas avanss', 'SIMPLEX'), tx('gift', '2026-10-04', 'konta papildinājums', 'X')], { start: '2026-10-06', from: '2026-10-06', earlyFrom: '2026-09-21', importIncome: true, newId: () => 'n' + Math.random() });
+    assert.deepStrictEqual(d.incomes.map((i) => i.date), ['2026-10-05']);
+  });
+  t('bank money dated before a rebalance day was already in the account: the rebalance target holds', () => {
+    const T = Date.parse('2026-10-18T10:00:00Z'), id = (ms) => ms.toString(36) + 'abcdef';
+    const data = { settings: base, expenses: [], incomes: [], adjustments: [{ id: id(T), date: '2026-10-18', amount: 0, target: 30 }] };
+    data.incomes.push({ id: id(T + 9e6), date: '2026-10-05', amount: 250, source: 'SIMPLEX', note: 'Avanss', bankId: 'x' }); // imported after, dated before
+    near(L.todayStatus(L.buildLedger(data, '2026-10-19'), '2026-10-19').remainingMonth, 30, 'target holds');
+  });
+}
 console.log('salary / locked month tests passed');
