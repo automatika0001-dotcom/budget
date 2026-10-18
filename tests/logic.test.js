@@ -43,21 +43,14 @@ t('overspend carries to next month every time and savings stay at S for closed m
   near(mar.effective, 900, 'mar eff');
   near(L1.savedTotal, 1500, 'saved');
 });
-t('surplus rolls over once, leftover of rollover goes to savings', () => {
-  const s = st([ex('2026-01-05', 800), ex('2026-02-05', 1000)], [inc('2026-01-01', 1500), inc('2026-02-01', 1500), inc('2026-03-01', 1500)]);
+t('closed month: only an overspend carries over; a leftover goes straight to savings', () => {
+  const s = st([ex('2026-01-05', 800), ex('2026-02-05', 1100)], [inc('2026-01-01', 1500), inc('2026-02-01', 1500), inc('2026-03-01', 1500)]);
   const L1 = L.buildLedger(s, '2026-03-02');
   const [jan, feb, mar] = L1.periods;
-  near(jan.carryOut, 200, 'jan rollover');
-  near(feb.effective, 1200, 'feb eff');
-  near(feb.toSavings, 200, 'feb rollover to savings');
-  near(feb.carryOut, 0, 'feb carry');
-  near(mar.carryIn, 0, 'mar carry');
-  near(L1.savedTotal, 500 + 700 + 500, 'saved');
-});
-t('partly spent rollover: only the rest goes to savings, own surplus rolls', () => {
-  const s = st([ex('2026-01-05', 800), ex('2026-02-05', 1100)], [inc('2026-01-01', 1500), inc('2026-02-01', 1500), inc('2026-03-01', 1500)]);
-  const [, feb, mar] = L.buildLedger(s, '2026-03-02').periods;
-  near(feb.leftover, 100, 'left'); near(feb.toSavings, 100, 'to sav'); near(mar.carryIn, 0, 'carry');
+  near(jan.carryOut, 0, 'jan surplus does not carry'); near(jan.toSavings, 200, 'jan surplus saved');
+  near(feb.effective, 1000, 'feb eff'); near(feb.carryOut, -100, 'feb overspend carries');
+  near(mar.carryIn, -100, 'mar debt'); near(mar.effective, 900, 'mar eff');
+  near(L1.savedTotal, 700 + 500 + 500, 'saved');
 });
 t('live overspend reduces this month savings', () => {
   const s = st([ex('2026-01-05', 1200)], [inc('2026-01-01', 1500)]);
@@ -125,7 +118,7 @@ t('other income adds on top of expected salary', () => {
   near(L.buildLedger(st([], [inck('2026-01-15', 500, 'advance'), inck('2026-01-16', 100, 'other')], E), '2026-01-20').current.income, 1600, 'income');
 });
 t('final salary replaces the expectation with actual amounts', () => {
-  const p = L.buildLedger(st([], [inck('2026-01-15', 500, 'advance'), inck('2026-01-28', 980, 'salary')], E), '2026-01-29').current;
+  const p = L.buildLedger(st([], [inck('2026-01-15', 500, 'advance'), inck('2026-01-20', 980, 'salary')], E), '2026-01-21').current;
   near(p.income, 1480, 'actual'); assert.ok(!p.incomeExpected);
 });
 t('old entries without kind: source "Advance" counts as advance', () => {
@@ -301,3 +294,65 @@ console.log('tomorrow tests passed');
   });
 }
 console.log('fixed cost tests passed');
+
+// ---- salary paid early, salary/advance from bank text, locked months (real case: pay day 17, salary paid Fri 16 Oct) ----
+{
+  const base = { payDay: 17, monthlySaving: 0, startDate: '2026-10-06', statsFrom: '2026-10-06', useExpected: false, expectedNet: 1807 };
+  const mk = (incomes, expenses) => ({ settings: Object.assign({}, base), incomes, expenses: expenses || [], adjustments: [] });
+  const sal = { id: 's', date: '2026-10-16', amount: 251.97, source: 'SIMPLEX TECHNOLOGIES SIA', note: 'Izmaksu saraksts Nr. 0128 Darba alga par 09.2026.', kind: 'other', bankId: 'b' };
+  t('salary from the bank text is a salary; avanss is an advance; family top-up is other', () => {
+    assert.strictEqual(L.incomeKind(sal), 'salary');
+    assert.strictEqual(L.incomeKind({ source: 'SIMPLEX', note: 'Avanss: Darba algas avanss par 08.2026.' }), 'advance');
+    assert.strictEqual(L.incomeKind({ source: 'MŪRNIECE VIRGĪNIJA', note: 'konta papildinājums', kind: 'other' }), 'other');
+    assert.strictEqual(L.incomeKind({ source: 'Bonus', kind: 'salary' }), 'salary');
+  });
+  t('salary paid the day before pay day belongs to the new month, not the old one', () => {
+    const lg = L.buildLedger(mk([sal, { id: 'f', date: '2026-10-18', amount: 40, source: 'X', note: 'konta papildinājums', kind: 'other' }], [{ id: 'e', date: '2026-10-10', amount: 50, place: 'RIMI' }]), '2026-10-19');
+    const [old, cur] = lg.periods;
+    near(old.income, 0, 'old month has no salary'); near(cur.income, 291.97, 'new month has salary + top-up');
+    near(old.carryOut, -50, 'old overspend carries'); near(cur.carryIn, -50, 'into the new month');
+  });
+  t('salary 8 days before pay day stays where it is', () => {
+    const lg = L.buildLedger(mk([Object.assign({}, sal, { date: '2026-10-09' })]), '2026-10-19');
+    near(lg.periods[0].income, 251.97, 'early but not near pay day');
+  });
+  t('a locked month never changes, even when old data changes later', () => {
+    const data = mk([], [{ id: 'a', date: '2026-10-08', amount: 10, place: 'RIMI' }]);
+    data.adjustments = [{ id: 'r', date: '2026-10-06', amount: 100 }];
+    const lg1 = L.buildLedger(data, '2026-10-20');
+    const locks = L.monthsToLock(lg1, '2026-10-20');
+    assert.strictEqual(locks.length, 1); assert.strictEqual(locks[0].start, '2026-09-17');
+    const closed = { [locks[0].start]: locks[0] };
+    const before = L.daysInRange(L.buildLedger(data, '2026-10-20', { closed }), '2026-10-06', '2026-10-16', '2026-10-20');
+    data.incomes.push({ id: 'late', date: '2026-10-07', amount: 900, source: 'refund' }); // arrives later, dated in the old month
+    data.expenses.push({ id: 'late2', date: '2026-10-12', amount: 30, place: 'X' });
+    const lg2 = L.buildLedger(data, '2026-10-20', { closed });
+    const after = L.daysInRange(lg2, '2026-10-06', '2026-10-16', '2026-10-20');
+    assert.deepStrictEqual(after.map((d) => [d.date, d.allow, d.diff]), before.map((d) => [d.date, d.allow, d.diff]));
+    near(lg2.periods[0].carryOut, 0, 'old result kept'); near(lg2.periods[0].toSavings, 90, 'leftover to savings');
+    assert.ok(lg2.periods[0].locked);
+    assert.strictEqual(L.monthsToLock(lg2, '2026-10-20').length, 0);
+  });
+  t('a month waits 3 days after it ends before it locks (late bank bookings)', () => {
+    const lg = L.buildLedger(mk([]), '2026-10-18');
+    assert.strictEqual(L.monthsToLock(lg, '2026-10-18').length, 0);
+    assert.strictEqual(L.monthsToLock(L.buildLedger(mk([]), '2026-10-19'), '2026-10-19').length, 1);
+  });
+  t('notification amount: "BOLT.EUR2610140659" is a shop code, the €2.00 line is the amount', () => {
+    assert.deepStrictEqual(L.parsePaymentNotification({ title: 'BOLT.EUR2610140659', text: '€2.00 with SEB Mastercard Debit ••5961' }), { amount: 2, place: 'BOLT.EUR2610140659' });
+  });
+  t('rebalance keeps meaning "I had X left that day" after settings change, and later money still adds', () => {
+    const id = (ms) => ms.toString(36) + 'abcdef';
+    const T = Date.parse('2026-10-18T10:00:00Z');
+    const data = { settings: Object.assign({}, base, { useExpected: true }), adjustments: [], expenses: [{ id: id(T - 5e6), date: '2026-10-17', amount: 100, place: 'X' }],
+      incomes: [{ id: id(T - 9e6), date: '2026-10-17', amount: 300, source: 'X', kind: 'other' }] };
+    // made while the expected salary (1807) was switched on: delta = 30 - (1807 + 300 - 100)
+    data.adjustments.push({ id: id(T), date: '2026-10-18', amount: 30 - (1807 + 300 - 100), target: 30 });
+    data.settings.useExpected = false; // later switched off
+    const left = (d) => { const lg = L.buildLedger(d, '2026-10-19'); return L.todayStatus(lg, '2026-10-19').remainingMonth; };
+    near(left(data), 30, 'still 30 left, not 30 - 1807');
+    data.incomes.push({ id: id(T + 3e6), date: '2026-10-18', amount: 40, source: 'Y', kind: 'other' }); // arrived after the rebalance
+    near(left(data), 70, 'money after the rebalance counts on top');
+  });
+}
+console.log('salary / locked month tests passed');

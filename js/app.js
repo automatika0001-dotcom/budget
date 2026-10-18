@@ -19,7 +19,7 @@
       aliases: {},
       industry: { custom: [], map: {} }, statsFixed: true
     },
-    expenses: [], incomes: [], adjustments: [], ignoredBankIds: [], liveSeen: [], liveLog: []
+    expenses: [], incomes: [], adjustments: [], ignoredBankIds: [], liveSeen: [], liveLog: [], closed: {}
   });
 
   function deepMerge(base, extra) {
@@ -34,6 +34,7 @@
     const out = deepMerge(defaults(), s || {});
     // v1.12: Rent and Utilities are built in; shops you sorted into your own "Rent"/"Utilities" move there
     const ic = out.settings.industry;
+    if (ic && window.Industry && window.Industry.fixMapKeys) window.Industry.fixMapKeys(ic, out.expenses); // "SABIEDRIBA" is not a brand
     if (ic && Array.isArray(ic.custom)) {
       ic.custom = ic.custom.filter((c) => {
         const to = /^(rent|īre|ire|dzīvoklis|housing)$/i.test(String(c.name).trim()) ? 'rent'
@@ -124,7 +125,15 @@
   function recompute() {
     today = L.todayStr();
     const cfg = state.settings.industry;
-    ledger = L.buildLedger(state, today, { isFixed: (e) => window.Industry.isFixedExpense(e, cfg) });
+    const opts = { isFixed: (e) => window.Industry.isFixedExpense(e, cfg), closed: state.closed || (state.closed = {}) };
+    ledger = L.buildLedger(state, today, opts);
+    // A finished month is locked 3 days after it ends (late bank bookings): its results never change again.
+    const locks = L.monthsToLock(ledger, today, 3);
+    if (locks.length) {
+      locks.forEach((x) => (state.closed[x.start] = x));
+      save();
+      ledger = L.buildLedger(state, today, opts);
+    }
   }
 
   function render() {
@@ -284,7 +293,7 @@
         <p class="small muted" style="margin-top:0">Set how much you really have left to spend until pay day (${dShort(per.next)}). Fixes differences with your bank. It is not counted as spending or income and doesn't show in statistics.</p>
         <div class="field"><label>Actually left to spend, ${SYM}</label><input id="rbAmt" class="amount-input num" inputmode="decimal" placeholder="${fmtEUR0.format(Math.round(ts.remainingMonth))}"><div class="hint">The app currently thinks: ${money(ts.remainingMonth)}</div></div>
         <button class="btn primary block" id="rbSet">Set balance</button>
-        ${rebals.length ? `<div class="list" style="margin-top:12px">${rebals.map((a) => `<div class="row"><span class="label">${dShort(a.date)} · set to ${money(a.target)}</span><span><span class="num">${signed(a.amount)}</span> <button class="btn ghost small rb-undo" data-id="${a.id}" style="padding:4px 10px;margin-left:6px">Undo</button></span></div>`).join('')}</div>` : ''}
+        ${rebals.length ? `<div class="list" style="margin-top:12px">${rebals.map((a) => `<div class="row"><span class="label">${dShort(a.date)} · set to ${money(a.target)}</span><span><button class="btn ghost small rb-undo" data-id="${a.id}" style="padding:4px 10px;margin-left:6px">Undo</button></span></div>`).join('')}</div>` : ''}
       </details>
 
       <div class="card">

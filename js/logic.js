@@ -73,11 +73,29 @@
   }
 
   /** Income kind: 'salary' (final salary), 'advance' (part of salary paid early) or 'other'. */
+  // Salary and advance are recognised from the payer and the bank text ("Darba alga par 09.2026", "Avanss").
+  function textKind(i) {
+    const t = (String(i.source || '') + ' ' + String(i.note || '')).toLowerCase();
+    if (/avans|advance|vorschuss/.test(t)) return 'advance';
+    if (/\balga\b|\balgas\b|darba alg|izmaksu saraksts|salary|payroll|\bwages?\b/.test(t)) return 'salary';
+    return null;
+  }
   function incomeKind(i) {
-    if (i.kind) return i.kind;
-    if (/^advance$|^avanss$/i.test(i.source || '')) return 'advance';
-    if (/^salary$|^alga$/i.test(i.source || '')) return 'salary';
-    return 'other';
+    if (i.kind && i.kind !== 'other') return i.kind;
+    return textKind(i) || i.kind || 'other';
+  }
+  // When an entry was created on this phone: ids start with the creation time (base 36).
+  function createdAt(x) {
+    if (x && x.created && +x.created > 1.6e12) return +x.created;
+    const t = parseInt(String((x && x.id) || '').slice(0, 8), 36);
+    return t > 1.6e12 && t < 4e12 ? t : (x && x.target !== undefined ? Infinity : 0);
+  }
+  // A salary paid up to 7 days before pay day (pay day on a weekend or holiday) is next month's money.
+  const EARLY_SALARY_DAYS = 7;
+  function budgetDateOf(it, payDay) {
+    if (incomeKind(it) !== 'salary') return it.date;
+    const next = periodFor(it.date, payDay).next;
+    return diffDays(it.date, next) <= EARLY_SALARY_DAYS ? next : it.date;
   }
 
   function sumByDay(items) {
@@ -108,11 +126,14 @@
     const payDay = s.payDay || 1;
     const S = num(s.monthlySaving);
     const isFixed = (opts && opts.isFixed) || (() => false);
+    const closed = (opts && opts.closed) || {}; // locked results of finished months, by period start
+    const incomesB = (state.incomes || []).filter((i) => !i.ignored).map((i) => Object.assign({}, i, { bdate: budgetDateOf(i, payDay) }));
     const allExp = (state.expenses || []).filter((e) => !e.ignored);
     const spentByDay = sumByDay(allExp.filter((e) => !isFixed(e)));
     const fixedByDay = sumByDay(allExp.filter((e) => isFixed(e)));
     const incomeByDay = sumByDay(state.incomes || []);
-    const adjByDay = sumByDay(state.adjustments || []); // rebalances: change the allowance, never count as spend/income
+    const adjByDay = {}; // rebalances, worked out per month below: change the allowance, never count as spend/income
+    const adjs = (state.adjustments || []).filter((a) => !a.ignored);
     const statsFrom = s.statsFrom || s.startDate || today;
     const isHoliday = makeHolidayCheck(s.vacations);
     const periods = [];
@@ -123,25 +144,50 @@
     let guard = 0;
     while (p.start <= today && guard++ < 1200) {
       const isCurrent = today >= p.start && today <= p.end;
+      const lock = closed[p.start];
+      if (!isCurrent && lock && lock.end === p.end && lock.per) {
+        // Finished month: its numbers are final. Only what it hands over (an overspend) reaches the next month.
+        const per = Object.assign({}, lock.per, { isCurrent: false, locked: true, days: lock.days || [] });
+        carry = num(per.carryOut);
+        savedTotal += num(per.saved);
+        periods.push(per);
+        p = periodFor(p.next, payDay);
+        continue;
+      }
       // Salary rules: an advance is part of the salary, so until the final salary arrives the
       // expected salary is still used (advance counts toward it). Other income adds on top.
-      let salary = 0, advance = 0, other = 0, hasSalary = false;
-      for (const it of state.incomes || []) {
-        if (it.ignored || it.date < p.start || it.date > p.end) continue;
-        const k = incomeKind(it), a = num(it.amount);
-        if (k === 'salary') { salary += a; hasSalary = true; } else if (k === 'advance') advance += a; else other += a;
-      }
+      // `before` (a time) limits it to entries that already existed then; used to replay rebalances.
       const exp = s.useExpected ? num(s.expectedNet) : 0;
-      let income = r2(salary + advance + other);
-      let incomeExpected = false, salaryToCome = 0;
-      if (exp > 0 && !hasSalary && advance < exp) {
-        incomeExpected = true; salaryToCome = r2(exp - advance);
-        income = r2(other + exp);
-      }
+      const incomeOf = (before) => {
+        let salary = 0, advance = 0, other = 0, hasSalary = false;
+        for (const it of incomesB) {
+          if (it.bdate < p.start || it.bdate > p.end) continue;
+          if (before !== undefined && createdAt(it) > before) continue;
+          const k = incomeKind(it), a = num(it.amount);
+          if (k === 'salary') { salary += a; hasSalary = true; } else if (k === 'advance') advance += a; else other += a;
+        }
+        let income = r2(salary + advance + other), incomeExpected = false, salaryToCome = 0;
+        if (exp > 0 && !hasSalary && advance < exp) { incomeExpected = true; salaryToCome = r2(exp - advance); income = r2(other + exp); }
+        return { income, incomeExpected, salaryToCome, advance };
+      };
+      const { income, incomeExpected, salaryToCome, advance } = incomeOf();
       const base = r2(income - S);
       const rolloverIn = Math.max(0, carry);
-      const adjust = sumRange(adjByDay, p.start, p.end);
       const effectiveBase = r2(base + carry);
+      // Rebalance = "on that day I had X left to spend". It is replayed against what was known at that moment,
+      // so later setting changes don't distort it and money that arrives afterwards still counts on top.
+      let adjust = 0;
+      const pAdjs = adjs.filter((x) => x.date >= p.start && x.date <= p.end).sort((x, y) => createdAt(x) - createdAt(y) || (x.date < y.date ? -1 : 1));
+      for (const x of pAdjs) {
+        let delta = num(x.amount);
+        if (x.target !== undefined && x.target !== null && createdAt(x) < Infinity) {
+          const t = createdAt(x);
+          const spentThen = allExp.reduce((sum, e) => (e.date >= p.start && e.date <= p.end && createdAt(e) <= t ? sum + num(e.amount) : sum), 0);
+          delta = r2(num(x.target) - (incomeOf(t).income - S + carry + adjust - spentThen));
+        }
+        adjust = r2(adjust + delta);
+        adjByDay[x.date] = r2((adjByDay[x.date] || 0) + delta);
+      }
       const effective = r2(effectiveBase + adjust);
       const fixed = sumRange(fixedByDay, p.start, p.end);
       const daily = sumRange(spentByDay, p.start, p.end);
@@ -149,9 +195,10 @@
       const leftover = r2(effective - spent);
       const per = Object.assign({}, p, { income, incomeExpected, salaryToCome, advance: r2(advance), saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), adjust, effectiveBase, effective, spent, daily: r2(daily), fixed: r2(fixed), leftover, isCurrent });
       if (!isCurrent) {
-        let toSavings = 0, carryOut;
+        // Closed month: an overspend carries into the next month; anything left over goes to savings.
+        let toSavings = 0, carryOut = 0;
         if (leftover < 0) carryOut = leftover;
-        else { toSavings = Math.min(rolloverIn, leftover); carryOut = leftover - toSavings; }
+        else toSavings = leftover;
         per.toSavings = r2(toSavings); per.carryOut = r2(carryOut); per.saved = r2(S + toSavings);
         carry = carryOut;
       } else {
@@ -206,7 +253,7 @@
       const holiday = isHoliday(d);
       const daysLeft = diffDays(d, per.end) + 1;
       const available = eff - before;
-      const allow = holiday ? 0 : available / Math.max(1, budgetLeft);
+      const allow = holiday ? 0 : Math.max(0, available) / Math.max(1, budgetLeft); // money gone: 0, never negative
       if (d === anchor || ((adj || fx) && d > anchor)) planRate = budgetLeft > 0 ? available / budgetLeft : 0;
       const plan = planRate === null ? null : (holiday ? 0 : planRate);
       const spent = spentByDay[d] || 0;
@@ -250,6 +297,7 @@
     if (ledger.statsFrom && ledger.statsFrom > from) from = ledger.statsFrom;
     for (const per of ledger.periods) {
       if (per.end < from || per.start > to) continue;
+      if (per.locked) { for (const d of per.days) if (d.date >= from && d.date <= to && d.date >= (ledger.statsFrom || '')) out.push(Object.assign({ periodStart: per.start }, d)); continue; }
       for (const d of dailySeries(per, ledger.spentByDay, today, ledger.adjByDay, ledger.statsFrom, ledger.isHoliday, ledger.fixedByDay)) if (d.date >= from && d.date <= to) out.push(Object.assign({ periodStart: per.start }, d));
     }
     return out;
@@ -260,6 +308,16 @@
     const per = ledger.current;
     if (!per) return 0;
     return r2(num(target) - (per.effective - per.spent));
+  }
+
+  /** Months that ended at least `graceDays` ago (late bank bookings get a few days) and aren't locked yet. */
+  function monthsToLock(ledger, today, graceDays) {
+    const g = graceDays === undefined ? 3 : graceDays;
+    return ledger.periods.filter((p) => !p.isCurrent && !p.locked && diffDays(p.end, today) >= g).map((p) => {
+      const days = dailySeries(p, ledger.spentByDay, p.end, ledger.adjByDay, ledger.statsFrom, ledger.isHoliday, ledger.fixedByDay);
+      const per = Object.assign({}, p); delete per.days; delete per.isCurrent; delete per.locked;
+      return { start: p.start, end: p.end, lockedAt: today, per, days };
+    });
   }
 
   function overUnderStats(days) {
@@ -346,7 +404,7 @@
   }
 
   // ---------- Live payments (phone notifications, e.g. Google Wallet) ----------
-  const AMOUNT_RE = /(?:(€|EUR)\s?(\d{1,3}(?:[   .,]\d{3})*(?:[.,]\d{1,2})?))|(?:(\d{1,3}(?:[   .,]\d{3})*(?:[.,]\d{1,2})?)\s?(€|EUR))/i;
+  const AMOUNT_RE = /(?:(?<![A-Za-z0-9.])(€|EUR)\s?(\d{1,3}(?:[   .,]\d{3})*(?:[.,]\d{1,2})?)(?![0-9]))|(?:(?<![A-Za-z0-9.,])(\d{1,3}(?:[   .,]\d{3})*(?:[.,]\d{1,2})?)\s?(€|EUR)(?![A-Za-z]))/i;
   const SKIP_RE = /declin|noraid|atteikt|fail|neizdev|refund|atmaks|return|atgriez|reversed|cancel|atcel|added to wallet|pievienot|ready to|verify|verific|apstiprin|top.?up|papildin/i;
 
   function parseAmount(raw) {
@@ -373,7 +431,7 @@
     const text = String(ev.text || '').trim();
     const all = title + ' \n ' + text;
     if (SKIP_RE.test(all)) return null;
-    const m = all.match(AMOUNT_RE);
+    const m = text.match(AMOUNT_RE) || title.match(AMOUNT_RE); // the amount line is the reliable one
     if (!m) return null;
     const amount = parseAmount(m[2] || m[3]);
     if (!(amount > 0) || amount > 20000) return null;
@@ -476,7 +534,7 @@
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
-    incomeKind, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
+    incomeKind, textKind, budgetDateOf, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
     cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive, applyBankTransactions
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

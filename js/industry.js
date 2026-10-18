@@ -76,7 +76,7 @@
   // A shop's "brand key" is its first meaningful word: "MEGO RIGA BRUNINIEKU 2" -> MEGO, "PAYPAL *STEAM GAMES" -> STEAM,
   // "N14086 aptieka Roja" -> APTIEKA. Keys match when one starts with the other (MEGO ~ MEGOVEIKALS) or differ by one letter.
   const STOP = new Set(['VEIKALS', 'VEIKALI', 'SIA', 'AS', 'IK', 'UAB', 'OU', 'LTD', 'INC', 'GMBH', 'SHOP', 'STORE', 'THE', 'RIGAS', 'RIGA', 'LV', 'LVA',
-    'WWW', 'COM', 'JAUNA', 'JAUNS', 'VECA', 'LIELA', 'MAZA', 'PAYPAL', 'PYD', 'MOL', 'SUMUP', 'SQ', 'ZETTLE', 'TC', 'SHM', 'MR', 'SM', 'FILIA', 'FILIALE', 'UN', 'AND']);
+    'WWW', 'COM', 'SABIEDRIBA', 'IEROBEZOTU', 'ATBILDIBU', 'AKCIJU', 'KOOPERATIVA', 'JAUNA', 'JAUNS', 'VECA', 'LIELA', 'MAZA', 'PAYPAL', 'PYD', 'MOL', 'SUMUP', 'SQ', 'ZETTLE', 'TC', 'SHM', 'MR', 'SM', 'FILIA', 'FILIALE', 'UN', 'AND']);
   const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
   function brandKey(place) {
     const toks = norm(place).split(' ').filter((t) => t && !/\d/.test(t));
@@ -186,7 +186,20 @@
 
   const FIXED = new Set(['rent', 'utilities']);
   const isFixedExpense = (e, cfg) => FIXED.has(classifyExpense(e, cfg));
-  const api = { FIXED, isFixedExpense, INDUSTRIES, RULES, brandKey, keysMatch, classify, classifyExpense, allIndustries, byIndustry, unclassifiedGroups, unclassifiedCsv };
+  /** Rules saved under a word that is no longer a brand ("SABIEDRIBA" = "company") move to each shop's real brand. */
+  function fixMapKeys(cfg, expenses) {
+    if (!cfg || !cfg.map) return false;
+    let changed = false;
+    for (const k of Object.keys(cfg.map)) {
+      if (!STOP.has(k)) continue;
+      const id = cfg.map[k]; delete cfg.map[k]; changed = true;
+      for (const e of expenses || []) {
+        if (norm(placeOf(e)).split(' ').includes(k)) { const nk = brandKey(placeOf(e)); if (nk && !STOP.has(nk) && !cfg.map[nk]) cfg.map[nk] = id; }
+      }
+    }
+    return changed;
+  }
+  const api = { fixMapKeys, FIXED, isFixedExpense, INDUSTRIES, RULES, brandKey, keysMatch, classify, classifyExpense, allIndustries, byIndustry, unclassifiedGroups, unclassifiedCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Industry = api;
 })(typeof window !== 'undefined' ? window : globalThis);
