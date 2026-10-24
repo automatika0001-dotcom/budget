@@ -378,3 +378,19 @@ console.log('fixed cost tests passed');
   });
 }
 console.log('salary / locked month tests passed');
+
+// ---- the month's money grows as income arrives (no expected salary) ----
+{
+  const sett = { payDay: 1, monthlySaving: 0, startDate: '2026-11-01', statsFrom: '2026-11-01', useExpected: false };
+  const data = { settings: sett, expenses: [], adjustments: [], incomes: [{ id: 'a', date: '2026-11-01', amount: 500, source: 'A' }, { id: 'b', date: '2026-11-10', amount: 100, source: 'B' }, { id: 'c', date: '2026-11-20', amount: 40, source: 'C' }] };
+  t('limit = income received so far: 500, then 600, then 640; earlier days are not changed by later income', () => {
+    const lg = L.buildLedger(data, '2026-11-25');
+    const days = L.daysInRange(lg, '2026-11-01', '2026-11-25', '2026-11-25');
+    near(days[0].pool, 500, 'day 1'); near(days[8].pool, 500, 'day 9'); near(days[9].pool, 600, 'day 10'); near(days[19].pool, 640, 'day 20');
+    near(days[4].allow, 500 / 26, 'day 5 only knows the 500');
+    near(L.todayStatus(lg, '2026-11-25').remainingMonth, 640, 'month total');
+    const lgEarly = L.buildLedger(Object.assign({}, data, { incomes: data.incomes.slice(0, 1) }), '2026-11-05');
+    near(L.daysInRange(lgEarly, '2026-11-05', '2026-11-05', '2026-11-05')[0].allow, L.daysInRange(lg, '2026-11-05', '2026-11-05', '2026-11-25')[0].allow, 'same as before the later income came');
+  });
+}
+console.log('income step tests passed');

@@ -178,6 +178,17 @@
         return { income, incomeExpected, salaryToCome, advance };
       };
       const { income, incomeExpected, salaryToCome, advance } = incomeOf();
+      // The month's money grows as income arrives: each payment counts from its own day, not from the
+      // start of the month (with an expected salary the plan stands from day one instead).
+      const incomeSteps = {};
+      let incomeLater = 0;
+      if (!incomeExpected) {
+        for (const it of incomesB) {
+          if (it.bdate < p.start || it.bdate > p.end || it.bdate <= p.start) continue;
+          incomeSteps[it.bdate] = r2((incomeSteps[it.bdate] || 0) + num(it.amount));
+          incomeLater += num(it.amount);
+        }
+      }
       const base = r2(income - S);
       const rolloverIn = Math.max(0, carry);
       const effectiveBase = r2(base + carry);
@@ -200,7 +211,7 @@
       const daily = sumRange(spentByDay, p.start, p.end);
       const spent = r2(daily + fixed); // all money that went out this period
       const leftover = r2(effective - spent);
-      const per = Object.assign({}, p, { income, incomeExpected, salaryToCome, advance: r2(advance), saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), adjust, effectiveBase, effective, spent, daily: r2(daily), fixed: r2(fixed), leftover, isCurrent });
+      const per = Object.assign({}, p, { incomeSteps, incomeLater: r2(incomeLater), income, incomeExpected, salaryToCome, advance: r2(advance), saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), adjust, effectiveBase, effective, spent, daily: r2(daily), fixed: r2(fixed), leftover, isCurrent });
       if (!isCurrent) {
         // Closed month: an overspend carries into the next month; anything left over goes to savings.
         let toSavings = 0, carryOut = 0;
@@ -249,22 +260,24 @@
     isHoliday = isHoliday || (() => false);
     const out = [];
     let before = 0;
-    let eff = per.effectiveBase !== undefined ? per.effectiveBase : per.effective;
+    let eff = (per.effectiveBase !== undefined ? per.effectiveBase : per.effective) - (per.incomeLater || 0);
+    const steps = per.incomeSteps || {};
     let planRate = null;
     const anchor = statsFrom && statsFrom > per.start ? statsFrom : per.start;
     let budgetLeft = budgetDaysBetween(per.start, per.end, isHoliday); // budget days from d to period end
     for (let d = per.start; d <= per.end && d <= upTo; d = addDays(d, 1)) {
       const adj = adjByDay[d] || 0;
       const fx = fixedByDay[d] || 0; // rent/utilities paid today: taken off the month's money before today's allowance
-      eff += adj - fx;
+      const inc = steps[d] || 0; // income that arrived today
+      eff += adj - fx + inc;
       const holiday = isHoliday(d);
       const daysLeft = diffDays(d, per.end) + 1;
       const available = eff - before;
       const allow = holiday ? 0 : Math.max(0, available) / Math.max(1, budgetLeft); // money gone: 0, never negative
-      if (d === anchor || ((adj || fx) && d > anchor)) planRate = budgetLeft > 0 ? available / budgetLeft : 0;
+      if (d === anchor || ((adj || fx || inc) && d > anchor)) planRate = budgetLeft > 0 ? available / budgetLeft : 0;
       const plan = planRate === null ? null : (holiday ? 0 : planRate);
       const spent = spentByDay[d] || 0;
-      out.push({ date: d, allow: r2(allow), plan, spent: r2(spent), fixed: r2(fx), diff: r2(spent - allow), cum: r2(before + spent), before: r2(before), daysLeft, budgetDaysLeft: budgetLeft, holiday });
+      out.push({ date: d, allow: r2(allow), plan, pool: r2(eff), income: r2(inc), spent: r2(spent), fixed: r2(fx), diff: r2(spent - allow), cum: r2(before + spent), before: r2(before), daysLeft, budgetDaysLeft: budgetLeft, holiday });
       before += spent;
       if (!holiday) budgetLeft--;
     }

@@ -156,9 +156,33 @@
     const title = kind === 'income' ? (e.source || 'Income') : (e.place || 'Expense');
     return `<div class="item" data-kind="${kind}" data-id="${e.id}">
       <div class="dot">${initial}</div>
-      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && (e.kind || L.incomeKind(e)) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
-      <div class="sub">${dShort(e.date)}${e.note ? ' · ' + esc(e.note) : ''}</div></div>
+      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && L.incomeKind(e) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
+      <div class="sub">${dShort(e.date)}${kind === 'expense' ? (() => { const id = window.Industry.classifyExpense(e, state.settings.industry); const x = id && window.Industry.allIndustries(state.settings.industry).find((y) => y.id === id); return x ? ` · <span style="color:${x.color}">${esc(x.name)}</span>` : ''; })() : ''}${e.note ? ' · ' + esc(e.note) : ''}</div></div>
       <div class="amt num ${kind === 'income' ? 'good' : ''}">${kind === 'income' ? '+' : '-'}${money(e.amount)}</div></div>`;
+  }
+
+  // Every transaction, money in and out, newest first.
+  function txLog() {
+    return state.expenses.filter((e) => !e.ignored).map((e) => ({ e, kind: 'expense' }))
+      .concat(state.incomes.filter((e) => !e.ignored).map((e) => ({ e, kind: 'income' })))
+      .sort((a, b) => (b.e.date + (b.e.id || '')).localeCompare(a.e.date + (a.e.id || '')));
+  }
+  function openTxLog(filter, limit) {
+    const all = txLog().filter((x) => filter === 'all' || x.kind === filter);
+    const shown = all.slice(0, limit);
+    const inSum = all.filter((x) => x.kind === 'income').reduce((a, x) => a + L.num(x.e.amount), 0);
+    const outSum = all.filter((x) => x.kind === 'expense').reduce((a, x) => a + L.num(x.e.amount), 0);
+    let lastDay = '';
+    const rows = shown.map((x) => { const h = x.e.date !== lastDay ? `<div class="tx-day">${dLong(x.e.date)}</div>` : ''; lastDay = x.e.date; return h + itemRow(x.e, x.kind); }).join('');
+    openSheet(`<h3>Transactions</h3>
+      <div class="seg" style="margin-bottom:10px"><button data-f="all" class="${filter === 'all' ? 'on' : ''}">All</button><button data-f="expense" class="${filter === 'expense' ? 'on' : ''}">Spent</button><button data-f="income" class="${filter === 'income' ? 'on' : ''}">Income</button></div>
+      <div class="chips" style="margin-bottom:10px">${filter !== 'expense' ? `<span class="chip">In <b class="num good">+${money(inSum)}</b></span>` : ''}${filter !== 'income' ? `<span class="chip">Out <b class="num">-${money(outSum)}</b></span>` : ''}</div>
+      <div class="list tx-list">${rows || '<div class="empty">Nothing here</div>'}</div>
+      ${all.length > shown.length ? '<button class="btn ghost block" id="txMore" style="margin-top:10px">Show more</button>' : ''}`, (b) => {
+      $$('.seg button', b).forEach((x) => (x.onclick = () => openTxLog(x.dataset.f, 60)));
+      const m = $('#txMore', b); if (m) m.onclick = () => { const sc = $('#sheet').scrollTop; openTxLog(filter, limit + 60); $('#sheet').scrollTop = sc; };
+      bindItems(b);
+    });
   }
 
   function bindItems(root) {
@@ -184,6 +208,13 @@
     return `<div class="tomorrow ${cls}"><span>${label}</span><b class="num">${money(ts.nextAllowance)}</b><span class="trend">${trend}</span></div>`;
   }
 
+  function yesterdayHtml() {
+    const y = L.addDays(today, -1);
+    const d = L.daysInRange(ledger, y, y, today)[0];
+    if (!d || (d.holiday && !d.spent)) return '';
+    const over = d.diff > 0.005;
+    return `<div class="yday ${over ? 'bad' : 'good'}">Yesterday ${money(Math.abs(d.diff))} ${over ? 'over' : 'under'} the limit</div>`;
+  }
   function heroHtml(ts, over) {
     if (ts.holiday) {
       const spent = ts.spentToday > 0;
@@ -191,6 +222,7 @@
         <div class="caption">Vacation mode</div>
         <div class="big holiday-word">HOLIDAY!</div>
         ${spent ? `<div class="holiday-over num">Over budget: ${money(ts.spentToday)}</div>` : '<div class="small muted" style="margin-bottom:6px">Today has no budget. Enjoy it.</div>'}
+        ${yesterdayHtml()}
         ${nextBoxHtml(ts)}
       </div>`;
     }
@@ -201,6 +233,7 @@
           <span class="chip">Daily budget <b class="num">${money(ts.dailyAllowance)}</b></span>
           <span class="chip">Spent today <b class="num">${money(ts.spentToday)}</b></span>
         </div>
+        ${yesterdayHtml()}
         ${nextBoxHtml(ts)}
       </div>`;
   }
@@ -251,7 +284,8 @@
     const totalDays = L.diffDays(per.start, per.end) + 1;
     const pacePct = (L.diffDays(per.start, today) + 1) / totalDays;
     const todays = state.expenses.filter((e) => e.date === today);
-    const recent = state.expenses.filter((e) => e.date !== today).sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id)).slice(0, 6);
+    const log = txLog();
+    const recent = log.filter((x) => !(x.kind === 'expense' && x.e.date === today)).slice(0, 8);
     const bank = state.settings.bank;
     const consentDays = bank.validUntil ? L.diffDays(today, bank.validUntil.slice(0, 10)) : null;
     const rebals = (state.adjustments || []).filter((a) => a.date >= per.start && a.date <= per.end).sort((a, b) => b.date.localeCompare(a.date));
@@ -300,10 +334,12 @@
         <h2>Today</h2>
         <div class="list">${todays.length ? todays.map((e) => itemRow(e, 'expense')).join('') : '<div class="empty">Nothing spent today</div>'}</div>
       </div>
-      ${recent.length ? `<div class="card"><h2>Recent</h2><div class="list">${recent.map((e) => itemRow(e, 'expense')).join('')}</div></div>` : ''}
+      ${recent.length ? `<div class="card"><h2>Transactions</h2><div class="list">${recent.map((x) => itemRow(x.e, x.kind)).join('')}</div>
+        ${log.length > recent.length ? `<button class="btn ghost block" id="txAll" style="margin-top:10px">Show all ${log.length}</button>` : ''}</div>` : ''}
       ${vacationHtml()}
     `;
     $('#qExp').onclick = () => openExpense(null);
+    const ta = $('#txAll'); if (ta) ta.onclick = () => openTxLog('all', 60);
     const ps = $('#pwSet'); if (ps) ps.onclick = (ev) => { ev.preventDefault(); openPasswordSheet(); };
     const ht = $('#hideTip'); if (ht) ht.onclick = (ev) => { ev.preventDefault(); try { localStorage.setItem('budget.hideInstall', '1'); } catch (e) {} $('#installTip').remove(); };
     $('#qInc').onclick = () => openIncome(null);
@@ -543,15 +579,19 @@
       const fx = ledger.fixedByDay || {};
       const fixedBefore = L.sumRange(fx, per.start, L.addDays(startD, -1));
       const fixedInRange = L.sumRange(fx, startD, per.end);
-      const limit = L.r2(per.effective - before0 - fixedBefore - (fixedOn() ? 0 : fixedInRange));
-      const cum = {}; let fc = 0;
-      days.forEach((d) => { fc += fixedOn() ? (d.fixed || 0) : 0; cum[d.date] = L.r2(d.cum - before0 + fc); });
+      const cum = {}, lim = {}; let fc = 0;
+      const flatLimit = L.r2(per.effective - before0 - fixedBefore - (fixedOn() ? 0 : fixedInRange)); // months locked before this version
+      // The limit follows the money that has actually arrived (and rebalances), day by day.
+      days.forEach((d) => { fc += fixedOn() ? (d.fixed || 0) : 0; cum[d.date] = L.r2(d.cum - before0 + fc); lim[d.date] = d.pool === undefined ? flatLimit : L.r2(d.pool - before0 + fc); });
+      let lastLim = days.length ? lim[days[days.length - 1].date] : flatLimit;
+      const limitSeries = all.map((d) => (lim[d] !== undefined ? (lastLim = lim[d]) : lastLim));
+      const limit = limitSeries.length ? limitSeries[limitSeries.length - 1] : lastLim;
       const n = all.length || 1;
       chart1 = {
         type: 'line',
         data: { labels: all.map(dShort), datasets: [
           { label: 'Spent (cumulative)', data: all.map((d) => (d <= today ? cum[d] ?? null : null)), borderColor: css('--accent'), backgroundColor: 'rgba(200,242,106,.12)', fill: true, tension: .25, pointRadius: lastDot, pointBackgroundColor: css('--accent'), borderWidth: 2.5 },
-          { label: 'Monthly limit', data: all.map(() => limit), borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5 },
+          { label: 'Monthly limit', data: limitSeries, borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5, stepped: true },
           { label: 'Even pace', data: all.map((_, i) => L.r2(limit * (i + 1) / n)), borderColor: css('--muted'), borderDash: [2, 4], pointRadius: 0, borderWidth: 1 }
         ] }
       };
@@ -729,6 +769,12 @@
         <div class="field"><label>Date</label><input id="eDate" type="date" value="${e.date}"></div>
         <div class="field"><label>Note</label><input id="eNote" value="${esc(e.note)}"></div>
       </div>
+      <div class="field"><label>Category</label><select id="eInd">${(() => {
+        const cfg = state.settings.industry, I = window.Industry;
+        const auto = I.autoIndustry(e, cfg), names = Object.fromEntries(I.allIndustries(cfg).map((x) => [x.id, x.name]));
+        return `<option value="">Automatic${auto ? ': ' + esc(names[auto] || '') : ': Unclassified'}</option>` +
+          I.allIndustries(cfg).filter((x) => x.id !== 'other').map((x) => `<option value="${x.id}" ${e.industry === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+      })()}</select></div>
       <div class="actions">${isNew ? '' : '<button class="btn danger" id="eDel">Delete</button>'}<button class="btn primary" id="eSave">Save</button></div>`, (b) => {
       setTimeout(() => isNew && $('#eAmt', b).focus(), 50);
       $$('.place-suggest button', b).forEach((x) => (x.onclick = () => ($('#ePlace', b).value = x.dataset.p)));
@@ -736,6 +782,8 @@
         const amt = L.num($('#eAmt', b).value);
         if (amt <= 0) return toast('Enter an amount');
         const rec = Object.assign(item || { id: uid(), created: Date.now() }, { amount: L.r2(amt), place: $('#ePlace', b).value.trim() || 'Unknown', date: $('#eDate', b).value || today, note: $('#eNote', b).value.trim() });
+        const ind = $('#eInd', b).value;
+        if (ind) rec.industry = ind; else delete rec.industry; // this one transaction only; the shop's other payments keep their category
         if (isNew) state.expenses.push(rec);
         else if (rec.bankId) rec.edited = true; // your edit wins over later bank updates
         save(); closeSheet(); render(); toast(isNew ? 'Saved' : 'Updated');

@@ -139,7 +139,12 @@
     return null;
   }
   const placeOf = (e) => e.bankPlace || e.place;
-  function classifyExpense(e, cfg) { return classify(placeOf(e), e.note, cfg); }
+  // A category picked for one transaction wins over everything, and only for that transaction.
+  function classifyExpense(e, cfg) {
+    if (e.industry && (BY_ID[e.industry] || ((cfg && cfg.custom) || []).some((c) => c.id === e.industry))) return e.industry;
+    return classify(placeOf(e), e.note, cfg);
+  }
+  function autoIndustry(e, cfg) { return classify(placeOf(e), e.note, cfg); }
 
   /** Built-in industries plus the user's own, "Unclassified" last. */
   function allIndustries(cfg) {
@@ -199,7 +204,7 @@
     }
     return changed;
   }
-  const api = { fixMapKeys, FIXED, isFixedExpense, INDUSTRIES, RULES, brandKey, keysMatch, classify, classifyExpense, allIndustries, byIndustry, unclassifiedGroups, unclassifiedCsv };
+  const api = { autoIndustry, fixMapKeys, FIXED, isFixedExpense, INDUSTRIES, RULES, brandKey, keysMatch, classify, classifyExpense, allIndustries, byIndustry, unclassifiedGroups, unclassifiedCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Industry = api;
 })(typeof window !== 'undefined' ? window : globalThis);
