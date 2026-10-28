@@ -19,7 +19,7 @@
       aliases: {},
       industry: { custom: [], map: {} }, statsFixed: true
     },
-    expenses: [], incomes: [], adjustments: [], ignoredBankIds: [], liveSeen: [], liveLog: [], closed: {}
+    expenses: [], incomes: [], adjustments: [], ignoredBankIds: [], liveSeen: [], liveLog: [], closed: {}, reserves: []
   });
 
   function deepMerge(base, extra) {
@@ -156,9 +156,74 @@
     const title = kind === 'income' ? (e.source || 'Income') : (e.place || 'Expense');
     return `<div class="item" data-kind="${kind}" data-id="${e.id}">
       <div class="dot">${initial}</div>
-      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && L.incomeKind(e) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
+      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && L.incomeKind(e) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.reserveId ? '<span class="tag">reserved</span>' : ''}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
       <div class="sub">${dShort(e.date)}${kind === 'expense' ? (() => { const id = window.Industry.classifyExpense(e, state.settings.industry); const x = id && window.Industry.allIndustries(state.settings.industry).find((y) => y.id === id); return x ? ` · <span style="color:${x.color}">${esc(x.name)}</span>` : ''; })() : ''}${e.note ? ' · ' + esc(e.note) : ''}</div></div>
       <div class="amt num ${kind === 'income' ? 'good' : ''}">${kind === 'income' ? '+' : '-'}${money(e.amount)}</div></div>`;
+  }
+
+  // ---------------- reserved money for future payments ----------------
+  const activeReserves = () => (state.reserves || []).filter((r) => !r.releasedDate);
+  function reservesHtml() {
+    const act = activeReserves();
+    const total = act.reduce((a, r) => a + L.num(r.amount), 0);
+    return `<div class="card"><div class="card-head"><h2>Reserved${act.length ? ` <span class="num" style="color:var(--text)">${money(total)}</span>` : ''}</h2><button class="btn small-btn" id="resAdd">+ Reserve</button></div>
+      ${act.length ? `<div class="list">${act.map((r) => `<div class="row res-row"><span><b>${esc(r.name)}</b><span class="small muted">${r.due ? ' · ' + dShort(r.due) : ''}</span></span>
+        <span style="display:flex;align-items:center;gap:6px"><span class="num">${money(r.amount)}</span><button class="btn small-btn" data-respaid="${r.id}">Paid</button><button class="btn ghost small-btn" data-rescancel="${r.id}" aria-label="Cancel">×</button></span></div>`).join('')}</div>` : ''}
+    </div>`;
+  }
+  function bindReserves(v) {
+    const a = $('#resAdd', v); if (a) a.onclick = () => openReserve();
+    $$('[data-respaid]', v).forEach((b) => (b.onclick = () => openReservePaid(state.reserves.find((r) => r.id === b.dataset.respaid))));
+    $$('[data-rescancel]', v).forEach((b) => (b.onclick = () => {
+      const r = state.reserves.find((x) => x.id === b.dataset.rescancel); if (!r) return;
+      r.releasedDate = today; r.releasedAt = Date.now(); r.cancelled = true; save(); render(); toast(money(r.amount) + ' back');
+    }));
+  }
+  function openReserve() {
+    openSheet(`<h3>Reserve money</h3>
+      <div class="field"><input id="rsAmt" class="amount-input num" inputmode="decimal" placeholder="0,00"></div>
+      <div class="field"><label>For</label><input id="rsName" placeholder="Car insurance, rent, tickets…"></div>
+      <div class="field"><label>Due <span class="muted">optional</span></label><input id="rsDue" type="date"></div>
+      <button class="btn primary block" id="rsSave">Reserve</button>`, (b) => {
+      setTimeout(() => $('#rsAmt', b).focus(), 50);
+      $('#rsSave', b).onclick = () => {
+        const amt = L.num($('#rsAmt', b).value); if (amt <= 0) return toast('Enter an amount');
+        state.reserves = state.reserves || [];
+        state.reserves.push({ id: uid(), name: $('#rsName', b).value.trim() || 'Reserved', amount: L.r2(amt), date: today, due: $('#rsDue', b).value || '' });
+        save(); closeSheet(); render(); toast(money(amt) + ' reserved');
+      };
+    });
+  }
+  function linkReserve(r, e) {
+    e.reserveId = r.id; r.paidExpenseId = e.id; r.releasedDate = e.date > r.date ? e.date : r.date; r.releasedAt = Date.now();
+  }
+  function openReservePaid(r) {
+    if (!r) return;
+    const linked = new Set((state.expenses || []).filter((e) => e.reserveId).map((e) => e.id));
+    const cands = state.expenses.filter((e) => !linked.has(e.id) && !e.ignored && e.date >= L.addDays(r.date, -3))
+      .sort((x, y) => Math.abs(L.num(x.amount) - r.amount) - Math.abs(L.num(y.amount) - r.amount) || y.date.localeCompare(x.date)).slice(0, 15);
+    openSheet(`<h3>${esc(r.name)} · ${money(r.amount)}</h3>
+      <p class="small muted" style="margin-top:-6px">Which payment was it?</p>
+      <div class="list">${cands.map((e) => itemRow(e, 'expense')).join('') || '<div class="empty">No payments yet</div>'}</div>
+      <button class="btn primary block" id="rpLog" style="margin-top:12px">Log ${money(r.amount)} now</button>`, (b) => {
+      $$('.item[data-id]', b).forEach((el) => (el.onclick = () => {
+        const e = state.expenses.find((x) => x.id === el.dataset.id); if (!e) return;
+        linkReserve(r, e); save(); closeSheet(); render(); toast('Paid from reserve');
+      }));
+      $('#rpLog', b).onclick = () => {
+        const e = { id: uid(), created: Date.now(), date: today, amount: L.r2(r.amount), place: r.name, note: '' };
+        state.expenses.push(e); linkReserve(r, e); save(); closeSheet(); render(); toast('Paid from reserve');
+      };
+    });
+  }
+  // A bank payment of exactly the reserved amount, on or after the reserve day, is the payment.
+  function autoLinkReserves(newIds) {
+    let n = 0;
+    for (const r of activeReserves()) {
+      const e = state.expenses.find((x) => newIds.has(x.id) && !x.reserveId && Math.abs(L.num(x.amount) - L.num(r.amount)) < 0.005 && x.date >= r.date);
+      if (e) { linkReserve(r, e); n++; }
+    }
+    return n;
   }
 
   // Every transaction, money in and out, newest first.
@@ -312,6 +377,8 @@
         ${statusLine()}
       </div>
 
+      ${reservesHtml()}
+
       <div class="card">
         <h2>Monthly allowance</h2>
         <div class="row"><span class="label">Income (net)${per.incomeExpected ? ' <span class="tag">expected</span>' : ''}</span><span class="num">${money(per.income)}</span></div>
@@ -319,6 +386,7 @@
         <div class="row"><span class="label">Savings</span><span class="num">-${money(per.saving)}</span></div>
         ${per.carryIn ? `<div class="row"><span class="label">${per.carryIn < 0 ? 'Overspend from last month' : 'Rollover from last month'}</span><span class="num ${per.carryIn < 0 ? 'bad' : 'good'}">${signed(per.carryIn)}</span></div>` : ''}
         ${per.adjust ? `<div class="row"><span class="label">Rebalance</span><span class="num">${signed(per.adjust)}</span></div>` : ''}
+        ${per.reserve ? `<div class="row"><span class="label">Reserved</span><span class="num">${signed(per.reserve)}</span></div>` : ''}
         <div class="row total"><span>Allowance</span><span class="num">${money(per.effective)}</span></div>
       </div>
 
@@ -340,6 +408,7 @@
     `;
     $('#qExp').onclick = () => openExpense(null);
     const ta = $('#txAll'); if (ta) ta.onclick = () => openTxLog('all', 60);
+    bindReserves(v);
     const ps = $('#pwSet'); if (ps) ps.onclick = (ev) => { ev.preventDefault(); openPasswordSheet(); };
     const ht = $('#hideTip'); if (ht) ht.onclick = (ev) => { ev.preventDefault(); try { localStorage.setItem('budget.hideInstall', '1'); } catch (e) {} $('#installTip').remove(); };
     $('#qInc').onclick = () => openIncome(null);
@@ -790,6 +859,8 @@
       };
       if (!isNew) $('#eDel', b).onclick = () => {
         if (item.bankId) state.ignoredBankIds.push(item.bankId);
+        const rr = item.reserveId && (state.reserves || []).find((r) => r.id === item.reserveId);
+        if (rr && rr.paidExpenseId === item.id) { delete rr.releasedDate; delete rr.releasedAt; delete rr.paidExpenseId; }
         state.expenses = state.expenses.filter((x) => x.id !== item.id); save(); closeSheet(); render(); toast('Deleted');
       };
     });
@@ -1679,11 +1750,14 @@
       }
       if (errors.length && errors.length === bk.accounts.length) throw errors[0];
       // Same purchase already logged live (Google Wallet) or by hand? It is linked instead of added twice.
+      const idsBefore = new Set(state.expenses.map((x) => x.id));
       const res = L.applyBankTransactions(state, mapped, {
         start, from: from < start ? start : from, earlyFrom, ignore: bk.ignore, importIncome: bk.importIncome, withPending: plaidMode,
         newId: uid, kindOf: (rec) => guessKind(rec, state.settings)
       });
       const added = res.added, addedIn = res.addedIn, matched = res.matched;
+      const linkedRes = autoLinkReserves(new Set(state.expenses.filter((x) => !idsBefore.has(x.id)).map((x) => x.id)));
+      if (linkedRes) toast(`${linkedRes} reserved payment${linkedRes === 1 ? '' : 's'} paid`);
       bk.lastSync = new Date().toISOString(); bk.lastError = errors.length ? errors[0].message : ''; if (!errors.length) bk.earlyDone = true; save();
       syncing = false; render();
       if (manual || added || addedIn) toast(added || addedIn ? `Imported ${added} expense${added === 1 ? '' : 's'}${addedIn ? `, ${addedIn} income` : ''}${matched ? ` (${matched} already logged)` : ''}` : 'Up to date');

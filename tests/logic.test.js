@@ -394,3 +394,34 @@ console.log('salary / locked month tests passed');
   });
 }
 console.log('income step tests passed');
+
+// ---- reserved money for a future payment ----
+{
+  const sett = { payDay: 1, monthlySaving: 0, startDate: '2026-11-01', statsFrom: '2026-11-01', useExpected: false };
+  const mk = () => ({ settings: sett, adjustments: [], incomes: [{ id: 'i', date: '2026-11-01', amount: 1000, source: 'S' }, { id: 'j', date: '2026-12-01', amount: 1000, source: 'S' }],
+    expenses: [{ id: 'g', date: '2026-11-05', amount: 10, place: 'RIMI' }], reserves: [{ id: 'r', name: 'Car insurance', amount: 100, date: '2026-11-05' }] });
+  t('reserving takes the money out from that day and recalculates the daily budget, but is not spending', () => {
+    const d = mk(); const lg = L.buildLedger(d, '2026-11-05'); const ts = L.todayStatus(lg, '2026-11-05');
+    near(ts.dailyAllowance, (1000 - 100) / 26, 'allowance after reserving'); near(ts.spentToday, 10, 'only the groceries are spending');
+    near(ts.remainingMonth, 1000 - 100 - 10, 'available drops by the reserve');
+    near(L.daysInRange(lg, '2026-11-04', '2026-11-04', '2026-11-05')[0].allow, 1000 / 27, 'the day before is untouched');
+  });
+  t('paying from the reserve: the payment is not that day\'s spending; the reserve is released', () => {
+    const d = mk(); d.expenses.push({ id: 'p', date: '2026-11-20', amount: 95, place: 'BTA', reserveId: 'r' }); d.reserves[0].releasedDate = '2026-11-20';
+    const lg = L.buildLedger(d, '2026-11-20'); const ts = L.todayStatus(lg, '2026-11-20');
+    near(ts.spentToday, 0, 'insurance is not today\'s spending'); near(ts.remainingMonth, 1000 - 10 - 95, 'available after paying');
+    const day = L.daysInRange(lg, '2026-11-20', '2026-11-20', '2026-11-20')[0]; assert.ok(day.diff <= 0, 'not over budget');
+  });
+  t('cancelling gives the money back from that day', () => {
+    const d = mk(); d.reserves[0].releasedDate = '2026-11-10';
+    near(L.todayStatus(L.buildLedger(d, '2026-11-10'), '2026-11-10').remainingMonth, 990, 'all back');
+  });
+  t('a reserve still open at month end is not saved away and comes back when released next month', () => {
+    const d = mk(); const lg = L.buildLedger(d, '2026-12-02');
+    const [nov, dec] = lg.periods; near(nov.toSavings, 890, 'reserved money is not saved'); near(dec.effective, 1000, 'still reserved in December');
+    d.expenses.push({ id: 'p', date: '2026-12-02', amount: 100, place: 'BTA', reserveId: 'r' }); d.reserves[0].releasedDate = '2026-12-02';
+    const ts = L.todayStatus(L.buildLedger(d, '2026-12-02'), '2026-12-02');
+    near(ts.remainingMonth, 1000, 'paid from the reserve, December untouched'); near(ts.spentToday, 0, 'not spending');
+  });
+}
+console.log('reserve tests passed');
