@@ -399,22 +399,35 @@
     return s.slice(0, 60) || 'Unknown';
   }
 
-  function topPlaces(expenses, from, to, aliases, limit) {
-    aliases = aliases || {}; limit = limit || 8;
-    const map = {};
+  /**
+   * Spending per shop in [from, to]. Payments of the same shop are grouped (keyFn, e.g. the brand, so
+   * "DUS Bullu" and "DUS BULLU" are one). Every shop with at least 1% of the total gets its own slice;
+   * only the ones under 1% are put together as "Other".
+   */
+  function topPlaces(expenses, from, to, aliases, minShare, keyFn) {
+    aliases = aliases || {};
+    minShare = typeof minShare === 'number' && minShare < 1 ? minShare : 0.01;
+    const norm = (x) => String(x || '').toUpperCase().replace(/\s+/g, ' ').trim();
+    keyFn = keyFn || norm;
+    const groups = {};
     for (const e of expenses) {
       if (e.ignored || e.date < from || e.date > to) continue;
-      const raw = e.place || 'Unknown';
-      const key = aliases[raw] || raw;
-      map[key] = (map[key] || 0) + num(e.amount);
+      const raw = String(e.place || 'Unknown').trim();
+      const named = aliases[raw] || raw;
+      const key = aliases[raw] ? 'A:' + named : keyFn(named) || norm(named);
+      const g = groups[key] || (groups[key] = { total: 0, names: {} });
+      g.total += num(e.amount);
+      g.names[named] = (g.names[named] || 0) + 1;
     }
-    const arr = Object.entries(map).map(([name, total]) => ({ name, total: r2(total) })).sort((a, b) => b.total - a.total);
-    if (arr.length > limit) {
-      const rest = arr.slice(limit - 1).reduce((s, x) => s + x.total, 0);
-      return arr.slice(0, limit - 1).concat([{ name: 'Other', total: r2(rest) }]);
-    }
-    return arr;
+    const arr = Object.values(groups).map((g) => ({ name: Object.entries(g.names).sort((a, b) => b[1] - a[1])[0][0], total: r2(g.total) })).sort((a, b) => b.total - a.total);
+    const total = arr.reduce((t, x) => t + x.total, 0);
+    if (!total) return arr;
+    const big = arr.filter((x) => x.total / total >= minShare);
+    const small = arr.filter((x) => x.total / total < minShare);
+    if (small.length > 1) return big.concat([{ name: 'Other', total: r2(small.reduce((t, x) => t + x.total, 0)), other: true, count: small.length }]);
+    return big.concat(small);
   }
+
 
   // ---------- Bank (Enable Banking / PSD2 transaction format) ----------
   function txId(tx) {

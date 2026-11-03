@@ -425,3 +425,17 @@ console.log('income step tests passed');
   });
 }
 console.log('reserve tests passed');
+
+// ---- "Where the money went": every shop with 1% or more gets its own slice ----
+t('shops: same shop in different spellings is one; Other only holds shops under 1%', () => {
+  const ex = [{ date: '2026-10-01', amount: 50, place: 'DUS Bullu' }, { date: '2026-10-02', amount: 50, place: 'DUS BULLU' }, { date: '2026-10-02', amount: 30, place: 'Rimi' }]
+    .concat(Array.from({ length: 12 }, (_, i) => ({ date: '2026-10-03', amount: 3 + i, place: 'Shop' + i })))
+    .concat([{ date: '2026-10-03', amount: 0.5, place: 'Tiny A' }, { date: '2026-10-03', amount: 0.6, place: 'Tiny B' }]);
+  const p = L.topPlaces(ex, '2026-10-01', '2026-10-31', {}, 0.01, (x) => String(x).toUpperCase());
+  const total = ex.reduce((s, e) => s + e.amount, 0);
+  assert.strictEqual(p[0].name, 'DUS Bullu'); near(p[0].total, 100, 'merged');
+  assert.ok(p.filter((x) => !x.other).every((x) => x.total / total >= 0.01), 'all named slices are at least 1%');
+  const o = p.find((x) => x.other); assert.ok(o && o.count === 2); near(o.total, 1.1, 'only the tiny ones');
+  assert.strictEqual(p.length, 1 + 1 + 12 + 1);
+});
+console.log('places tests passed');

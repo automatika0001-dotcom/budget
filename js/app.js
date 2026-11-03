@@ -693,9 +693,11 @@
     }
     const st = L.overUnderStats(days.filter((d) => d.date <= today));
     const statExp = fixedOn() ? state.expenses : state.expenses.filter((e) => !isFixedE(e));
-    const places = L.topPlaces(statExp, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.aliases, 8);
+    const places = L.topPlaces(statExp, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.aliases, 0.01, window.Industry.brandKey);
     const placeTotal = places.reduce((s, p) => s + p.total, 0);
-    const palette = ['#c8f26a', '#5fd3a0', '#6ab8f2', '#b48cf2', '#f2a65f', '#f26a9a', '#f5c35b', '#7b8a84'];
+    const palette = ['#c8f26a', '#5fd3a0', '#6ab8f2', '#b48cf2', '#f2a65f', '#f26a9a', '#f5c35b', '#7ad1d8'];
+    // as many distinct colours as there are shops; "Other" is grey
+    const placeColor = (p, i) => (p.other ? '#5b6662' : i < palette.length ? palette[i] : `hsl(${Math.round((i * 137.5) % 360)}, 62%, 64%)`);
     // SEB users: spending by industry, from the built-in shop classification
     const sebUser = state.settings.bank.provider === 'eb' && (!!state.settings.bank.sessionId || state.expenses.some((e) => e.bankId));
     const inds = sebUser ? window.Industry.byIndustry(statExp, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.industry) : [];
@@ -711,7 +713,7 @@
       <div class="card"><h2>Spending over time</h2><div class="chart-box"><canvas id="c1"></canvas></div></div>
       <div class="card"><h2>Where the money went</h2>
         ${places.length ? `<div class="chart-box pie"><canvas id="c2"></canvas></div>
-        <div class="list" style="margin-top:10px">${places.map((p, i) => `<div class="row"><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${palette[i % 8]};margin-right:8px"></i>${esc(p.name)}</span><span class="num">${money(p.total)} <span class="muted small">${((p.total / placeTotal) * 100).toFixed(0)}%</span></span></div>`).join('')}</div>`
+        <div class="list" style="margin-top:10px">${places.map((p, i) => `<div class="row"><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${placeColor(p, i)};margin-right:8px"></i>${esc(p.name)}${p.other ? ` <span class="muted small">(${p.count} shops under 1%)</span>` : ''}</span><span class="num">${money(p.total)} <span class="muted small">${((p.total / placeTotal) * 100).toFixed(0)}%</span></span></div>`).join('')}</div>`
         : '<div class="empty">No expenses in this range</div>'}
       </div>
       ${sebUser ? `<div class="card"><div class="card-head"><h2>Spending by industry</h2><div style="display:flex;gap:6px"><button class="btn small-btn" id="indSort">Sort shops</button><button class="btn small-btn" id="indExport">Export</button></div></div>
@@ -741,7 +743,7 @@
     if (places.length) {
       ui.charts.c2 = new Chart($('#c2'), {
         type: 'doughnut',
-        data: { labels: places.map((p) => p.name), datasets: [{ data: places.map((p) => p.total), backgroundColor: palette, borderColor: css('--surface'), borderWidth: 3 }] },
+        data: { labels: places.map((p) => p.name), datasets: [{ data: places.map((p) => p.total), backgroundColor: places.map((p, i) => placeColor(p, i)), borderColor: css('--surface'), borderWidth: 3 }] },
         options: { responsive: true, maintainAspectRatio: false, animation: ui.animate ? { duration: 700, easing: 'easeOutCubic', animateRotate: true } : false, cutout: '62%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${money(c.parsed)}` } } } }
       });
     }
