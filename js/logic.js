@@ -401,8 +401,8 @@
 
   /**
    * Spending per shop in [from, to]. Payments of the same shop are grouped (keyFn, e.g. the brand, so
-   * "DUS Bullu" and "DUS BULLU" are one). Every shop with at least 1% of the total gets its own slice;
-   * only the ones under 1% are put together as "Other".
+   * "DUS Bullu" and "DUS BULLU" are one). "Other" as a whole is under 1% of the total; every other
+   * shop gets its own slice.
    */
   function topPlaces(expenses, from, to, aliases, minShare, keyFn) {
     aliases = aliases || {};
@@ -422,10 +422,12 @@
     const arr = Object.values(groups).map((g) => ({ name: Object.entries(g.names).sort((a, b) => b[1] - a[1])[0][0], total: r2(g.total) })).sort((a, b) => b.total - a.total);
     const total = arr.reduce((t, x) => t + x.total, 0);
     if (!total) return arr;
-    const big = arr.filter((x) => x.total / total >= minShare);
-    const small = arr.filter((x) => x.total / total < minShare);
-    if (small.length > 1) return big.concat([{ name: 'Other', total: r2(small.reduce((t, x) => t + x.total, 0)), other: true, count: small.length }]);
-    return big.concat(small);
+    // "Other" takes the smallest shops only while all of them together stay under 1% of the total.
+    let cut = arr.length, acc = 0;
+    while (cut > 0 && (acc + arr[cut - 1].total) / total < minShare) { acc += arr[cut - 1].total; cut--; }
+    const small = arr.slice(cut);
+    if (small.length < 2) return arr;
+    return arr.slice(0, cut).concat([{ name: 'Other', total: r2(acc), other: true, count: small.length }]);
   }
 
 

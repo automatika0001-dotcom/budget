@@ -434,8 +434,14 @@ t('shops: same shop in different spellings is one; Other only holds shops under 
   const p = L.topPlaces(ex, '2026-10-01', '2026-10-31', {}, 0.01, (x) => String(x).toUpperCase());
   const total = ex.reduce((s, e) => s + e.amount, 0);
   assert.strictEqual(p[0].name, 'DUS Bullu'); near(p[0].total, 100, 'merged');
-  assert.ok(p.filter((x) => !x.other).every((x) => x.total / total >= 0.01), 'all named slices are at least 1%');
   const o = p.find((x) => x.other); assert.ok(o && o.count === 2); near(o.total, 1.1, 'only the tiny ones');
+  assert.ok(o.total / total < 0.01, 'Other as a whole is under 1%');
   assert.strictEqual(p.length, 1 + 1 + 12 + 1);
+  // many small shops: they must not add up to a big Other
+  const many = [{ date: '2026-10-01', amount: 100, place: 'Big' }].concat(Array.from({ length: 30 }, (_, i) => ({ date: '2026-10-01', amount: 0.5, place: 'S' + i })));
+  const q = L.topPlaces(many, '2026-10-01', '2026-10-31', {}, 0.01, (x) => x);
+  const qo = q.find((x) => x.other); const qt = many.reduce((s2, e) => s2 + e.amount, 0);
+  assert.ok(!qo || qo.total / qt < 0.01, 'Other stays under 1% even with many small shops');
+  near(q.reduce((s2, x) => s2 + x.total, 0), qt, 'nothing lost');
 });
 console.log('places tests passed');
