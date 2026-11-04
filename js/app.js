@@ -647,19 +647,38 @@
       const idx = Math.max(0, ledger.periods.length - 1 + ui.statsOffset);
       ui.statsOffset = idx - (ledger.periods.length - 1);
       const per = ledger.periods[idx];
-      from = per.start; to = per.end; label = `${dShort(per.start)} to ${dShort(per.end)}`;
+      // Pay to pay: from an early advance (or salary) if this month had one, to the day before next pay day.
+      const pr = L.payRange(state, per.start);
+      from = pr.from; to = per.end; label = `${dShort(from)} to ${dShort(per.end)}`;
       days = L.daysInRange(ledger, from, to, today);
       // Only days from the statistics start count; the chart starts there.
-      const startD = ledger.statsFrom > per.start ? ledger.statsFrom : per.start;
+      const startD = ledger.statsFrom > from ? ledger.statsFrom : from;
       const all = []; for (let d = startD; d <= to; d = L.addDays(d, 1)) all.push(d);
-      const before0 = days.length ? days[0].before : 0;
+      const inPer = days.filter((d) => d.date >= per.start);
+      const before0 = inPer.length ? inPer[0].before : 0;
       const fx = ledger.fixedByDay || {};
-      const fixedBefore = L.sumRange(fx, per.start, L.addDays(startD, -1));
-      const fixedInRange = L.sumRange(fx, startD, per.end);
-      const cum = {}, lim = {}; let fc = 0;
+      const perStart = startD > per.start ? startD : per.start;
+      const fixedBefore = L.sumRange(fx, per.start, L.addDays(perStart, -1));
+      const fixedInRange = L.sumRange(fx, perStart, per.end);
+      const cum = {}, lim = {}; let fc = 0, run = 0;
       const flatLimit = L.r2(per.effective - before0 - fixedBefore - (fixedOn() ? 0 : fixedInRange)); // months locked before this version
-      // The limit follows the money that has actually arrived (and rebalances), day by day.
-      days.forEach((d) => { fc += fixedOn() ? (d.fixed || 0) : 0; cum[d.date] = L.r2(d.cum - before0 + fc); lim[d.date] = d.pool === undefined ? flatLimit : L.r2(d.pool - before0 + fc); });
+      // money of this pay month that arrived before pay day (an early advance), day by day
+      const early = state.incomes.filter((i) => !i.ignored && i.date >= from && i.date < per.start && L.budgetDateOf(i, state.settings.payDay) === per.start);
+      // Days before pay day were paid from last month's money, so the limit line carries them too:
+      // the gap between the two lines is always what is left of this pay month's money.
+      let preSpent = 0;
+      days.forEach((d) => {
+        const sp = d.spent + (fixedOn() ? (d.fixed || 0) : 0);
+        run += sp; cum[d.date] = L.r2(run);
+        if (d.date < per.start) {
+          preSpent += sp;
+          lim[d.date] = L.r2(preSpent + early.filter((i) => i.date <= d.date).reduce((t, i) => t + L.num(i.amount), 0));
+          return;
+        }
+        // The limit follows the money that has actually arrived (and rebalances), day by day.
+        fc += fixedOn() ? (d.fixed || 0) : 0;
+        lim[d.date] = L.r2((d.pool === undefined ? flatLimit : d.pool - before0 + fc) + preSpent);
+      });
       let lastLim = days.length ? lim[days[days.length - 1].date] : flatLimit;
       const limitSeries = all.map((d) => (lim[d] !== undefined ? (lastLim = lim[d]) : lastLim));
       const limit = limitSeries.length ? limitSeries[limitSeries.length - 1] : lastLim;
