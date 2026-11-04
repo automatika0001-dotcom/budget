@@ -445,3 +445,12 @@ t('shops: same shop in different spellings is one; Other only holds shops under 
   near(q.reduce((s2, x) => s2 + x.total, 0), qt, 'nothing lost');
 });
 console.log('places tests passed');
+
+// ---- payday to payday window ----
+t('payday to payday starts at an early advance and runs to the next month\'s pay day', () => {
+  const st2 = { settings: { payDay: 17 }, incomes: [{ id: 'a', date: '2026-10-05', amount: 250, source: 'SIMPLEX', note: 'Avanss: Darba algas avanss' }] };
+  assert.deepStrictEqual(L.payRange(st2, '2026-11-04'), { from: '2026-10-05', start: '2026-10-17', end: '2026-11-16', next: '2026-11-17' });
+  assert.strictEqual(L.payRange({ settings: { payDay: 17 }, incomes: [] }, '2026-11-04').from, '2026-10-17');
+  assert.strictEqual(L.payRange({ settings: { payDay: 17 }, incomes: [{ id: 'b', date: '2026-10-08', amount: 50, source: 'Gift', note: '' }] }, '2026-11-04').from, '2026-10-17');
+});
+console.log('pay range tests passed');

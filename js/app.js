@@ -492,6 +492,14 @@
       <div class="stat-grid">
         <div class="stat"><div class="k">Spent in ${MONTHS[m]}</div><div class="v num">${money(monthSpent)}</div></div>
         <div class="stat"><div class="k">Income in ${MONTHS[m]}</div><div class="v num good">${money(inc)}</div></div>
+        ${(() => {
+          // payday to payday: the pay month shown (this one when viewing the current month), from an early advance if there was one
+          const isNow = today >= first && today <= last;
+          const pr = L.payRange(state, isNow ? today : `${y}-${L.pad(m + 1)}-${L.pad(payDay)}`);
+          const upto = pr.end < today ? pr.end : today;
+          const sp = state.expenses.reduce((a, e) => (!e.ignored && e.date >= pr.from && e.date <= upto && (fixedOn() || !isFixedE(e)) ? a + L.num(e.amount) : a), 0);
+          return pr.from > upto ? '' : `<div class="stat" style="grid-column:1 / -1"><div class="k">Payday to payday · ${dShort(pr.from)} to ${dShort(pr.end)}</div><div class="v num">${money(sp)}</div></div>`;
+        })()}
       </div>
       <p class="small muted" style="text-align:center">Tap a day to see or add expenses.</p>`;
     bindFixedSwitch(v);

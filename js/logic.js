@@ -351,6 +351,23 @@
     return r2(num(target) - (per.effective - per.spent));
   }
 
+  /**
+   * Payday-to-payday window for the pay month that contains `date`. When that month's salary or advance
+   * was paid early (before pay day), the window starts on the day it was paid and still runs to the next
+   * month's pay day.
+   */
+  function payRange(state, date) {
+    const payDay = state.settings.payDay || 1;
+    const p = periodFor(date, payDay);
+    let from = p.start;
+    for (const it of state.incomes || []) {
+      if (it.ignored || it.date >= p.start) continue;
+      const k = incomeKind(it);
+      if ((k === 'advance' || k === 'salary') && budgetDateOf(it, payDay) === p.start && it.date < from) from = it.date;
+    }
+    return { from, start: p.start, end: p.end, next: p.next };
+  }
+
   /** Months that ended at least `graceDays` ago (late bank bookings get a few days) and aren't locked yet. */
   function monthsToLock(ledger, today, graceDays) {
     const g = graceDays === undefined ? 3 : graceDays;
@@ -591,7 +608,7 @@
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
-    incomeKind, textKind, budgetDateOf, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
+    incomeKind, textKind, budgetDateOf, payRange, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
     cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive, applyBankTransactions
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
