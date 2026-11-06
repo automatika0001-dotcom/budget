@@ -13,9 +13,16 @@
   let sparkAt = 0, spark = null;
   const DPR = () => Math.min(2, root.devicePixelRatio || 1);
   const screenAngle = () => (((screen.orientation && screen.orientation.angle) || root.orientation || 0) * Math.PI) / 180;
+  // Heavy liquid: the slow part of the signal (how the phone is tilted) counts almost fully, quick jolts only
+  // partly, so it leans with the phone right away but doesn't jump at every twitch.
+  const slow = { x: 0, y: 1, t: 0 };
   function toScreen(x, y) {
     const a = screenAngle(), c = Math.cos(a), s = Math.sin(a);
-    grav.x = x * c - y * s; grav.y = x * s + y * c; grav.live = true;
+    const X = x * c - y * s, Y = x * s + y * c;
+    const now = performance.now(), dt = slow.t ? Math.min(0.1, (now - slow.t) / 1000) : 1; slow.t = now;
+    const k = Math.min(1, dt / 0.12);
+    slow.x += (X - slow.x) * k; slow.y += (Y - slow.y) * k;
+    grav.x = slow.x * 0.8 + (X - slow.x) * 0.35; grav.y = slow.y + (Y - slow.y) * 0.35; grav.live = true;
   }
   // Android reports the sensor's push against gravity, older iPhones the gravity itself: the tilt from the
   // orientation sensor tells which, so the liquid never falls the wrong way.
@@ -78,13 +85,13 @@
     }
     const dx = w / N, h = s.h, u = s.u;
     // flat phone: keep some "down" so the liquid still settles
-    const gx = Math.max(-1.6, Math.min(1.6, grav.x)) * G, gy = Math.max(0.3, Math.min(2, grav.y)) * G;
+    const gx = Math.max(-1.2, Math.min(1.2, grav.x)) * G, gy = Math.max(0.3, Math.min(2, grav.y)) * G;
     const vmax = (0.45 * dx) / SUB;
     s.prev.set(h);
     for (let j = 1; j < N; j++) {
       let v = u[j] + SUB * (gx - (gy * (h[j] - h[j - 1])) / dx);
-      v += 0.18 * (u[j - 1] + u[j + 1] - 2 * u[j]); // a little viscosity
-      v *= 1 - 0.9 * SUB; // friction
+      v += 0.26 * (u[j - 1] + u[j + 1] - 2 * u[j]); // viscosity: thick, heavy liquid
+      v *= 1 - 1.8 * SUB; // friction
       if (h[j] + h[j - 1] < 0.5) v = 0;
       u[j] = v > vmax ? vmax : v < -vmax ? -vmax : v;
     }
@@ -123,17 +130,17 @@
     for (let i = 1; i < N - 1; i++) {
       const wv = rise[i] / T; // px/s upward
       const shear = Math.abs(s.u[i + 1] - s.u[i]);
-      s.foam[i] = Math.min(1, s.foam[i] * Math.exp(-T * 0.9) + T * (Math.max(0, wv - 60) / 220 + shear / 900));
-      if (wv > 140 && s.drops.length < 160 && Math.random() < Math.min(0.9, (wv - 140) / 300)) {
+      s.foam[i] = Math.min(1, s.foam[i] * Math.exp(-T * 0.9) + T * (Math.max(0, wv - 110) / 260 + shear / 1300));
+      if (wv > 240 && s.drops.length < 120 && Math.random() < Math.min(0.6, (wv - 240) / 450)) {
         const n = 1 + (Math.random() * 3) | 0;
         const uu = (s.u[i] + s.u[i + 1]) / 2;
-        for (let k = 0; k < n; k++) s.drops.push({ x: (i + Math.random()) * dx, y: top(i) - 1, vx: uu * 0.7 + (Math.random() - 0.5) * 90, vy: -(wv * (0.7 + Math.random() * 0.6)), r: 0.7 + Math.random() * 1.6 });
+        for (let k = 0; k < n; k++) s.drops.push({ x: (i + Math.random()) * dx, y: top(i) - 1, vx: uu * 0.7 + (Math.random() - 0.5) * 90, vy: -(wv * (0.5 + Math.random() * 0.4)), r: 0.7 + Math.random() * 1.6 });
       }
     }
     // walls throw spray when water slams into them
     for (const [i, j] of [[0, 1], [N - 1, N - 1]]) {
       const hit = Math.abs(s.u[j]);
-      if (hit > 220 && s.drops.length < 160 && Math.random() < 0.5) s.drops.push({ x: i ? w - 2 : 2, y: top(i) - 1, vx: (i ? -1 : 1) * Math.random() * 60, vy: -hit * (0.5 + Math.random() * 0.5), r: 0.8 + Math.random() * 1.5 });
+      if (hit > 380 && s.drops.length < 120 && Math.random() < 0.35) s.drops.push({ x: i ? w - 2 : 2, y: top(i) - 1, vx: (i ? -1 : 1) * Math.random() * 60, vy: -hit * (0.5 + Math.random() * 0.5), r: 0.8 + Math.random() * 1.5 });
     }
     s.drops = s.drops.filter((d) => {
       d.vx += g.gx * T; d.vy += g.gy * T; d.vx *= 1 - 0.6 * T; d.x += d.vx * T; d.y += d.vy * T;
@@ -146,45 +153,91 @@
     if (Math.random() < T * 1.6) s.bub.push({ x: Math.random() * w, y: H - 2, r: 0.8 + Math.random() * 1.8, vy: 16 + Math.random() * 22, wob: Math.random() * 6 });
     s.bub = s.bub.filter((b) => { b.y -= b.vy * T; b.wob += T * 4; const i = Math.max(0, Math.min(N - 1, (b.x / dx) | 0)); return b.y > top(i) + b.r; });
   }
+  // Drawn surface = simulated surface + a slow ambient swell (three soft sines), so the liquid is never dead
+  // still. Only where there is water; dry spots stay flat.
+  function surfaceOf(s, H, t) {
+    const y = s.surf || (s.surf = new Float32Array(N));
+    const A = Math.min(3.2, s.level * 0.07);
+    for (let i = 0; i < N; i++) {
+      const wet = Math.min(1, s.h[i] / 10);
+      const amb = Math.sin(i * 0.095 + t * 0.8) * 0.55 + Math.sin(i * 0.21 - t * 1.25) * 0.3 + Math.sin(i * 0.043 + t * 0.45 + 1.7) * 0.6;
+      y[i] = H - s.h[i] - A * amb * wet;
+    }
+    return y;
+  }
+  function liquidPath(ctx, y, w, H, dx) {
+    ctx.beginPath();
+    ctx.moveTo(0, H); ctx.lineTo(0, y[0]);
+    for (let i = 0; i < N; i++) ctx.lineTo((i + 0.5) * dx, y[i]);
+    ctx.lineTo(w, y[N - 1]); ctx.lineTo(w, H); ctx.closePath();
+  }
   function drawLiquid(s, ctx, w, H) {
-    const dx = w / N;
+    const dx = w / N, t = lastT / 1000;
+    const y = surfaceOf(s, H, t);
     let minTop = H;
-    for (let i = 0; i < N; i++) minTop = Math.min(minTop, H - s.h[i]);
-    // subtle: light at the surface, fading out toward the bottom of the card
+    for (let i = 0; i < N; i++) if (y[i] < minTop) minTop = y[i];
+    const depth = Math.max(10, H - minTop);
+    // body: light near the surface, deep blue and almost clear toward the bottom
     const g = ctx.createLinearGradient(0, minTop, 0, H);
-    g.addColorStop(0, 'rgba(90, 225, 255, 0.26)');
-    g.addColorStop(0.35, 'rgba(40, 140, 255, 0.14)');
-    g.addColorStop(1, 'rgba(20, 60, 200, 0.05)');
-    ctx.beginPath();
-    ctx.moveTo(0, H);
-    ctx.lineTo(0, H - s.h[0]);
-    for (let i = 0; i < N; i++) ctx.lineTo((i + 0.5) * dx, H - s.h[i]);
-    ctx.lineTo(w, H - s.h[N - 1]);
-    ctx.lineTo(w, H); ctx.closePath();
+    g.addColorStop(0, 'rgba(95, 225, 255, 0.22)');
+    g.addColorStop(Math.min(0.9, 18 / depth), 'rgba(50, 160, 255, 0.13)');
+    g.addColorStop(1, 'rgba(20, 50, 190, 0.04)');
+    liquidPath(ctx, y, w, H, dx);
     ctx.fillStyle = g; ctx.fill();
-    // thin surface line, whiter and thicker where it foams
+    ctx.save();
+    liquidPath(ctx, y, w, H, dx);
+    ctx.clip();
+    // soft glow just under the surface (a wide stroke clipped to the inside)
     ctx.beginPath();
-    for (let i = 0; i < N; i++) { const X = (i + 0.5) * dx, Y = H - s.h[i]; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); }
-    ctx.strokeStyle = 'rgba(160, 245, 255, 0.4)'; ctx.lineWidth = 1; ctx.stroke();
+    for (let i = 0; i < N; i++) { const X = (i + 0.5) * dx; i ? ctx.lineTo(X, y[i]) : ctx.moveTo(X, y[i]); }
+    ctx.strokeStyle = 'rgba(140, 240, 255, 0.07)'; ctx.lineWidth = 14; ctx.stroke();
+    ctx.strokeStyle = 'rgba(160, 245, 255, 0.08)'; ctx.lineWidth = 5; ctx.stroke();
+    // caustics: faint drifting light threads in the body, following the surface
+    for (let k = 0; k < 4; k++) {
+      const off = 9 + k * 11, ph = t * (0.55 + k * 0.17) + k * 2.1;
+      ctx.beginPath();
+      for (let i = 0; i <= N; i += 3) {
+        const j = Math.min(N - 1, i), X = (i + 0.5) * dx;
+        const Y = y[j] + off + Math.sin(i * 0.17 + ph) * 3 + Math.sin(i * 0.071 - ph * 0.6) * 2.5;
+        i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+      }
+      ctx.strokeStyle = `rgba(150, 235, 255, ${0.075 - k * 0.014})`; ctx.lineWidth = 1.1; ctx.stroke();
+    }
+    ctx.restore();
+    // surface: a slow specular sweep along the line
+    const sx = ((t * 0.12) % 1.6 - 0.3) * w;
+    const sg = ctx.createLinearGradient(sx - w * 0.35, 0, sx + w * 0.35, 0);
+    sg.addColorStop(0, 'rgba(150, 240, 255, 0.28)');
+    sg.addColorStop(0.5, 'rgba(225, 255, 255, 0.75)');
+    sg.addColorStop(1, 'rgba(150, 240, 255, 0.28)');
+    ctx.beginPath();
+    for (let i = 0; i < N; i++) { const X = (i + 0.5) * dx; i ? ctx.lineTo(X, y[i]) : ctx.moveTo(X, y[i]); }
+    ctx.strokeStyle = sg; ctx.lineWidth = 1.2; ctx.stroke();
+    // foam: whiter thicker line and specks where it's rough
     for (let i = 0; i < N - 1; i++) {
       const f = Math.max(s.foam[i], s.foam[i + 1]);
       if (f < 0.08) continue;
-      ctx.strokeStyle = `rgba(240, 255, 255, ${0.6 * f})`; ctx.lineWidth = 1 + f * 1.5;
-      ctx.beginPath(); ctx.moveTo((i + 0.5) * dx, H - s.h[i]); ctx.lineTo((i + 1.5) * dx, H - s.h[i + 1]); ctx.stroke();
+      ctx.strokeStyle = `rgba(240, 255, 255, ${0.55 * f})`; ctx.lineWidth = 1 + f * 1.6;
+      ctx.beginPath(); ctx.moveTo((i + 0.5) * dx, y[i]); ctx.lineTo((i + 1.5) * dx, y[i + 1]); ctx.stroke();
     }
-    // foam specks just under the surface
     for (let i = 0; i < N; i++) {
       const f = s.foam[i];
       if (f < 0.06) continue;
       const seed = Math.sin(i * 12.9898 + ((lastT / 260) | 0) * 0.37) * 43758.5;
-      const jx = seed - Math.floor(seed), jy = (seed * 7.1) - Math.floor(seed * 7.1);
-      ctx.fillStyle = `rgba(235, 255, 255, ${Math.min(0.8, f)})`;
-      ctx.beginPath(); ctx.arc((i + jx) * dx, H - s.h[i] + 1 + jy * 4 * f, 0.6 + f * 1.4, 0, 6.283); ctx.fill();
+      const jx = seed - Math.floor(seed), jy = seed * 7.1 - Math.floor(seed * 7.1);
+      ctx.fillStyle = `rgba(235, 255, 255, ${Math.min(0.75, f)})`;
+      ctx.beginPath(); ctx.arc((i + jx) * dx, y[i] + 1 + jy * 4 * f, 0.6 + f * 1.3, 0, 6.283); ctx.fill();
     }
-    ctx.fillStyle = 'rgba(210, 250, 255, 0.75)';
-    for (const d of s.drops) { ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, 6.283); ctx.fill(); }
-    ctx.fillStyle = 'rgba(200, 245, 255, 0.35)';
-    for (const b of s.bub) { ctx.beginPath(); ctx.arc(b.x + Math.sin(b.wob) * 1.5, b.y, b.r, 0, 6.283); ctx.fill(); }
+    // spray drops with a small highlight, bubbles
+    for (const d of s.drops) {
+      ctx.fillStyle = 'rgba(170, 235, 255, 0.55)'; ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, 6.283); ctx.fill();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'; ctx.beginPath(); ctx.arc(d.x - d.r * 0.3, d.y - d.r * 0.3, d.r * 0.4, 0, 6.283); ctx.fill();
+    }
+    for (const b of s.bub) {
+      const bx = b.x + Math.sin(b.wob) * 1.5;
+      ctx.strokeStyle = 'rgba(200, 245, 255, 0.35)'; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(bx, b.y, b.r, 0, 6.283); ctx.stroke();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.45)'; ctx.beginPath(); ctx.arc(bx - b.r * 0.35, b.y - b.r * 0.35, b.r * 0.3, 0, 6.283); ctx.fill();
+    }
   }
 
   // ---- background bubbles and electric sparks between cards ----
