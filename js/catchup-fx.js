@@ -76,7 +76,7 @@
     sims.set(card, s);
     return s;
   }
-  function physics(s, w, H) {
+  function physics(s, w, H, dts) {
     const level = Math.min(Math.max(H * 0.26, 22), 80);
     if (s.level !== level || s.w !== w) { // new or resized card: refill to the level, keep the motion
       const mass = s.level ? s.h.reduce((a, b) => a + b, 0) : 0;
@@ -85,20 +85,20 @@
     }
     const dx = w / N, h = s.h, u = s.u;
     // flat phone: keep some "down" so the liquid still settles
-    const gx = Math.max(-1.2, Math.min(1.2, grav.x)) * G, gy = Math.max(0.3, Math.min(2, grav.y)) * G;
-    const vmax = (0.45 * dx) / SUB;
+    const gx = Math.max(-1.2, Math.min(1.2, grav.x)) * G, gy = Math.max(0.3, Math.min(1.5, grav.y)) * G;
+    const vmax = (0.45 * dx) / dts, q = dts / SUB;
     s.prev.set(h);
     for (let j = 1; j < N; j++) {
-      let v = u[j] + SUB * (gx - (gy * (h[j] - h[j - 1])) / dx);
-      v += 0.26 * (u[j - 1] + u[j + 1] - 2 * u[j]); // viscosity: thick, heavy liquid
-      v *= 1 - 1.8 * SUB; // friction
+      let v = u[j] + dts * (gx - (gy * (h[j] - h[j - 1])) / dx);
+      v += Math.min(0.45, 0.26 * q) * (u[j - 1] + u[j + 1] - 2 * u[j]); // viscosity: thick, heavy liquid
+      v *= 1 - 1.8 * dts; // friction
       if (h[j] + h[j - 1] < 0.5) v = 0;
       u[j] = v > vmax ? vmax : v < -vmax ? -vmax : v;
     }
     u[0] = 0; u[N] = 0;
     // move the water (upwind), never below empty
     const out = s.out; out[0] = 0; out[N] = 0;
-    for (let j = 1; j < N; j++) out[j] = u[j] * (u[j] > 0 ? h[j - 1] : h[j]) * (SUB / dx);
+    for (let j = 1; j < N; j++) out[j] = u[j] * (u[j] > 0 ? h[j - 1] : h[j]) * (dts / dx);
     for (let i = 0; i < N; i++) {
       const give = Math.max(0, out[i + 1]) + Math.max(0, -out[i]);
       if (give > h[i] && give > 0) { const k = h[i] / give; if (out[i + 1] > 0) out[i + 1] *= k; if (out[i] < 0) out[i] *= k; }
@@ -107,7 +107,8 @@
     // Smooth out column-to-column zigzags (they turn the surface into a saw blade after hard shakes) while
     // leaving real waves almost untouched. Moves water between neighbours only, so none is lost.
     const sm = s.out; // reuse as scratch: flow between i-1 and i
-    for (let i = 1; i < N; i++) sm[i] = 0.06 * (h[i - 1] - h[i]);
+    const cs = Math.min(0.3, 0.06 * q);
+    for (let i = 1; i < N; i++) sm[i] = cs * (h[i - 1] - h[i]);
     for (let i = 1; i < N; i++) { const f = sm[i] > 0 ? Math.min(sm[i], h[i - 1]) : Math.max(sm[i], -h[i]); h[i - 1] -= f; h[i] += f; }
     // a column can't tower over the card: what's above the cap spills to its neighbours
     const cap = Math.min(H - 6, s.level * 3.2);
@@ -120,12 +121,21 @@
   function stepLiquid(s, dt, w, H) {
     s.acc = Math.min(s.acc + dt, 0.05);
     let g = null, steps = 0; const rise = s.rise; rise.fill(0);
-    while (s.acc >= SUB) {
-      s.acc -= SUB; g = physics(s, w, H); steps++;
+    // Step size follows the fastest wave (CFL): hard swings pile water up and speed waves up, and too big a
+    // step is what turned the surface into a saw blade.
+    let T = 0;
+    while (s.acc >= SUB * 0.5 && steps < 48) {
+      let hm = 0, um = 0;
+      for (let i = 0; i < N; i++) if (s.h[i] > hm) hm = s.h[i];
+      for (let j = 0; j <= N; j++) { const a = Math.abs(s.u[j]); if (a > um) um = a; }
+      const c = Math.sqrt(1.5 * G * hm) + um, dxs = w / N;
+      const dts = Math.min(SUB, s.acc, (0.35 * dxs) / Math.max(1, c));
+      s.acc -= dts; T += dts; g = physics(s, w, H, dts); steps++;
       for (let i = 0; i < N; i++) rise[i] += s.h[i] - s.prev[i];
     }
-    if (!g) return;
-    const T = steps * SUB, dx = g.dx, top = (i) => H - s.h[i];
+    if (steps >= 48) s.acc = 0;
+    if (!g || T <= 0) return;
+    const dx = g.dx, top = (i) => H - s.h[i];
     // spray where the surface shoots up fast, foam where the water is rough
     for (let i = 1; i < N - 1; i++) {
       const wv = rise[i] / T; // px/s upward
@@ -149,6 +159,27 @@
       if (d.vy > 0 && d.y >= top(i)) { s.foam[i] = Math.min(1, s.foam[i] + 0.25); return false; }
       return d.y < H + 4;
     });
+    // Energy: how wild the liquid is right now (spray in the air, foam on top). Hard swings charge it up and
+    // then spray and foam start arcing to each other like chain lightning.
+    let foamSum = 0; for (let i = 0; i < N; i++) foamSum += s.foam[i];
+    const e = Math.min(2, s.drops.length / 28 + (foamSum / N) * 5);
+    s.energy = (s.energy || 0) + (e - (s.energy || 0)) * Math.min(1, T * 6);
+    s.arcs = (s.arcs || []).filter((a) => a.until > lastT);
+    if (s.energy > 0.55 && s.arcs.length < 3 && Math.random() < Math.min(0.55, (s.energy - 0.55) * 0.5)) {
+      const nodes = s.drops.map((d) => [d.x, d.y]);
+      for (let i = 0; i < N; i += 2) if (s.foam[i] > 0.35) nodes.push([(i + 0.5) * dx, top(i)]);
+      if (nodes.length > 2) {
+        let cur = nodes.splice((Math.random() * nodes.length) | 0, 1)[0];
+        const pts = [cur];
+        for (let hop = 0; hop < 7 && nodes.length; hop++) {
+          let bi = -1, bd = 85 * 85;
+          for (let k = 0; k < nodes.length; k++) { const ddx = nodes[k][0] - cur[0], ddy = nodes[k][1] - cur[1], d2 = ddx * ddx + ddy * ddy; if (d2 < bd && d2 > 36) { bd = d2; bi = k; } }
+          if (bi < 0) break;
+          cur = nodes.splice(bi, 1)[0]; pts.push(cur);
+        }
+        if (pts.length > 1) s.arcs.push({ pts, until: lastT + 90 + Math.random() * 120 });
+      }
+    }
     // small bubbles rising inside
     if (Math.random() < T * 1.6) s.bub.push({ x: Math.random() * w, y: H - 2, r: 0.8 + Math.random() * 1.8, vy: 16 + Math.random() * 22, wob: Math.random() * 6 });
     s.bub = s.bub.filter((b) => { b.y -= b.vy * T; b.wob += T * 4; const i = Math.max(0, Math.min(N - 1, (b.x / dx) | 0)); return b.y > top(i) + b.r; });
@@ -171,73 +202,106 @@
     for (let i = 0; i < N; i++) ctx.lineTo((i + 0.5) * dx, y[i]);
     ctx.lineTo(w, y[N - 1]); ctx.lineTo(w, H); ctx.closePath();
   }
+  let orbCanvas = null;
+  function orbSprite() { // one glowing orb drawn once, stamped for every drop
+    if (orbCanvas) return orbCanvas;
+    orbCanvas = document.createElement('canvas'); orbCanvas.width = orbCanvas.height = 32;
+    const c = orbCanvas.getContext('2d'), rg = c.createRadialGradient(16, 16, 0, 16, 16, 16);
+    rg.addColorStop(0, 'rgba(235, 255, 255, 0.95)');
+    rg.addColorStop(0.35, 'rgba(80, 200, 255, 0.55)');
+    rg.addColorStop(1, 'rgba(40, 90, 255, 0)');
+    c.fillStyle = rg; c.fillRect(0, 0, 32, 32);
+    return orbCanvas;
+  }
+  function zig(ctx, x1, y1, x2, y2, spread) {
+    const n = Math.max(2, Math.round(Math.hypot(x2 - x1, y2 - y1) / 9));
+    ctx.moveTo(x1, y1);
+    for (let i = 1; i < n; i++) { const t = i / n; ctx.lineTo(x1 + (x2 - x1) * t + (Math.random() - 0.5) * spread, y1 + (y2 - y1) * t + (Math.random() - 0.5) * spread); }
+    ctx.lineTo(x2, y2);
+  }
+  // Liquid energy: a dark deep body lit from inside by flowing plasma ribbons and drifting glows, a burning
+  // surface line, glowing spray and arcs. Light layers are added (not painted over), so they glow where they meet.
   function drawLiquid(s, ctx, w, H) {
     const dx = w / N, t = lastT / 1000;
     const y = surfaceOf(s, H, t);
     let minTop = H;
     for (let i = 0; i < N; i++) if (y[i] < minTop) minTop = y[i];
-    const depth = Math.max(10, H - minTop);
-    // body: light near the surface, deep blue and almost clear toward the bottom
+    const E = Math.min(1.6, s.energy || 0), pulse = 0.85 + 0.15 * Math.sin(t * 2.3 + s.level);
+    const hue = (k) => `${(188 + 40 * Math.sin(t * 0.35 + k)) | 0}`; // cyan to electric blue to violet
+    // body
     const g = ctx.createLinearGradient(0, minTop, 0, H);
-    g.addColorStop(0, 'rgba(95, 225, 255, 0.22)');
-    g.addColorStop(Math.min(0.9, 18 / depth), 'rgba(50, 160, 255, 0.13)');
-    g.addColorStop(1, 'rgba(20, 50, 190, 0.04)');
+    g.addColorStop(0, `rgba(30, 150, 255, ${0.18 + 0.06 * E})`);
+    g.addColorStop(0.5, 'rgba(25, 60, 200, 0.12)');
+    g.addColorStop(1, 'rgba(40, 20, 140, 0.08)');
     liquidPath(ctx, y, w, H, dx);
     ctx.fillStyle = g; ctx.fill();
     ctx.save();
     liquidPath(ctx, y, w, H, dx);
     ctx.clip();
-    // soft glow just under the surface (a wide stroke clipped to the inside)
-    ctx.beginPath();
-    for (let i = 0; i < N; i++) { const X = (i + 0.5) * dx; i ? ctx.lineTo(X, y[i]) : ctx.moveTo(X, y[i]); }
-    ctx.strokeStyle = 'rgba(140, 240, 255, 0.07)'; ctx.lineWidth = 14; ctx.stroke();
-    ctx.strokeStyle = 'rgba(160, 245, 255, 0.08)'; ctx.lineWidth = 5; ctx.stroke();
-    // caustics: faint drifting light threads in the body, following the surface
-    for (let k = 0; k < 4; k++) {
-      const off = 9 + k * 11, ph = t * (0.55 + k * 0.17) + k * 2.1;
+    ctx.globalCompositeOperation = 'lighter';
+    // drifting plasma glows
+    for (let k = 0; k < 3; k++) {
+      const cx = w * (0.5 + 0.45 * Math.sin(t * (0.21 + k * 0.07) + k * 2)), cy = minTop + (H - minTop) * (0.45 + 0.3 * Math.sin(t * 0.3 + k));
+      const r = Math.max(30, (H - minTop) * 0.9);
+      const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      rg.addColorStop(0, `hsla(${hue(k * 2)}, 100%, 60%, ${0.10 + 0.05 * E})`);
+      rg.addColorStop(1, 'hsla(220, 100%, 50%, 0)');
+      ctx.fillStyle = rg; ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+    }
+    // flowing energy ribbons following the surface
+    for (let k = 0; k < 5; k++) {
+      const off = 6 + k * 9, ph = t * (0.7 + k * 0.23) + k * 1.9, amp = 3 + k * 0.8;
       ctx.beginPath();
-      for (let i = 0; i <= N; i += 3) {
+      for (let i = 0; i <= N; i += 2) {
         const j = Math.min(N - 1, i), X = (i + 0.5) * dx;
-        const Y = y[j] + off + Math.sin(i * 0.17 + ph) * 3 + Math.sin(i * 0.071 - ph * 0.6) * 2.5;
+        const Y = y[j] + off + Math.sin(i * 0.13 + ph) * amp + Math.sin(i * 0.051 - ph * 0.7) * amp * 0.8;
         i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
       }
-      ctx.strokeStyle = `rgba(150, 235, 255, ${0.075 - k * 0.014})`; ctx.lineWidth = 1.1; ctx.stroke();
+      const a = (0.10 - k * 0.014) * pulse * (1 + 0.6 * E);
+      ctx.strokeStyle = `hsla(${hue(k)}, 100%, 62%, ${a * 0.5})`; ctx.lineWidth = 6; ctx.stroke();
+      ctx.strokeStyle = `hsla(${hue(k)}, 100%, 78%, ${a * 1.6})`; ctx.lineWidth = 1; ctx.stroke();
     }
-    ctx.restore();
-    // surface: a slow specular sweep along the line
-    const sx = ((t * 0.12) % 1.6 - 0.3) * w;
-    const sg = ctx.createLinearGradient(sx - w * 0.35, 0, sx + w * 0.35, 0);
-    sg.addColorStop(0, 'rgba(150, 240, 255, 0.28)');
-    sg.addColorStop(0.5, 'rgba(225, 255, 255, 0.75)');
-    sg.addColorStop(1, 'rgba(150, 240, 255, 0.28)');
+    // glow just under the surface
     ctx.beginPath();
     for (let i = 0; i < N; i++) { const X = (i + 0.5) * dx; i ? ctx.lineTo(X, y[i]) : ctx.moveTo(X, y[i]); }
-    ctx.strokeStyle = sg; ctx.lineWidth = 1.2; ctx.stroke();
-    // foam: whiter thicker line and specks where it's rough
-    for (let i = 0; i < N - 1; i++) {
-      const f = Math.max(s.foam[i], s.foam[i + 1]);
-      if (f < 0.08) continue;
-      ctx.strokeStyle = `rgba(240, 255, 255, ${0.55 * f})`; ctx.lineWidth = 1 + f * 1.6;
-      ctx.beginPath(); ctx.moveTo((i + 0.5) * dx, y[i]); ctx.lineTo((i + 1.5) * dx, y[i + 1]); ctx.stroke();
-    }
+    ctx.strokeStyle = `rgba(80, 220, 255, ${0.10 * pulse + 0.05 * E})`; ctx.lineWidth = 16; ctx.stroke();
+    ctx.restore();
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    // burning surface line: wide halo, colored core, white-hot center
+    ctx.beginPath();
+    for (let i = 0; i < N; i++) { const X = (i + 0.5) * dx; i ? ctx.lineTo(X, y[i]) : ctx.moveTo(X, y[i]); }
+    ctx.strokeStyle = `hsla(${hue(0)}, 100%, 60%, ${0.10 + 0.08 * E})`; ctx.lineWidth = 7; ctx.stroke();
+    ctx.strokeStyle = `hsla(${hue(0)}, 100%, 70%, ${0.35 * pulse + 0.15 * E})`; ctx.lineWidth = 2.4; ctx.stroke();
+    ctx.strokeStyle = `rgba(230, 255, 255, ${0.55 * pulse})`; ctx.lineWidth = 0.9; ctx.stroke();
+    // foam: hot sparks riding the surface
     for (let i = 0; i < N; i++) {
       const f = s.foam[i];
       if (f < 0.06) continue;
-      const seed = Math.sin(i * 12.9898 + ((lastT / 260) | 0) * 0.37) * 43758.5;
+      const seed = Math.sin(i * 12.9898 + ((lastT / 120) | 0) * 0.37) * 43758.5;
       const jx = seed - Math.floor(seed), jy = seed * 7.1 - Math.floor(seed * 7.1);
-      ctx.fillStyle = `rgba(235, 255, 255, ${Math.min(0.75, f)})`;
-      ctx.beginPath(); ctx.arc((i + jx) * dx, y[i] + 1 + jy * 4 * f, 0.6 + f * 1.3, 0, 6.283); ctx.fill();
+      ctx.fillStyle = `rgba(190, 250, 255, ${Math.min(0.9, f)})`;
+      ctx.beginPath(); ctx.arc((i + jx) * dx, y[i] + jy * 3 * f, 0.7 + f * 1.6, 0, 6.283); ctx.fill();
     }
-    // spray drops with a small highlight, bubbles
-    for (const d of s.drops) {
-      ctx.fillStyle = 'rgba(170, 235, 255, 0.55)'; ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, 6.283); ctx.fill();
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'; ctx.beginPath(); ctx.arc(d.x - d.r * 0.3, d.y - d.r * 0.3, d.r * 0.4, 0, 6.283); ctx.fill();
+    // spray: small glowing orbs
+    const orb = orbSprite();
+    for (const d of s.drops) ctx.drawImage(orb, d.x - d.r * 3.5, d.y - d.r * 3.5, d.r * 7, d.r * 7);
+    // chain lightning between spray and foam
+    for (const a of s.arcs || []) {
+      const life = Math.max(0, (a.until - lastT) / 200);
+      ctx.beginPath();
+      for (let k = 1; k < a.pts.length; k++) zig(ctx, a.pts[k - 1][0], a.pts[k - 1][1], a.pts[k][0], a.pts[k][1], 9);
+      ctx.strokeStyle = `rgba(120, 200, 255, ${0.25 * life + 0.1})`; ctx.lineWidth = 6; ctx.stroke();
+      ctx.strokeStyle = `rgba(160, 240, 255, ${0.6 * life + 0.25})`; ctx.lineWidth = 2; ctx.stroke();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)'; ctx.lineWidth = 0.8; ctx.stroke();
+      for (const p of a.pts) { ctx.fillStyle = 'rgba(220, 250, 255, 0.9)'; ctx.beginPath(); ctx.arc(p[0], p[1], 2.2, 0, 6.283); ctx.fill(); }
     }
+    // bubbles: faint rings
     for (const b of s.bub) {
-      const bx = b.x + Math.sin(b.wob) * 1.5;
-      ctx.strokeStyle = 'rgba(200, 245, 255, 0.35)'; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(bx, b.y, b.r, 0, 6.283); ctx.stroke();
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.45)'; ctx.beginPath(); ctx.arc(bx - b.r * 0.35, b.y - b.r * 0.35, b.r * 0.3, 0, 6.283); ctx.fill();
+      ctx.strokeStyle = 'rgba(150, 230, 255, 0.35)'; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.arc(b.x + Math.sin(b.wob) * 1.5, b.y, b.r, 0, 6.283); ctx.stroke();
     }
+    ctx.restore();
   }
 
   // ---- background bubbles and electric sparks between cards ----
