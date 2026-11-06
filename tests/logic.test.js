@@ -518,3 +518,39 @@ t('payday to payday starts at an early advance and runs to the next month\'s pay
   assert.strictEqual(L.payRange({ settings: { payDay: 17 }, incomes: [{ id: 'b', date: '2026-10-08', amount: 50, source: 'Gift', note: '' }] }, '2026-11-04').from, '2026-10-17');
 });
 console.log('pay range tests passed');
+
+// ---- catch-up mode ----
+{
+  const sett = { payDay: 1, monthlySaving: 0, startDate: '2026-11-01', statsFrom: '2026-11-01', useExpected: false };
+  const mk = (exp) => ({ settings: sett, adjustments: [], reserves: [], incomes: [{ id: 'i', date: '2026-11-01', amount: 3000, source: 'S' }], expenses: exp || [] });
+  t('catch-up spreads the debt over the timeframe and lowers each day\'s limit', () => {
+    const cfg = { on: true, start: '2026-11-01', days: 10, min: 0, debt: 100 };
+    const lg = L.buildLedger(mk(), '2026-11-01'); const cp = L.catchupPlan(lg, cfg, '2026-11-01');
+    near(cp.today.raw, 100, 'normal budget'); near(cp.today.take, 10, '100 over 10 days'); near(cp.today.limit, 90, 'lowered');
+    assert.strictEqual(cp.etaDays, 10);
+  });
+  t('spending the lowered limit pays it back; spending more adds to it', () => {
+    const cfg = { on: true, start: '2026-11-01', days: 10, min: 0, debt: 100 };
+    const ok = L.catchupPlan(L.buildLedger(mk([{ id: 'a', date: '2026-11-01', amount: 90, place: 'X' }]), '2026-11-02'), cfg, '2026-11-02');
+    near(ok.debt, 90, 'paid back 10');
+    const bad = L.catchupPlan(L.buildLedger(mk([{ id: 'a', date: '2026-11-01', amount: 130, place: 'X' }]), '2026-11-02'), cfg, '2026-11-02');
+    near(bad.debt, 130, 'went 30 over the normal budget');
+  });
+  t('the minimum per day wins: it takes longer instead', () => {
+    const cfg = { on: true, start: '2026-11-01', days: 10, min: 95, debt: 100 };
+    const cp = L.catchupPlan(L.buildLedger(mk(), '2026-11-01'), cfg, '2026-11-01');
+    near(cp.today.limit, 95, 'never under the minimum'); assert.strictEqual(cp.etaDays, 20);
+    assert.strictEqual(L.catchupDays(100, 10, 5), 20); assert.strictEqual(L.catchupDays(100, 10, 50), 10); assert.strictEqual(L.catchupDays(100, 10, 0), Infinity);
+  });
+  t('once paid back the limit is normal again', () => {
+    const cfg = { on: true, start: '2026-11-01', days: 2, min: 0, debt: 20 };
+    const cp = L.catchupPlan(L.buildLedger(mk([{ id: 'a', date: '2026-11-01', amount: 50, place: 'X' }]), '2026-11-02'), cfg, '2026-11-02');
+    assert.ok(cp.done, 'done'); assert.strictEqual(cp.today, null);
+  });
+  t('over and under of the last days', () => {
+    const lg = L.buildLedger(mk([{ id: 'a', date: '2026-11-01', amount: 150, place: 'X' }, { id: 'b', date: '2026-11-02', amount: 80, place: 'Y' }]), '2026-11-03');
+    const ou = L.overUnder(lg, '2026-11-01', '2026-11-02', '2026-11-03');
+    near(ou.over, 50, 'over'); assert.ok(ou.under > 0 && ou.net < 50, 'under counts against it');
+  });
+}
+console.log('catch-up tests passed');

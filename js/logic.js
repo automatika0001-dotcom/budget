@@ -418,6 +418,33 @@
     for (let g = 0; g < 4000; g++) { if (!isHoliday(d)) { left--; if (left <= 0) return d; } d = addDays(d, 1); }
     return d;
   }
+  /** A usual day's budget: this pay month's money without rent/utilities and reserve payments, per budget day. */
+  function typicalDaily(ledger) {
+    const per = ledger.current; if (!per) return 0;
+    const n = Math.max(1, budgetDaysBetween(per.start, per.end, ledger.isHoliday || (() => false)));
+    return Math.max(0, r2((per.effective - (per.fixed || 0) - (per.paidRes || 0)) / n));
+  }
+  /**
+   * When will `debt` be paid back from `from` on, if every day is spent right up to its lowered limit?
+   * Days in this pay month use today's budget (`raw`), later months a usual day's budget.
+   * Returns { days, date } or null when the minimum leaves nothing to pay back with.
+   */
+  function catchupEta(ledger, debt, end, min, from, raw) {
+    const isHol = ledger.isHoliday || (() => false);
+    const perEnd = ledger.current ? ledger.current.end : from, typ = typicalDaily(ledger);
+    let dd = num(debt), d = from;
+    if (dd <= 0.004) return { days: 0, date: from };
+    for (let g = 0; g < 3000; g++, d = addDays(d, 1)) {
+      if (isHol(d)) continue;
+      const a = d <= perEnd ? raw : typ;
+      const rem = d <= end ? Math.max(1, budgetDaysBetween(d, end, isHol)) : 1;
+      const t = Math.max(0, Math.min(dd / rem, a - min, dd));
+      if (t <= 0.004 && d > perEnd) return null;
+      dd = r2(dd - t);
+      if (dd <= 0.004) return { days: diffDays(from, d) + 1, date: d };
+    }
+    return null;
+  }
   /**
    * Catch-up: each budget day from cfg.start gives part of the debt back by lowering that day's limit. The part is
    * the debt still left spread over the budget days left until the end of the timeframe, but a day's limit never
@@ -449,17 +476,9 @@
     // estimate of when it's all paid back, if every day is spent right up to its limit
     let eta = null, etaDays = null;
     if (!done) {
-      const raw = todayRow ? todayRow.raw : (ledger.current ? todayStatus(ledger, today).dailyAllowance : 0);
-      let dd = debt, d = today, n = 0;
-      for (; n < 2000 && dd > 0.004; d = addDays(d, 1)) {
-        if (isHol(d)) continue;
-        n++;
-        const t = takeFor(d, raw, dd, false);
-        if (t <= 0.004) { n = Infinity; break; }
-        dd = r2(dd - t);
-        if (dd <= 0.004) break;
-      }
-      if (n !== Infinity && n < 2000) { eta = d; etaDays = diffDays(today, d) + 1; }
+      const raw = todayRow ? todayRow.raw : todayStatus(ledger, today).dailyAllowance;
+      const e = catchupEta(ledger, debt, end, min, today, raw);
+      if (e) { eta = e.date; etaDays = e.days; }
     }
     // tomorrow's (next budget day's) limit, if today's limit gets used in full
     const nextLimit = (nextDate, nextRaw) => {
@@ -738,7 +757,7 @@
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
-    incomeKind, textKind, budgetDateOf, payRange, reserveStatus, overUnder, catchupDays, addBudgetDays, catchupPlan, releaseDateOf, createdAt, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
+    incomeKind, textKind, budgetDateOf, payRange, reserveStatus, overUnder, catchupDays, addBudgetDays, catchupPlan, catchupEta, typicalDaily, releaseDateOf, createdAt, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
     cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive, applyBankTransactions
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
