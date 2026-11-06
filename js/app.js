@@ -767,29 +767,47 @@
       };
     } else {
       const y = L.parse(today).getUTCFullYear() + ui.statsOffset;
-      from = `${y}-01-01`; to = `${y}-12-31`; label = String(y);
-      days = L.daysInRange(ledger, from, to, today);
+      label = String(y);
+      // Only the months that have data: from the statistics start (or 1 Jan) to the end of the current pay month.
+      const yEnd = `${y}-12-31`, curEnd = ledger.current ? ledger.current.end : today;
+      from = ledger.statsFrom > `${y}-01-01` ? ledger.statsFrom : `${y}-01-01`;
+      to = yEnd < curEnd ? yEnd : curEnd;
+      days = from <= to ? L.daysInRange(ledger, from, to, today) : [];
       const byDate = Object.fromEntries(days.map((d) => [d.date, d]));
       const all = []; for (let d = from; d <= to; d = L.addDays(d, 1)) all.push(d);
-      let cs = 0, cl = 0, lastPlan = 0;
-      const spentSeries = [], limitSeries = [];
+      // Three running totals: spent, the limit (each month's money as it was known that day, finished months in
+      // full) and the even pace. Per month the same rules as the month chart.
+      const perOf = (ps) => ledger.periods.find((pp) => pp.start === ps);
+      let cs = 0, cl = 0, lastPlan = 0, doneLim = 0, curPs = null, before0 = 0, fc = 0, mSpent = 0, mLim = 0;
+      const rawSpent = [], rawLim = [], rawPace = [];
       for (const d of all) {
-        const p = ledger.periods.find((pp) => d >= pp.start && d <= pp.end);
-        const counted = p && d >= ledger.statsFrom;
-        if (byDate[d]) {
-          lastPlan = byDate[d].plan || 0; cl += lastPlan; cs += byDate[d].spent;
-          if (fixedOn()) { cs += byDate[d].fixed || 0; cl += byDate[d].fixed || 0; }
-          cs += byDate[d].paidRes || 0; cl += byDate[d].paidRes || 0;
-        }
-        else if (counted && d > today) cl += lastPlan; // rest of the current month at its planned pace
-        spentSeries.push(counted && d <= today ? L.r2(cs) : null);
-        limitSeries.push(counted ? L.r2(cl) : null);
+        const x = byDate[d];
+        if (x) {
+          if (x.periodStart !== curPs) { doneLim += mLim; curPs = x.periodStart; before0 = x.before; fc = 0; mSpent = 0; mLim = 0; }
+          const sp = x.spent + (fixedOn() ? (x.fixed || 0) : 0) + (x.paidRes || 0);
+          const pl = (x.plan || 0) + (fixedOn() ? (x.fixed || 0) : 0) + (x.paidRes || 0);
+          lastPlan = x.plan || 0; cl += pl; cs += sp; mSpent += sp;
+          fc += (fixedOn() ? (x.fixed || 0) : 0) + (x.paidRes || 0);
+          const pp = perOf(x.periodStart);
+          const ml = x.pool !== undefined ? x.pool - before0 + fc : (pp ? pp.effective - before0 - (fixedOn() ? 0 : (pp.fixed || 0)) : mSpent);
+          mLim = Math.max(mSpent, ml);
+        } else if (d > today) cl += lastPlan; // rest of the current month at its planned pace
+        rawSpent.push(d <= today && x ? L.r2(cs) : null);
+        rawLim.push(L.r2(doneLim + mLim));
+        rawPace.push(L.r2(cl));
       }
+      // The three lines grow together, so drawn as they are they sit on top of each other. Every line has the
+      // same straight slope taken off (the average pace of the year), which spreads them over the whole box
+      // without changing their order: where they cross, they still cross. Tooltips show the real totals.
+      const n = all.length, slope = n > 1 ? (rawPace[n - 1] || 0) / n : 0;
+      const tilt = (arr) => arr.map((v, i) => (v === null ? null : L.r2(v - slope * (i + 1))));
+      const raw = [rawSpent, rawLim, rawPace];
       chart1 = {
-        type: 'line',
+        type: 'line', raw,
         data: { labels: all.map(dShort), datasets: [
-          { label: 'Spent (cumulative)', data: spentSeries, borderColor: css('--accent'), backgroundColor: 'rgba(200,242,106,.12)', fill: true, tension: .2, pointRadius: lastDot, pointBackgroundColor: css('--accent'), borderWidth: 2.5 },
-          { label: 'Allowance (cumulative)', data: limitSeries, borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5 }
+          { label: 'Spent', data: tilt(rawSpent), borderColor: css('--accent'), tension: .15, pointRadius: lastDot, pointBackgroundColor: css('--accent'), borderWidth: 2.5 },
+          { label: 'Limit', data: tilt(rawLim), borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5, stepped: true },
+          { label: 'Even pace', data: tilt(rawPace), borderColor: css('--muted'), borderDash: [2, 4], pointRadius: 0, borderWidth: 1.5 }
         ] }
       };
     }
@@ -840,6 +858,11 @@
     $('#stNext').onclick = () => { if (ui.statsOffset < 0) { ui.statsOffset++; render(); } };
 
     const base1 = chartBase();
+    if (chart1.raw) {
+      const raw = chart1.raw; delete chart1.raw;
+      base1.plugins.tooltip.callbacks.label = (c) => `${c.dataset.label}: ${money(raw[c.datasetIndex][c.dataIndex])}`;
+      base1.scales.y = { beginAtZero: false, grace: '6%', grid: { color: css('--line') }, ticks: { display: false } };
+    }
     ui.charts.c1 = new Chart($('#c1'), Object.assign(chart1, { options: base1 }));
 
     if (places.length) {
