@@ -7,6 +7,7 @@
   --muted: #8f9a95;
   --accent: #c8f26a;
   --accent-fill: rgba(200,242,106,.12);
+  --accent-rgb: 200, 242, 106;
   --accent-ink: #1a2208;
   --good: #5fd3a0;
   --bad: #ff6f61;
@@ -266,6 +267,7 @@ body.catchup {
   --accent: #3ff2e1;
   --accent-ink: #032b2a;
   --accent-fill: rgba(63, 242, 225, .13);
+  --accent-rgb: 63, 242, 225;
   --good: #4fd1ff;
   --bg: #071214;
   --surface: #0d1c1f;
@@ -297,3 +299,16 @@ body.catchup .btn.primary { box-shadow: 0 0 16px rgba(63, 242, 225, .35); }
 }
 .catchup-card .row b { color: var(--accent); }
 body.catchup .hero.over { background: radial-gradient(120% 90% at 100% 0%, #3a1a17 0%, var(--surface) 60%); }
+
+/* buttons stand out from the cards they sit on (both looks) */
+.btn:not(.primary):not(.danger) { background: #2c3431; border: 1px solid rgba(var(--accent-rgb), .28); box-shadow: 0 1px 0 rgba(255, 255, 255, .05) inset; }
+.btn.ghost { background: rgba(var(--accent-rgb), .06); border: 1px solid rgba(var(--accent-rgb), .4); color: var(--text); }
+.btn:not(.primary):not(.danger):active { background: rgba(var(--accent-rgb), .16); }
+.icon-btn { border-color: rgba(var(--accent-rgb), .3); background: #222a28; }
+.seg button.on { background: rgba(var(--accent-rgb), .16); color: var(--accent); box-shadow: 0 0 0 1px rgba(var(--accent-rgb), .35) inset; }
+.toggle input { border-color: rgba(var(--accent-rgb), .35); }
+body.catchup .btn:not(.primary):not(.danger) { background: rgba(14, 44, 50, .92); border-color: rgba(var(--accent-rgb), .45); }
+body.catchup .btn.ghost { background: rgba(10, 34, 40, .85); }
+body.catchup .icon-btn { background: #0f2a2f; border-color: rgba(var(--accent-rgb), .45); }
+body.catchup .seg { background: rgba(8, 26, 30, .9); }
+body.catchup .chip, body.catchup .tomorrow { background: rgba(16, 44, 50, .9); }
