@@ -284,7 +284,7 @@ body.catchup .card { position: relative; overflow: hidden; isolation: isolate;
 body.catchup .card:nth-child(2n) { animation-delay: -1.1s; }
 body.catchup .card:nth-child(3n) { animation-delay: -2.3s; }
 .card > canvas.liquid { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: -1; border-radius: inherit; }
-body.catchup .hero { background: radial-gradient(120% 90% at 100% 0%, #0f3a44 0%, var(--surface) 60%); }
+body.catchup .hero { background: radial-gradient(120% 90% at 100% 0%, rgba(15, 58, 68, .7) 0%, rgba(13, 28, 31, .5) 60%); }
 body.catchup .hero .big { text-shadow: 0 0 18px rgba(63, 242, 225, .45); animation: cu-flicker 5s steps(1) infinite; }
 body.catchup .tag, body.catchup .banner { background: #0f3236; border-color: #1d5a5e; }
 body.catchup .btn.primary { box-shadow: 0 0 16px rgba(63, 242, 225, .35); }
@@ -298,7 +298,7 @@ body.catchup .btn.primary { box-shadow: 0 0 16px rgba(63, 242, 225, .35); }
   97% { opacity: .8; }
 }
 .catchup-card .row b { color: var(--accent); }
-body.catchup .hero.over { background: radial-gradient(120% 90% at 100% 0%, #3a1a17 0%, var(--surface) 60%); }
+body.catchup .hero.over { background: radial-gradient(120% 90% at 100% 0%, rgba(58, 26, 23, .7) 0%, rgba(13, 28, 31, .5) 60%); }
 
 /* buttons stand out from the cards they sit on (both looks) */
 .btn:not(.primary):not(.danger) { background: #2c3431; border: 1px solid rgba(var(--accent-rgb), .28); box-shadow: 0 1px 0 rgba(255, 255, 255, .05) inset; }
@@ -314,3 +314,7 @@ body.catchup .seg { background: rgba(8, 26, 30, .9); }
 body.catchup .chip, body.catchup .tomorrow { background: rgba(16, 44, 50, .9); }
 .cu-line { margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: rgba(var(--accent-rgb), .08); border: 1px solid rgba(var(--accent-rgb), .25); font-size: 14px; line-height: 1.45; }
 .cu-line b { color: var(--accent); }
+
+/* the liquid is drawn behind the page (one GPU canvas), so cards are see-through in catch-up mode */
+#fxGL { z-index: 0; }
+body.catchup .view .card { background-color: rgba(13, 28, 31, .5); }

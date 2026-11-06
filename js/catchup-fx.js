@@ -1,14 +1,15 @@
-/* Catch-up mode look: aqua colours, bubbles and sparks, and blue liquid in every card that sloshes with the
-   phone's movement. The liquid is a shallow-water simulation (120 columns per card) driven by the phone's
-   accelerometer with no smoothing, so tilts and shakes act at once; fast waves throw spray and leave foam.
-   One animation loop for everything; it sleeps while the app is hidden. */
+/* Catch-up mode look: aqua colours, bubbles and sparks, and a glowing energy liquid in every card that sloshes
+   with the phone's movement. The liquid is a real 2D particle fluid (fluid2d.js) driven straight by the
+   accelerometer, drawn on the GPU as one smooth body (metaballs) with an energy shader: bright rim where the
+   surface is, flowing plasma inside, foam where it moves fast, loose droplets as spray. Hard swings make the
+   spray arc like chain lightning. One animation loop; it sleeps while the app is hidden. */
 (function (root) {
   'use strict';
   let on = false, raf = 0, bg = null, zap = null, lastT = 0;
   // apparent gravity on the screen in units of g (x: right, y: down). Includes shakes: moving the phone right
   // pushes the liquid left, like a real glass.
   const grav = { x: 0, y: 1, live: false, src: '' };
-  const sims = new Map(); // card -> liquid state
+  const fluids = new Map(); // card key -> particle fluid
   const bubbles = []; // background bubbles
   let sparkAt = 0, spark = null;
   const DPR = () => Math.min(2, root.devicePixelRatio || 1);
@@ -65,242 +66,178 @@
     return { w, h, r };
   }
 
-  // ---- liquid: 1D shallow water. h = depth per column, u = speed across each column boundary ----
-  const N = 120, G = 3600, SUB = 1 / 240; // columns, px/s² for 1 g, physics step
-  function simFor(card) {
-    let s = sims.get(card);
-    if (s && s.canvas.isConnected) return s;
-    const canvas = document.createElement('canvas');
-    canvas.className = 'liquid';
-    card.prepend(canvas);
-    s = { canvas, h: new Float32Array(N), prev: new Float32Array(N), u: new Float32Array(N + 1), out: new Float32Array(N + 1), rise: new Float32Array(N), foam: new Float32Array(N), drops: [], bub: [], acc: 0, level: 0, w: 0 };
-    sims.set(card, s);
-    return s;
+
+  // ---------------- GPU liquid ----------------
+  const STEP = 1 / 120; // fluid step, s
+  let glc = null, gl = null, progP = null, progC = null, fbo = null, ftex = null, fw = 0, fh = 0, ptBuf = null, triBuf = null;
+  let pts = new Float32Array(4 * 2000);
+  const VS_P = `attribute vec2 aPos; attribute vec2 aAtt; uniform vec2 uRes; uniform float uSize; varying vec2 vAtt;
+    void main(){ vec2 c = aPos / uRes * 2.0 - 1.0; gl_Position = vec4(c.x, -c.y, 0.0, 1.0); gl_PointSize = uSize; vAtt = aAtt; }`;
+  const FS_P = `precision mediump float; varying vec2 vAtt;
+    void main(){ vec2 d = gl_PointCoord * 2.0 - 1.0; float r2 = dot(d, d); if (r2 > 1.0) discard;
+      float k = max(0.0, exp(-r2 * 2.6) - 0.074) * 0.42;
+      gl_FragColor = vec4(k, k * vAtt.x, k * vAtt.y, 0.0); }`;
+  const VS_C = `attribute vec2 aP; varying vec2 vUv; void main(){ vUv = aP * 0.5 + 0.5; gl_Position = vec4(aP, 0.0, 1.0); }`;
+  const FS_C = `precision mediump float;
+    uniform sampler2D uF; uniform vec2 uRes; uniform float uT; uniform vec4 uRect; uniform float uRad; uniform float uE;
+    varying vec2 vUv;
+    float sdr(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
+    void main(){
+      vec2 px = vec2(vUv.x, 1.0 - vUv.y) * uRes;
+      if (sdr(px - (uRect.xy + uRect.zw * 0.5), uRect.zw * 0.5, uRad) > 0.0) discard;
+      vec4 f = texture2D(uF, vUv);
+      float d = f.r, thr = 0.30;
+      vec3 hot = mix(vec3(0.25, 0.92, 1.0), vec3(0.62, 0.48, 1.0), 0.5 + 0.5 * sin(uT * 0.35 + px.y * 0.01));
+      if (d < thr) { float g = smoothstep(thr * 0.3, thr, d); gl_FragColor = vec4(hot * g * 0.16, g * 0.16); return; }
+      float inner = smoothstep(thr, thr * 2.6, d);
+      vec2 p = (px - uRect.xy) * 0.02; float t = uT;
+      float pl = sin(p.x * 1.7 + t * 0.9 + sin(p.y * 2.1 - t * 0.7) * 1.6) + sin(p.y * 2.4 - t * 1.1 + sin(p.x * 1.3 + t * 0.5) * 2.0) + sin((p.x + p.y) * 1.1 + t * 0.6);
+      float band = pow(abs(sin(pl * 1.6)), 6.0);
+      vec3 deep = mix(vec3(0.08, 0.16, 0.62), vec3(0.04, 0.42, 0.95), 0.5 + 0.5 * sin(t * 0.3 + p.x * 0.35));
+      vec3 col = mix(hot * 0.5, deep, inner) + hot * band * (0.45 + 0.35 * (1.0 - inner)) * (1.0 + uE * 0.6);
+      float rim = 1.0 - smoothstep(thr, thr * 1.8, d);
+      col += vec3(0.7, 1.0, 1.0) * rim * rim * (1.1 + 0.2 * sin(t * 2.3));
+      float foam = clamp(f.g / max(d, 0.01) * 1.4 - 0.4, 0.0, 1.0);
+      col += vec3(0.85, 1.0, 1.0) * foam * 0.55;
+      float spray = clamp(f.b / max(d, 0.01), 0.0, 1.0);
+      col += vec3(0.9, 1.0, 1.0) * spray * 0.4;
+      float a = clamp(mix(0.62, 0.42, inner) + rim * 0.3 + band * 0.18 + foam * 0.2, 0.0, 0.9);
+      gl_FragColor = vec4(col * a, a);
+    }`;
+  function shader(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+  function program(vs, fs) { const p = gl.createProgram(); gl.attachShader(p, shader(gl.VERTEX_SHADER, vs)); gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); return p; }
+  function glInit() {
+    if (gl) return true;
+    try {
+      glc = layer('fxGL', 0);
+      gl = glc.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: false, depth: false, stencil: false });
+      if (!gl) throw new Error('no webgl');
+      progP = program(VS_P, FS_P); progC = program(VS_C, FS_C);
+      ptBuf = gl.createBuffer(); triBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, triBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      ftex = gl.createTexture(); fbo = gl.createFramebuffer();
+      return true;
+    } catch (e) { glDrop(); return false; }
   }
-  function physics(s, w, H, dts) {
-    const level = Math.min(Math.max(H * 0.26, 22), 80);
-    if (s.level !== level || s.w !== w) { // new or resized card: refill to the level, keep the motion
-      const mass = s.level ? s.h.reduce((a, b) => a + b, 0) : 0;
-      if (!mass) s.h.fill(level); else { const k = (level * N) / mass; for (let i = 0; i < N; i++) s.h[i] *= k; }
-      s.level = level; s.w = w;
+  function glDrop() { if (glc) glc.remove(); glc = null; gl = null; fw = fh = 0; }
+  function glSize(W, H) {
+    const r = Math.min(DPR(), 1.5);
+    const cw = Math.round(W * r), ch = Math.round(H * r);
+    if (glc.width !== cw || glc.height !== ch) { glc.width = cw; glc.height = ch; }
+    const nw = Math.max(1, Math.round(W / 2)), nh = Math.max(1, Math.round(H / 2));
+    if (nw !== fw || nh !== fh) {
+      fw = nw; fh = nh;
+      gl.bindTexture(gl.TEXTURE_2D, ftex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, fw, fh, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ftex, 0);
     }
-    const dx = w / N, h = s.h, u = s.u;
-    // flat phone: keep some "down" so the liquid still settles
-    const gx = Math.max(-1.5, Math.min(1.5, grav.x)) * G, gy = Math.max(0.3, Math.min(1.5, grav.y)) * G;
-    const vmax = (0.45 * dx) / dts, q = dts / SUB;
-    s.prev.set(h);
-    for (let j = 1; j < N; j++) {
-      let v = u[j] + dts * (gx - (gy * (h[j] - h[j - 1])) / dx);
-      v += Math.min(0.45, 0.16 * q) * (u[j - 1] + u[j + 1] - 2 * u[j]); // viscosity: thick, heavy liquid
-      v *= 1 - 0.9 * dts; // friction
-      if (h[j] + h[j - 1] < 0.5) v = 0;
-      u[j] = v > vmax ? vmax : v < -vmax ? -vmax : v;
-    }
-    u[0] = 0; u[N] = 0;
-    // move the water (upwind), never below empty
-    const out = s.out; out[0] = 0; out[N] = 0;
-    for (let j = 1; j < N; j++) out[j] = u[j] * (u[j] > 0 ? h[j - 1] : h[j]) * (dts / dx);
-    for (let i = 0; i < N; i++) {
-      const give = Math.max(0, out[i + 1]) + Math.max(0, -out[i]);
-      if (give > h[i] && give > 0) { const k = h[i] / give; if (out[i + 1] > 0) out[i + 1] *= k; if (out[i] < 0) out[i] *= k; }
-    }
-    for (let i = 0; i < N; i++) h[i] = Math.max(0, h[i] - out[i + 1] + out[i]);
-    // Smooth out column-to-column zigzags (they turn the surface into a saw blade after hard shakes) while
-    // leaving real waves almost untouched. Moves water between neighbours only, so none is lost.
-    const sm = s.out; // reuse as scratch: flow between i-1 and i
-    const cs = Math.min(0.3, 0.06 * q);
-    for (let i = 1; i < N; i++) sm[i] = cs * (h[i - 1] - h[i]);
-    for (let i = 1; i < N; i++) { const f = sm[i] > 0 ? Math.min(sm[i], h[i - 1]) : Math.max(sm[i], -h[i]); h[i - 1] -= f; h[i] += f; }
-    // a column can't tower over the card: what's above the cap spills to its neighbours
-    const cap = Math.min(H - 6, s.level * 3.2);
-    for (let i = 0; i < N; i++) if (h[i] > cap) {
-      const ex = h[i] - cap; h[i] = cap;
-      if (i === 0) h[1] += ex; else if (i === N - 1) h[N - 2] += ex; else { h[i - 1] += ex / 2; h[i + 1] += ex / 2; }
-    }
-    return { gx, gy, dx };
+    return r;
   }
-  function stepLiquid(s, dt, w, H) {
-    s.acc = Math.min(s.acc + dt, 0.05);
-    let g = null, steps = 0; const rise = s.rise; rise.fill(0);
-    // Step size follows the fastest wave (CFL): hard swings pile water up and speed waves up, and too big a
-    // step is what turned the surface into a saw blade.
-    let T = 0;
-    while (s.acc >= SUB * 0.5 && steps < 48) {
-      let hm = 0, um = 0;
-      for (let i = 0; i < N; i++) if (s.h[i] > hm) hm = s.h[i];
-      for (let j = 0; j <= N; j++) { const a = Math.abs(s.u[j]); if (a > um) um = a; }
-      const c = Math.sqrt(Math.max(0.3, Math.min(1.5, grav.y)) * G * hm) + um, dxs = w / N;
-      const dts = Math.min(SUB, s.acc, (0.7 * dxs) / Math.max(1, c));
-      s.acc -= dts; T += dts; g = physics(s, w, H, dts); steps++;
-      for (let i = 0; i < N; i++) rise[i] += s.h[i] - s.prev[i];
+  // The fluid of a card, kept by its place on the screen so it survives the app redrawing the card.
+  function fluidFor(card, idx, w, h) {
+    const key = (card.closest('.view') || {}).id + ':' + idx;
+    let f = fluids.get(key);
+    if (f && (Math.abs(f.w - w) > w * 0.3 || Math.abs(f.H - h) > h * 0.3)) f = null;
+    if (!f) { f = root.Fluid2D.create(w, h, 0.26, { s: 9, h: 20, rho0: 1.8, k: 1.2, kNear: 3, max: 260 }); f.energy = 0; f.arcs = []; fluids.set(key, f); }
+    else if (f.w !== w || f.H !== h) root.Fluid2D.resize(f, w, h);
+    f.seen = lastT;
+    return f;
+  }
+  function stepFluids(list, dt) {
+    const n = Math.max(1, Math.min(4, Math.round(dt / STEP)));
+    const gx = Math.max(-1.5, Math.min(1.5, grav.x)), gy = Math.max(0.3, Math.min(1.5, grav.y));
+    for (const { f } of list) for (let k = 0; k < n; k++) root.Fluid2D.step(f, gx, gy);
+  }
+  function drawFluids(list, W, H, t) {
+    const r = glSize(W, H);
+    // 1) every particle as a soft dot into a half-size field (density, speed, loose = spray)
+    let total = 0; for (const { f } of list) total += f.n;
+    if (pts.length < total * 4) pts = new Float32Array(total * 4 + 400);
+    let o = 0;
+    const loose = (f, i) => (f.rho[i] < f.p.rho0 * 0.45 ? 1 : 0);
+    for (const { f, rect } of list) for (let i = 0; i < f.n; i++) {
+      pts[o++] = rect.left + f.x[i]; pts[o++] = rect.top + f.y[i];
+      pts[o++] = Math.min(1, f.spd[i] / 4); pts[o++] = loose(f, i);
     }
-    if (steps >= 48) s.acc = 0;
-    if (!g || T <= 0) return;
-    const dx = g.dx, top = (i) => H - s.h[i];
-    // spray where the surface shoots up fast, foam where the water is rough
-    for (let i = 1; i < N - 1; i++) {
-      const wv = rise[i] / T; // px/s upward
-      const shear = Math.abs(s.u[i + 1] - s.u[i]);
-      s.foam[i] = Math.min(1, s.foam[i] * Math.exp(-T * 0.9) + T * (Math.max(0, wv - 70) / 200 + shear / 900));
-      if (wv > 150 && s.drops.length < 100 && Math.random() < Math.min(0.85, (wv - 150) / 320)) {
-        const n = 1 + (Math.random() * 3) | 0;
-        const uu = (s.u[i] + s.u[i + 1]) / 2;
-        for (let k = 0; k < n; k++) s.drops.push({ x: (i + Math.random()) * dx, y: top(i) - 1, vx: uu * 0.7 + (Math.random() - 0.5) * 90, vy: -(wv * (0.6 + Math.random() * 0.5)), r: 0.7 + Math.random() * 1.6 });
-      }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.viewport(0, 0, fw, fh);
+    gl.disable(gl.SCISSOR_TEST); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+    gl.useProgram(progP);
+    gl.bindBuffer(gl.ARRAY_BUFFER, ptBuf); gl.bufferData(gl.ARRAY_BUFFER, pts.subarray(0, o), gl.DYNAMIC_DRAW);
+    const aPos = gl.getAttribLocation(progP, 'aPos'), aAtt = gl.getAttribLocation(progP, 'aAtt');
+    gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(aAtt); gl.vertexAttribPointer(aAtt, 2, gl.FLOAT, false, 16, 8);
+    gl.uniform2f(gl.getUniformLocation(progP, 'uRes'), W, H);
+    gl.uniform1f(gl.getUniformLocation(progP, 'uSize'), 26 * (fw / W) * 2);
+    gl.drawArrays(gl.POINTS, 0, o / 4);
+    gl.disableVertexAttribArray(aAtt);
+    // 2) the field turned into liquid, once per card, cut to the card's rounded shape
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, glc.width, glc.height);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(progC);
+    gl.bindBuffer(gl.ARRAY_BUFFER, triBuf);
+    const aP = gl.getAttribLocation(progC, 'aP'); gl.enableVertexAttribArray(aP); gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ftex);
+    gl.uniform1i(gl.getUniformLocation(progC, 'uF'), 0);
+    gl.uniform2f(gl.getUniformLocation(progC, 'uRes'), W, H);
+    gl.uniform1f(gl.getUniformLocation(progC, 'uT'), t);
+    gl.enable(gl.SCISSOR_TEST);
+    for (const { f, rect, rad } of list) {
+      gl.uniform4f(gl.getUniformLocation(progC, 'uRect'), rect.left, rect.top, rect.width, rect.height);
+      gl.uniform1f(gl.getUniformLocation(progC, 'uRad'), rad);
+      gl.uniform1f(gl.getUniformLocation(progC, 'uE'), Math.min(1.5, f.energy));
+      const x0 = Math.max(0, Math.floor(rect.left * r)), y0 = Math.max(0, Math.floor((H - rect.bottom) * r));
+      gl.scissor(x0, y0, Math.ceil(rect.width * r) + 1, Math.ceil(rect.height * r) + 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
-    // walls throw spray when water slams into them
-    for (const [i, j] of [[0, 1], [N - 1, N - 1]]) {
-      const hit = Math.abs(s.u[j]);
-      if (hit > 250 && s.drops.length < 100 && Math.random() < 0.5) s.drops.push({ x: i ? w - 2 : 2, y: top(i) - 1, vx: (i ? -1 : 1) * Math.random() * 60, vy: -hit * (0.5 + Math.random() * 0.5), r: 0.8 + Math.random() * 1.5 });
-    }
-    s.drops = s.drops.filter((d) => {
-      d.vx += g.gx * T; d.vy += g.gy * T; d.vx *= 1 - 0.6 * T; d.x += d.vx * T; d.y += d.vy * T;
-      if (d.x < 1) { d.x = 1; d.vx = -d.vx * 0.4; } else if (d.x > w - 1) { d.x = w - 1; d.vx = -d.vx * 0.4; }
-      const i = Math.max(0, Math.min(N - 1, (d.x / dx) | 0));
-      if (d.vy > 0 && d.y >= top(i)) { s.foam[i] = Math.min(1, s.foam[i] + 0.25); return false; }
-      return d.y < H + 4;
-    });
-    // Energy: how wild the liquid is right now (spray in the air, foam on top). Hard swings charge it up and
-    // then spray and foam start arcing to each other like chain lightning.
-    let foamSum = 0; for (let i = 0; i < N; i++) foamSum += s.foam[i];
-    const e = Math.min(2, s.drops.length / 28 + (foamSum / N) * 5);
-    s.energy = (s.energy || 0) + (e - (s.energy || 0)) * Math.min(1, T * 6);
-    s.arcs = (s.arcs || []).filter((a) => a.until > lastT);
-    if (s.energy > 0.55 && s.arcs.length < 3 && Math.random() < Math.min(0.55, (s.energy - 0.55) * 0.5)) {
-      const nodes = s.drops.map((d) => [d.x, d.y]);
-      for (let i = 0; i < N; i += 2) if (s.foam[i] > 0.35) nodes.push([(i + 0.5) * dx, top(i)]);
-      if (nodes.length > 2) {
-        let cur = nodes.splice((Math.random() * nodes.length) | 0, 1)[0];
-        const pts = [cur];
-        for (let hop = 0; hop < 7 && nodes.length; hop++) {
-          let bi = -1, bd = 85 * 85;
-          for (let k = 0; k < nodes.length; k++) { const ddx = nodes[k][0] - cur[0], ddy = nodes[k][1] - cur[1], d2 = ddx * ddx + ddy * ddy; if (d2 < bd && d2 > 36) { bd = d2; bi = k; } }
-          if (bi < 0) break;
-          cur = nodes.splice(bi, 1)[0]; pts.push(cur);
+    gl.disable(gl.SCISSOR_TEST);
+  }
+  // Chain lightning: once a card's liquid is charged up (lots of loose fast droplets), arcs jump between them.
+  function chargeAndArc(list, now) {
+    for (const { f, rect } of list) {
+      let loose = 0, sp = 0;
+      for (let i = 0; i < f.n; i++) { sp += f.spd[i]; if (f.rho[i] < f.p.rho0 * 0.45 && f.spd[i] > 1.5) loose++; }
+      const e = Math.min(2, loose / 10 + (sp / f.n) / 2.5);
+      f.energy += (e - f.energy) * 0.12;
+      f.arcs = f.arcs.filter((a) => a.until > now);
+      if (f.energy > 0.6 && f.arcs.length < 3 && Math.random() < Math.min(0.5, (f.energy - 0.6) * 0.45)) {
+        const nodes = [];
+        for (let i = 0; i < f.n; i++) if (f.rho[i] < f.p.rho0 * 0.6 && f.spd[i] > 1) nodes.push(i);
+        if (nodes.length > 2) {
+          let cur = nodes.splice((Math.random() * nodes.length) | 0, 1)[0];
+          const chain = [cur];
+          for (let hop = 0; hop < 7 && nodes.length; hop++) {
+            let bi = -1, bd = 90 * 90;
+            for (let k = 0; k < nodes.length; k++) { const j = nodes[k], dx = f.x[j] - f.x[cur], dy = f.y[j] - f.y[cur], d2 = dx * dx + dy * dy; if (d2 < bd && d2 > 64) { bd = d2; bi = k; } }
+            if (bi < 0) break;
+            cur = nodes.splice(bi, 1)[0]; chain.push(cur);
+          }
+          if (chain.length > 1) f.arcs.push({ chain, until: now + 90 + Math.random() * 120 });
         }
-        if (pts.length > 1) s.arcs.push({ pts, until: lastT + 90 + Math.random() * 120 });
       }
+      f.rect = rect;
     }
-    // small bubbles rising inside
-    if (Math.random() < T * 1.6) s.bub.push({ x: Math.random() * w, y: H - 2, r: 0.8 + Math.random() * 1.8, vy: 16 + Math.random() * 22, wob: Math.random() * 6 });
-    s.bub = s.bub.filter((b) => { b.y -= b.vy * T; b.wob += T * 4; const i = Math.max(0, Math.min(N - 1, (b.x / dx) | 0)); return b.y > top(i) + b.r; });
   }
-  // Drawn surface = simulated surface + a slow ambient swell (three soft sines), so the liquid is never dead
-  // still. Only where there is water; dry spots stay flat.
-  function surfaceOf(s, H, t) {
-    const y = s.surf || (s.surf = new Float32Array(N));
-    const A = Math.min(3.2, s.level * 0.07);
-    for (let i = 0; i < N; i++) {
-      const wet = Math.min(1, s.h[i] / 10);
-      const amb = Math.sin(i * 0.095 + t * 0.8) * 0.55 + Math.sin(i * 0.21 - t * 1.25) * 0.3 + Math.sin(i * 0.043 + t * 0.45 + 1.7) * 0.6;
-      y[i] = H - s.h[i] - A * amb * wet;
-    }
-    return y;
-  }
-  function liquidPath(ctx, y, w, H, dx) {
-    ctx.beginPath();
-    ctx.moveTo(0, H); ctx.lineTo(0, y[0]);
-    for (let i = 0; i < N; i++) ctx.lineTo((i + 0.5) * dx, y[i]);
-    ctx.lineTo(w, y[N - 1]); ctx.lineTo(w, H); ctx.closePath();
-  }
-  let orbCanvas = null;
-  function orbSprite() { // one glowing orb drawn once, stamped for every drop
-    if (orbCanvas) return orbCanvas;
-    orbCanvas = document.createElement('canvas'); orbCanvas.width = orbCanvas.height = 32;
-    const c = orbCanvas.getContext('2d'), rg = c.createRadialGradient(16, 16, 0, 16, 16, 16);
-    rg.addColorStop(0, 'rgba(235, 255, 255, 0.95)');
-    rg.addColorStop(0.35, 'rgba(80, 200, 255, 0.55)');
-    rg.addColorStop(1, 'rgba(40, 90, 255, 0)');
-    c.fillStyle = rg; c.fillRect(0, 0, 32, 32);
-    return orbCanvas;
-  }
-  function zig(ctx, x1, y1, x2, y2, spread) {
-    const n = Math.max(2, Math.round(Math.hypot(x2 - x1, y2 - y1) / 9));
-    ctx.moveTo(x1, y1);
-    for (let i = 1; i < n; i++) { const t = i / n; ctx.lineTo(x1 + (x2 - x1) * t + (Math.random() - 0.5) * spread, y1 + (y2 - y1) * t + (Math.random() - 0.5) * spread); }
-    ctx.lineTo(x2, y2);
-  }
-  // Liquid energy: a dark deep body lit from inside by flowing plasma ribbons and drifting glows, a burning
-  // surface line, glowing spray and arcs. Light layers are added (not painted over), so they glow where they meet.
-  function drawLiquid(s, ctx, w, H) {
-    const dx = w / N, t = lastT / 1000;
-    const y = surfaceOf(s, H, t);
-    let minTop = H;
-    for (let i = 0; i < N; i++) if (y[i] < minTop) minTop = y[i];
-    const E = Math.min(1.6, s.energy || 0), pulse = 0.85 + 0.15 * Math.sin(t * 2.3 + s.level);
-    const hue = (k) => `${(188 + 40 * Math.sin(t * 0.35 + k)) | 0}`; // cyan to electric blue to violet
-    // body
-    const g = ctx.createLinearGradient(0, minTop, 0, H);
-    g.addColorStop(0, `rgba(30, 150, 255, ${0.18 + 0.06 * E})`);
-    g.addColorStop(0.5, 'rgba(25, 60, 200, 0.12)');
-    g.addColorStop(1, 'rgba(40, 20, 140, 0.08)');
-    liquidPath(ctx, y, w, H, dx);
-    ctx.fillStyle = g; ctx.fill();
-    ctx.save();
-    liquidPath(ctx, y, w, H, dx);
-    ctx.clip();
-    ctx.globalCompositeOperation = 'lighter';
-    // drifting plasma glows
-    for (let k = 0; k < 3; k++) {
-      const cx = w * (0.5 + 0.45 * Math.sin(t * (0.21 + k * 0.07) + k * 2)), cy = minTop + (H - minTop) * (0.45 + 0.3 * Math.sin(t * 0.3 + k));
-      const r = Math.max(30, (H - minTop) * 0.9);
-      const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-      rg.addColorStop(0, `hsla(${hue(k * 2)}, 100%, 60%, ${0.10 + 0.05 * E})`);
-      rg.addColorStop(1, 'hsla(220, 100%, 50%, 0)');
-      ctx.fillStyle = rg; ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
-    }
-    // flowing energy ribbons following the surface
-    for (let k = 0; k < 5; k++) {
-      const off = 6 + k * 9, ph = t * (0.7 + k * 0.23) + k * 1.9, amp = 3 + k * 0.8;
+  function drawArcs(ctx, list, now) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    for (const { f, rect } of list) for (const a of f.arcs) {
+      const life = Math.max(0, (a.until - now) / 200);
       ctx.beginPath();
-      for (let i = 0; i <= N; i += 2) {
-        const j = Math.min(N - 1, i), X = (i + 0.5) * dx;
-        const Y = y[j] + off + Math.sin(i * 0.13 + ph) * amp + Math.sin(i * 0.051 - ph * 0.7) * amp * 0.8;
-        i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+      for (let k = 1; k < a.chain.length; k++) {
+        const i = a.chain[k - 1], j = a.chain[k];
+        const x1 = rect.left + f.x[i], y1 = rect.top + f.y[i], x2 = rect.left + f.x[j], y2 = rect.top + f.y[j];
+        const n = Math.max(2, Math.round(Math.hypot(x2 - x1, y2 - y1) / 9));
+        ctx.moveTo(x1, y1);
+        for (let s = 1; s < n; s++) { const q = s / n; ctx.lineTo(x1 + (x2 - x1) * q + (Math.random() - 0.5) * 9, y1 + (y2 - y1) * q + (Math.random() - 0.5) * 9); }
+        ctx.lineTo(x2, y2);
       }
-      const a = (0.10 - k * 0.014) * pulse * (1 + 0.6 * E);
-      ctx.strokeStyle = `hsla(${hue(k)}, 100%, 62%, ${a * 0.5})`; ctx.lineWidth = 6; ctx.stroke();
-      ctx.strokeStyle = `hsla(${hue(k)}, 100%, 78%, ${a * 1.6})`; ctx.lineWidth = 1; ctx.stroke();
-    }
-    // glow just under the surface
-    ctx.beginPath();
-    for (let i = 0; i < N; i++) { const X = (i + 0.5) * dx; i ? ctx.lineTo(X, y[i]) : ctx.moveTo(X, y[i]); }
-    ctx.strokeStyle = `rgba(80, 220, 255, ${0.10 * pulse + 0.05 * E})`; ctx.lineWidth = 16; ctx.stroke();
-    ctx.restore();
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    // burning surface line: wide halo, colored core, white-hot center
-    ctx.beginPath();
-    for (let i = 0; i < N; i++) { const X = (i + 0.5) * dx; i ? ctx.lineTo(X, y[i]) : ctx.moveTo(X, y[i]); }
-    ctx.strokeStyle = `hsla(${hue(0)}, 100%, 60%, ${0.10 + 0.08 * E})`; ctx.lineWidth = 7; ctx.stroke();
-    ctx.strokeStyle = `hsla(${hue(0)}, 100%, 70%, ${0.35 * pulse + 0.15 * E})`; ctx.lineWidth = 2.4; ctx.stroke();
-    ctx.strokeStyle = `rgba(230, 255, 255, ${0.55 * pulse})`; ctx.lineWidth = 0.9; ctx.stroke();
-    // foam: hot sparks riding the surface
-    for (let i = 0; i < N; i++) {
-      const f = s.foam[i];
-      if (f < 0.06) continue;
-      const seed = Math.sin(i * 12.9898 + ((lastT / 120) | 0) * 0.37) * 43758.5;
-      const jx = seed - Math.floor(seed), jy = seed * 7.1 - Math.floor(seed * 7.1);
-      ctx.fillStyle = `rgba(190, 250, 255, ${Math.min(0.9, f)})`;
-      ctx.beginPath(); ctx.arc((i + jx) * dx, y[i] + jy * 3 * f, 0.7 + f * 1.6, 0, 6.283); ctx.fill();
-    }
-    // spray: small glowing orbs
-    const orb = orbSprite();
-    for (const d of s.drops) ctx.drawImage(orb, d.x - d.r * 3.5, d.y - d.r * 3.5, d.r * 7, d.r * 7);
-    // chain lightning between spray and foam
-    for (const a of s.arcs || []) {
-      const life = Math.max(0, (a.until - lastT) / 200);
-      ctx.beginPath();
-      for (let k = 1; k < a.pts.length; k++) zig(ctx, a.pts[k - 1][0], a.pts[k - 1][1], a.pts[k][0], a.pts[k][1], 9);
       ctx.strokeStyle = `rgba(120, 200, 255, ${0.25 * life + 0.1})`; ctx.lineWidth = 6; ctx.stroke();
       ctx.strokeStyle = `rgba(160, 240, 255, ${0.6 * life + 0.25})`; ctx.lineWidth = 2; ctx.stroke();
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)'; ctx.lineWidth = 0.8; ctx.stroke();
-      for (const p of a.pts) { ctx.fillStyle = 'rgba(220, 250, 255, 0.9)'; ctx.beginPath(); ctx.arc(p[0], p[1], 2.2, 0, 6.283); ctx.fill(); }
-    }
-    // bubbles: faint rings
-    for (const b of s.bub) {
-      ctx.strokeStyle = 'rgba(150, 230, 255, 0.35)'; ctx.lineWidth = 0.8;
-      ctx.beginPath(); ctx.arc(b.x + Math.sin(b.wob) * 1.5, b.y, b.r, 0, 6.283); ctx.stroke();
     }
     ctx.restore();
   }
@@ -356,22 +293,25 @@
     const dt = Math.min(0.05, lastT ? (now - lastT) / 1000 : 0.016);
     lastT = now;
     if (!grav.live) { grav.x = Math.sin(now / 1500) * 0.25; grav.y = 1; } // no sensor (computer): a gentle sway
-    const vh = root.innerHeight;
-    for (const [card, s] of sims) if (!card.isConnected) { s.canvas.remove(); sims.delete(card); }
-    const cards = Array.from(document.querySelectorAll('.view:not([hidden]) .card, .sheet:not([hidden]) .card')).filter((c) => {
-      const r = c.getBoundingClientRect(); return r.bottom > 0 && r.top < vh && r.width > 0;
-    });
-    for (const card of cards) {
-      const s = simFor(card);
-      const { w, h, r } = fit(s.canvas);
-      if (!w || !h) continue;
-      stepLiquid(s, dt, w, h);
-      const ctx = s.canvas.getContext('2d');
-      ctx.setTransform(r, 0, 0, r, 0, 0); ctx.clearRect(0, 0, w, h);
-      drawLiquid(s, ctx, w, h);
+    const W = root.innerWidth, H = root.innerHeight;
+    const list = [];
+    if (gl || glInit()) {
+      const cards = Array.from(document.querySelectorAll('.view:not([hidden]) .card'));
+      cards.forEach((card, idx) => {
+        const rect = card.getBoundingClientRect();
+        if (rect.bottom < 0 || rect.top > H || rect.width < 40 || rect.height < 30) return;
+        const rad = parseFloat(getComputedStyle(card).borderTopLeftRadius) || 18;
+        list.push({ f: fluidFor(card, idx, rect.width, rect.height), rect, rad });
+      });
+      for (const [k, f] of fluids) if (now - f.seen > 20000) fluids.delete(k);
+      stepFluids(list, dt);
+      chargeAndArc(list, now);
+      try { drawFluids(list, W, H, now / 1000); } catch (e) { glDrop(); }
     }
     { const { w, h, r } = fit(bg); const ctx = bg.getContext('2d'); ctx.setTransform(r, 0, 0, r, 0, 0); stepBg(dt, w, h, ctx); }
-    { const { w, h, r } = fit(zap); const ctx = zap.getContext('2d'); ctx.setTransform(r, 0, 0, r, 0, 0); stepZap(now, w, h, ctx, cards); }
+    { const { w, h, r } = fit(zap); const ctx = zap.getContext('2d'); ctx.setTransform(r, 0, 0, r, 0, 0);
+      stepZap(now, w, h, ctx, list.map((x) => ({ getBoundingClientRect: () => x.rect })));
+      drawArcs(ctx, list, now); }
     raf = requestAnimationFrame(frame);
   }
 
@@ -391,11 +331,11 @@
     if (raf) cancelAnimationFrame(raf); raf = 0;
     root.removeEventListener('devicemotion', onMotion);
     root.removeEventListener('deviceorientation', onOrient);
-    for (const s of sims.values()) s.canvas.remove();
-    sims.clear(); bubbles.length = 0; spark = null;
+    fluids.clear(); bubbles.length = 0; spark = null;
+    glDrop();
     if (bg) { bg.remove(); bg = null; }
     if (zap) { zap.remove(); zap = null; }
   }
 
-  root.CatchupFX = { start, stop, askMotion, isOn: () => on, _grav: grav, _sims: sims };
+  root.CatchupFX = { start, stop, askMotion, isOn: () => on, _grav: grav, _fluids: fluids };
 })(window);
