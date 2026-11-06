@@ -167,7 +167,15 @@
   // ---------------- catch-up mode ----------------
   // Behind on the last 30 days (over minus under)? Each day's limit is lowered until it's paid back, within the
   // chosen number of days, but never under the minimum per day (then it takes longer).
-  const catchPlan = () => L.catchupPlan(ledger, state.settings.catchup, today);
+  const catchPlan = () => {
+    const c = state.settings.catchup;
+    if (c && c.on && c.v !== 2) { // started before 1.18.5: its amount added up every day's over, recount it
+      c.v = 2; c.start = today; c.debt = Math.max(0, L.paceGap(ledger, today).gap);
+      if (!(c.debt > 0)) c.on = false;
+      save();
+    }
+    return L.catchupPlan(ledger, c, today);
+  };
   function withCatchup(ts) {
     const cp = catchPlan();
     if (!ts || !cp || !cp.today || ts.holiday) return ts;
@@ -176,10 +184,8 @@
     if (ts.nextDate && ts.nextAllowance !== null) out.nextAllowance = cp.nextLimit(ts.nextDate, ts.nextAllowance);
     return out;
   }
-  function pastMonthBalance() {
-    const to = L.addDays(today, -1), from = L.addDays(today, -30);
-    return L.overUnder(ledger, from, to, today);
-  }
+  // How far ahead of the even pace this pay month's spending is (same as the Stats chart).
+  const paceBalance = () => L.paceGap(ledger, today);
   function catchupHtml(ts) {
     const c = state.settings.catchup || {};
     const cp = c.on ? catchPlan() : null;
@@ -204,22 +210,22 @@
   function openCatchup(ts, editing) {
     const c = state.settings.catchup;
     const cp = editing ? catchPlan() : null;
-    const bal = editing ? null : pastMonthBalance();
-    const debt = editing ? (cp ? cp.debt : 0) : bal.net;
+    const bal = editing ? null : paceBalance();
+    const debt = editing ? (cp ? cp.debt : 0) : bal.gap;
     const raw = ts.rawAllowance !== undefined ? ts.rawAllowance : ts.dailyAllowance;
     const isHol = ledger.isHoliday || (() => false);
     if (!(debt > 0.004)) {
       openSheet(`<h3>Catch-up mode</h3>
-        <div class="row"><span class="label">Over the limit, last 30 days</span><span class="num bad">${money(bal.over)}</span></div>
-        <div class="row"><span class="label">Under the limit</span><span class="num good">${money(bal.under)}</span></div>
-        <div class="row total"><span>Nothing to catch up</span><span class="num">${money(-bal.net)} ahead</span></div>
+        <div class="row"><span class="label">Spent this month</span><span class="num">${money(bal.spent)}</span></div>
+        <div class="row"><span class="label">Even pace by today</span><span class="num">${money(bal.pace)}</span></div>
+        <div class="row total"><span>Nothing to catch up</span><span class="num good">${money(-bal.gap)} under</span></div>
         <button class="btn primary block" id="cuOk" style="margin-top:12px">OK</button>`, (b) => { $('#cuOk', b).onclick = closeSheet; });
       return;
     }
     const minDef = c.min > 0 ? c.min : Math.max(0, Math.floor(L.typicalDaily(ledger) * 0.5));
     openSheet(`<h3>Catch-up mode</h3>
-      ${bal ? `<div class="row"><span class="label">Over the limit, last 30 days</span><span class="num bad">${money(bal.over)}</span></div>
-      <div class="row"><span class="label">Under the limit</span><span class="num good">-${money(bal.under)}</span></div>` : ''}
+      ${bal ? `<div class="row"><span class="label">Spent this month</span><span class="num">${money(bal.spent)}</span></div>
+      <div class="row"><span class="label">Even pace by today</span><span class="num">${money(bal.pace)}</span></div>` : ''}
       <div class="row total"><span>To catch up</span><span class="num">${money(debt)}</span></div>
       <div class="field" style="margin-top:12px"><label>Catch up within (days)</label><input id="cuDays" class="num" inputmode="numeric" value="${editing ? Math.max(1, L.diffDays(today, cp.end) + 1) : c.days || 14}"></div>
       <div class="field"><label>Minimum per day, ${SYM}</label><input id="cuMin" class="num" inputmode="decimal" value="${minDef}"></div>
@@ -239,7 +245,7 @@
       calc(); $('#cuDays', b).oninput = calc; $('#cuMin', b).oninput = calc;
       $('#cuGo', b).onclick = () => {
         const days = Math.max(1, parseInt($('#cuDays', b).value, 10) || 1), min = Math.max(0, L.num($('#cuMin', b).value));
-        state.settings.catchup = { on: true, start: today, days, min: L.r2(min), debt: L.r2(debt) };
+        state.settings.catchup = { v: 2, on: true, start: today, days, min: L.r2(min), debt: L.r2(debt) };
         save(); closeSheet(); render(); toast(editing ? 'Catch-up updated' : 'Catching up');
       };
     });

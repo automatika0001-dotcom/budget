@@ -554,3 +554,17 @@ console.log('pay range tests passed');
   });
 }
 console.log('catch-up tests passed');
+
+// ---- catch-up amount = how far ahead of the even pace, counted once ----
+{
+  const sett = { payDay: 1, monthlySaving: 0, startDate: '2026-11-01', statsFrom: '2026-11-01', useExpected: false };
+  const st = { settings: sett, adjustments: [], reserves: [], incomes: [{ id: 'i', date: '2026-11-01', amount: 3000, source: 'S' }],
+    expenses: [{ id: 'a', date: '2026-11-01', amount: 300, place: 'X' }, { id: 'b', date: '2026-11-02', amount: 100, place: 'Y' }, { id: 'c', date: '2026-11-03', amount: 100, place: 'Z' }] };
+  t('one 200 overspend on day 1 is 200 behind, not 200 plus every lowered day after it', () => {
+    const lg = L.buildLedger(st, '2026-11-03');
+    const g = L.paceGap(lg, '2026-11-03');
+    near(g.spent, 500, 'spent'); near(g.pace, 300, 'even pace 100 a day'); near(g.gap, 200, 'behind by exactly the overspend');
+    assert.ok(L.overUnder(lg, '2026-11-01', '2026-11-03', '2026-11-03').net > 200, 'adding up daily overs counts more');
+  });
+}
+console.log('pace gap tests passed');

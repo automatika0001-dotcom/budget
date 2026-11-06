@@ -404,6 +404,27 @@
     for (const d of daysInRange(ledger, from, to, today)) { if (d.diff > 0) over += d.diff; else under -= d.diff; }
     return { over: r2(over), under: r2(under), net: r2(over - under) };
   }
+  /**
+   * How far spending this pay month is ahead of the even pace, the same numbers as the Stats chart: what you'd
+   * still have if you had spent evenly. Overspending already lowers the following days' budget, so adding up
+   * every day's "over" would count the same money again and again; this counts it once.
+   */
+  function paceGap(ledger, today) {
+    const per = ledger.current;
+    if (!per) return { spent: 0, pace: 0, gap: 0 };
+    const isHol = ledger.isHoliday || (() => false);
+    const p0 = ledger.statsFrom > per.start ? ledger.statsFrom : per.start;
+    if (p0 > today) return { spent: 0, pace: 0, gap: 0 };
+    let S = 0, P = 0, Lm = 0;
+    for (const d of daysInRange(ledger, p0, today, today)) {
+      const Sb = S, pr = d.paidRes || 0;
+      S += d.spent + pr; P += pr;
+      Lm = Sb + pr + Math.max(0, d.pool !== undefined ? d.pool - d.before : 0);
+    }
+    const k = budgetDaysBetween(p0, today, isHol), K = Math.max(1, budgetDaysBetween(p0, per.end, isHol));
+    const pace = P + Math.max(0, Lm - P) * (k / K);
+    return { spent: r2(S), pace: r2(pace), gap: r2(S - pace) };
+  }
   /** Budget days needed to pay back `debt` within `days`, when a day may give at most `cap` (budget minus minimum). */
   function catchupDays(debt, days, cap) {
     debt = num(debt); days = Math.max(1, parseInt(days, 10) || 1);
@@ -757,7 +778,7 @@
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
-    incomeKind, textKind, budgetDateOf, payRange, reserveStatus, overUnder, catchupDays, addBudgetDays, catchupPlan, catchupEta, typicalDaily, releaseDateOf, createdAt, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
+    incomeKind, textKind, budgetDateOf, payRange, reserveStatus, overUnder, paceGap, catchupDays, addBudgetDays, catchupPlan, catchupEta, typicalDaily, releaseDateOf, createdAt, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
     cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive, applyBankTransactions
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
