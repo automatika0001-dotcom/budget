@@ -333,6 +333,56 @@
       ctx.beginPath(); ctx.arc(b.x + Math.sin(b.wob) * 1.5, b.y, b.r, 0, 6.283); ctx.stroke();
     }
     ctx.restore();
+    // Coloured things in the card (red warnings, yellow, green...) tint the liquid around them: a soft glow of
+    // their colour that only paints over the liquid that's already there.
+    if (s.tints && s.tints.length) {
+      ctx.save(); ctx.globalCompositeOperation = 'source-atop';
+      const paint = (a0, a1) => { for (const c of s.tints) {
+        const rg = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.r);
+        rg.addColorStop(0, `rgba(${c.rgb}, ${a0})`); rg.addColorStop(0.45, `rgba(${c.rgb}, ${a1})`); rg.addColorStop(1, `rgba(${c.rgb}, 0)`);
+        ctx.fillStyle = rg; ctx.fillRect(c.x - c.r, c.y - c.r, c.r * 2, c.r * 2);
+      } };
+      paint(1, 0.7); // recolour the liquid, glow and surface line included
+    }
+  }
+  // Find the coloured elements of a card (text or backgrounds clearly not aqua/grey). Rechecked twice a second.
+  function hueOf(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, l = (mx + mn) / 2;
+    if (d < 1e-6) return { h: 0, s: 0, l };
+    const sat = d / (1 - Math.abs(2 * l - 1));
+    let h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h *= 60; if (h < 0) h += 360;
+    return { h, s: sat, l };
+  }
+  const RGB = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?/;
+  function colourOf(str) {
+    const m = RGB.exec(str || ''); if (!m) return null;
+    if (m[4] !== undefined && +m[4] < 0.5) return null;
+    const r = +m[1], g = +m[2], b = +m[3], c = hueOf(r, g, b);
+    if (c.s < 0.45 || c.l < 0.25 || c.l > 0.85) return null; // grey, too dark, white
+    if (c.h > 155 && c.h < 200) return null; // the aqua of the theme itself
+    return `${r}, ${g}, ${b}`;
+  }
+  function refreshTints(card, s, now) {
+    if (s.tintCard === card && now - (s.tintAt || 0) < 500) return;
+    s.tintCard = card; s.tintAt = now;
+    const cr = card.getBoundingClientRect(), out = [];
+    for (const el of card.querySelectorAll('*')) {
+      if (el.tagName === 'CANVAS' || el.tagName === 'svg' || el.closest('svg')) continue;
+      const er = el.getBoundingClientRect();
+      if (!er.width || !er.height || er.width > cr.width * 0.95) continue;
+      const cs = getComputedStyle(el);
+      let rgb = colourOf(cs.backgroundColor);
+      if (!rgb) {
+        let txt = false; for (const n of el.childNodes) if (n.nodeType === 3 && n.textContent.trim()) { txt = true; break; }
+        if (txt) rgb = colourOf(cs.color);
+      }
+      if (!rgb) continue;
+      out.push({ rgb, x: er.left - cr.left + er.width / 2, y: er.top - cr.top + er.height / 2, r: 60 + Math.max(er.width, er.height) * 0.55 });
+      if (out.length >= 8) break;
+    }
+    s.tints = out;
   }
 
   // ---- background bubbles and electric sparks between cards ----
@@ -396,6 +446,7 @@
       const { w, h, r } = fit(s.canvas);
       if (!w || !h) continue;
       stepLiquid(s, dt, w, h);
+      refreshTints(card, s, now);
       const ctx = s.canvas.getContext('2d');
       ctx.setTransform(r, 0, 0, r, 0, 0); ctx.clearRect(0, 0, w, h);
       drawLiquid(s, ctx, w, h);
