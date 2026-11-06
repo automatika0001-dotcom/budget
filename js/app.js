@@ -715,6 +715,11 @@
     const v = $('#view-stats');
     if (!ledger.current) { v.innerHTML = '<div class="empty">Finish setup to see statistics.</div>'; return; }
     let from, to, label, days, chart1;
+    // What counts as spending on the charts: daily spending, payments from a paid reserve, and rent & utilities
+    // when the switch is on. The switch adds the same amounts to spending and to the limit, so whether you're
+    // over or under never depends on it.
+    const outOf = (d) => d.spent + (d.paidRes || 0) + (fixedOn() ? (d.fixed || 0) : 0);
+    const plannedOf = (d) => (d.paidRes || 0) + (fixedOn() ? (d.fixed || 0) : 0);
     if (ui.statsMode === 'month') {
       const idx = Math.max(0, ledger.periods.length - 1 + ui.statsOffset);
       ui.statsOffset = idx - (ledger.periods.length - 1);
@@ -723,91 +728,82 @@
       const pr = L.payRange(state, per.start);
       from = pr.from; to = per.end; label = `${dShort(from)} to ${dShort(per.end)}`;
       days = L.daysInRange(ledger, from, to, today);
-      // Only days from the statistics start count; the chart starts there.
+      const byDate = Object.fromEntries(days.map((d) => [d.date, d]));
       const startD = ledger.statsFrom > from ? ledger.statsFrom : from;
       const all = []; for (let d = startD; d <= to; d = L.addDays(d, 1)) all.push(d);
-      const inPer = days.filter((d) => d.date >= per.start);
-      const before0 = inPer.length ? inPer[0].before : 0;
-      const fx = ledger.fixedByDay || {};
-      const perStart = startD > per.start ? startD : per.start;
-      const fixedBefore = L.sumRange(fx, per.start, L.addDays(perStart, -1));
-      const fixedInRange = L.sumRange(fx, perStart, per.end);
-      const cum = {}, lim = {}; let fc = 0, run = 0;
-      const flatLimit = L.r2(per.effective - before0 - fixedBefore - (fixedOn() ? 0 : fixedInRange)); // months locked before this version
-      // money of this pay month that arrived before pay day (an early advance), day by day
-      const early = state.incomes.filter((i) => !i.ignored && i.date >= from && i.date < per.start && L.budgetDateOf(i, state.settings.payDay) === per.start);
-      // Days before pay day were paid from last month's money, so the limit line carries them too:
-      // the gap between the two lines is always what is left of this pay month's money.
-      // Payments of a paid reserve always show as spending (they come off the month's money like rent).
-      // The limit never drops below what was spent: that just means nothing is left (like the allowance, never negative).
-      let preSpent = 0;
-      days.forEach((d) => {
-        const sp = d.spent + (fixedOn() ? (d.fixed || 0) : 0) + (d.paidRes || 0);
-        run += sp; cum[d.date] = L.r2(run);
-        if (d.date < per.start) {
-          preSpent += sp;
-          lim[d.date] = L.r2(preSpent + early.filter((i) => i.date <= d.date).reduce((t, i) => t + L.num(i.amount), 0));
-          return;
-        }
-        // The limit follows the money that has actually arrived (and rebalances, reserves), day by day.
-        fc += (fixedOn() ? (d.fixed || 0) : 0) + (d.paidRes || 0);
-        lim[d.date] = L.r2(Math.max(run, (d.pool === undefined ? flatLimit : d.pool - before0 + fc) + preSpent));
-      });
-      let lastLim = days.length ? lim[days[days.length - 1].date] : flatLimit;
-      const limitSeries = all.map((d) => (lim[d] !== undefined ? (lastLim = lim[d]) : lastLim));
-      const limit = limitSeries.length ? limitSeries[limitSeries.length - 1] : lastLim;
-      const n = all.length || 1;
+      /* Per day, all as running totals in euros:
+         Spent     = everything spent so far (from the first day shown).
+         Limit     = spent before today + what this pay month still had to spend this morning, so
+                     Limit minus Spent is exactly what's left at the end of the day (Spent above Limit = over).
+         Even pace = where Spent would be with the month's spending money spread evenly over its budget days.
+                     It follows the Limit as money comes and goes; one-off payments (rent, reserves) count on
+                     their own day instead of being spread. On the last day it meets the Limit.
+         Days before pay day (an early advance) show only Spent: they were last month's money. */
+      const isHol = ledger.isHoliday || (() => false);
+      const p0 = startD > per.start ? startD : per.start;
+      const K = Math.max(1, L.budgetDaysBetween(p0, per.end, isHol));
+      const spentS = [], limS = [], paceS = [];
+      let S = 0, S0 = null, P = 0, k = 0, lastL = null;
+      for (const d of all) {
+        const x = byDate[d];
+        const inPer = d >= per.start;
+        if (inPer && S0 === null) S0 = S;
+        if (inPer && !isHol(d)) k++;
+        if (x && d <= today) {
+          const Sbefore = S;
+          S += outOf(x);
+          if (inPer) {
+            P += plannedOf(x);
+            const avail = x.pool !== undefined ? x.pool - x.before : (x.allow || 0) * (x.budgetDaysLeft || 1);
+            lastL = Sbefore + plannedOf(x) + Math.max(0, avail);
+          }
+          spentS.push(L.r2(S));
+        } else spentS.push(null);
+        if (inPer && lastL !== null) {
+          limS.push(L.r2(lastL));
+          paceS.push(L.r2(S0 + P + Math.max(0, lastL - S0 - P) * k / K));
+        } else { limS.push(null); paceS.push(null); }
+      }
       chart1 = {
         type: 'line',
         data: { labels: all.map(dShort), datasets: [
-          { label: 'Spent (cumulative)', data: all.map((d) => (d <= today ? cum[d] ?? null : null)), borderColor: css('--accent'), backgroundColor: 'rgba(200,242,106,.12)', fill: true, tension: .25, pointRadius: lastDot, pointBackgroundColor: css('--accent'), borderWidth: 2.5 },
-          { label: 'Monthly limit', data: limitSeries, borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5, stepped: true },
-          { label: 'Even pace', data: limitSeries.map((lv, i) => L.r2(lv * (i + 1) / n)), borderColor: css('--muted'), borderDash: [2, 4], pointRadius: 0, borderWidth: 1 }
+          { label: 'Spent', data: spentS, borderColor: css('--accent'), backgroundColor: css('--accent-fill'), fill: true, tension: .2, pointRadius: lastDot, pointBackgroundColor: css('--accent'), borderWidth: 2.5 },
+          { label: 'Limit', data: limS, borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 2, stepped: true },
+          { label: 'Even pace', data: paceS, borderColor: css('--text'), borderDash: [2, 4], pointRadius: 0, borderWidth: 1.5 }
         ] }
       };
     } else {
       const y = L.parse(today).getUTCFullYear() + ui.statsOffset;
       label = String(y);
-      // Only the months that have data: from the statistics start (or 1 Jan) to the end of the current pay month.
-      const yEnd = `${y}-12-31`, curEnd = ledger.current ? ledger.current.end : today;
-      from = ledger.statsFrom > `${y}-01-01` ? ledger.statsFrom : `${y}-01-01`;
-      to = yEnd < curEnd ? yEnd : curEnd;
-      days = from <= to ? L.daysInRange(ledger, from, to, today) : [];
-      const byDate = Object.fromEntries(days.map((d) => [d.date, d]));
-      const all = []; for (let d = from; d <= to; d = L.addDays(d, 1)) all.push(d);
-      // Three running totals: spent, the limit (each month's money as it was known that day, finished months in
-      // full) and the even pace. Per month the same rules as the month chart.
-      const perOf = (ps) => ledger.periods.find((pp) => pp.start === ps);
-      let cs = 0, cl = 0, lastPlan = 0, doneLim = 0, curPs = null, before0 = 0, fc = 0, mSpent = 0, mLim = 0;
-      const rawSpent = [], rawLim = [], rawPace = [];
-      for (const d of all) {
-        const x = byDate[d];
-        if (x) {
-          if (x.periodStart !== curPs) { doneLim += mLim; curPs = x.periodStart; before0 = x.before; fc = 0; mSpent = 0; mLim = 0; }
-          const sp = x.spent + (fixedOn() ? (x.fixed || 0) : 0) + (x.paidRes || 0);
-          const pl = (x.plan || 0) + (fixedOn() ? (x.fixed || 0) : 0) + (x.paidRes || 0);
-          lastPlan = x.plan || 0; cl += pl; cs += sp; mSpent += sp;
-          fc += (fixedOn() ? (x.fixed || 0) : 0) + (x.paidRes || 0);
-          const pp = perOf(x.periodStart);
-          const ml = x.pool !== undefined ? x.pool - before0 + fc : (pp ? pp.effective - before0 - (fixedOn() ? 0 : (pp.fixed || 0)) : mSpent);
-          mLim = Math.max(mSpent, ml);
-        } else if (d > today) cl += lastPlan; // rest of the current month at its planned pace
-        rawSpent.push(d <= today && x ? L.r2(cs) : null);
-        rawLim.push(L.r2(doneLim + mLim));
-        rawPace.push(L.r2(cl));
-      }
-      // The three lines grow together, so drawn as they are they sit on top of each other. Every line has the
-      // same straight slope taken off (the average pace of the year), which spreads them over the whole box
-      // without changing their order: where they cross, they still cross. Tooltips show the real totals.
-      const n = all.length, slope = n > 1 ? (rawPace[n - 1] || 0) / n : 0;
-      const tilt = (arr) => arr.map((v, i) => (v === null ? null : L.r2(v - slope * (i + 1))));
-      const raw = [rawSpent, rawLim, rawPace];
+      // One pair of bars per pay month that has data: what you spent and what that month allowed.
+      const pers = ledger.periods.filter((p) => p.start.slice(0, 4) === String(y) && p.end >= ledger.statsFrom);
+      from = pers.length ? (pers[0].start > ledger.statsFrom ? pers[0].start : ledger.statsFrom) : `${y}-01-01`;
+      to = pers.length ? pers[pers.length - 1].end : `${y}-12-31`;
+      days = L.daysInRange(ledger, from, to, today);
+      const mon = new Intl.DateTimeFormat('en-GB', { month: 'short' });
+      const rows = pers.map((p) => {
+        const pd = days.filter((d) => d.periodStart === p.start && d.date <= today);
+        const sp = pd.reduce((t, d) => t + outOf(d), 0);
+        // the month's money: spent before the first counted day is left out of both sides
+        const fixedAll = fixedOn() ? 0 : (p.fixed || 0);
+        const before = pd.length ? pd[0].before : 0;
+        const lim = p.effective - fixedAll - before;
+        // what an even pace would have spent by today (current month only)
+        let pace = null;
+        if (p.isCurrent && pd.length) {
+          const hol = ledger.isHoliday || (() => false), p0 = pd[0].date;
+          const P = pd.reduce((t, d) => t + plannedOf(d), 0);
+          const k = L.budgetDaysBetween(p0, today, hol), K = Math.max(1, L.budgetDaysBetween(p0, p.end, hol));
+          pace = L.r2(P + Math.max(0, lim - P) * k / K);
+        }
+        return { label: mon.format(L.parse(p.start)) + (p.isCurrent ? ' (now)' : ''), sp: L.r2(sp), lim: L.r2(lim), pace };
+      });
       chart1 = {
-        type: 'line', raw,
-        data: { labels: all.map(dShort), datasets: [
-          { label: 'Spent', data: tilt(rawSpent), borderColor: css('--accent'), tension: .15, pointRadius: lastDot, pointBackgroundColor: css('--accent'), borderWidth: 2.5 },
-          { label: 'Limit', data: tilt(rawLim), borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5, stepped: true },
-          { label: 'Even pace', data: tilt(rawPace), borderColor: css('--muted'), borderDash: [2, 4], pointRadius: 0, borderWidth: 1.5 }
+        type: 'bar',
+        data: { labels: rows.map((r) => r.label), datasets: [
+          { label: 'Spent', data: rows.map((r) => r.sp), backgroundColor: css('--accent'), borderRadius: 6, maxBarThickness: 34 },
+          { label: 'Limit', data: rows.map((r) => r.lim), backgroundColor: 'transparent', borderColor: css('--bad'), borderWidth: 2, borderDash: [6, 4], borderRadius: 6, maxBarThickness: 34 },
+          ...(rows.some((r) => r.pace !== null) ? [{ label: 'Even pace by today', data: rows.map((r) => r.pace), backgroundColor: css('--muted'), borderRadius: 6, maxBarThickness: 34 }] : [])
         ] }
       };
     }
@@ -815,7 +811,7 @@
     const statExp = fixedOn() ? state.expenses : state.expenses.filter((e) => !isFixedE(e));
     const places = L.topPlaces(statExp, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.aliases, 0.01, window.Industry.brandKey);
     const placeTotal = places.reduce((s, p) => s + p.total, 0);
-    const palette = ['#c8f26a', '#5fd3a0', '#6ab8f2', '#b48cf2', '#f2a65f', '#f26a9a', '#f5c35b', '#7ad1d8'];
+    const palette = [css('--accent'), '#5fd3a0', '#6ab8f2', '#b48cf2', '#f2a65f', '#f26a9a', '#f5c35b', '#7ad1d8'];
     // as many distinct colours as there are shops; "Other" is grey
     const placeColor = (p, i) => (p.other ? '#5b6662' : i < palette.length ? palette[i] : `hsl(${Math.round((i * 137.5) % 360)}, 62%, 64%)`);
     // SEB users: spending by industry, from the built-in shop classification
@@ -858,11 +854,8 @@
     $('#stNext').onclick = () => { if (ui.statsOffset < 0) { ui.statsOffset++; render(); } };
 
     const base1 = chartBase();
-    if (chart1.raw) {
-      const raw = chart1.raw; delete chart1.raw;
-      base1.plugins.tooltip.callbacks.label = (c) => `${c.dataset.label}: ${money(raw[c.datasetIndex][c.dataIndex])}`;
-      base1.scales.y = { beginAtZero: false, grace: '6%', grid: { color: css('--line') }, ticks: { display: false } };
-    }
+    base1.elements = { line: { spanGaps: false } };
+    base1.scales.y.grace = '5%';
     ui.charts.c1 = new Chart($('#c1'), Object.assign(chart1, { options: base1 }));
 
     if (places.length) {
