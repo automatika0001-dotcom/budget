@@ -91,14 +91,13 @@
     return t > 1.6e12 && t < 4e12 ? t : (x && x.target !== undefined ? Infinity : 0);
   }
   // A salary paid up to 7 days before pay day (pay day on a weekend or holiday) is next month's money.
-  // An advance paid up to 15 days before pay day is part of the next month's salary too.
+  // An advance is money you can spend from the day it arrives, so it always counts on its own date.
+  // (The Stats "advance to next pay day" view still starts at an early advance, see payRange.)
   const EARLY_SALARY_DAYS = 7, EARLY_ADVANCE_DAYS = 15;
   function budgetDateOf(it, payDay) {
-    const k = incomeKind(it);
-    const win = k === 'salary' ? EARLY_SALARY_DAYS : k === 'advance' ? EARLY_ADVANCE_DAYS : -1;
-    if (win < 0) return it.date;
+    if (incomeKind(it) !== 'salary') return it.date;
     const next = periodFor(it.date, payDay).next;
-    return diffDays(it.date, next) <= win ? next : it.date;
+    return diffDays(it.date, next) <= EARLY_SALARY_DAYS ? next : it.date;
   }
 
   function sumByDay(items) {
@@ -363,7 +362,8 @@
     for (const it of state.incomes || []) {
       if (it.ignored || it.date >= p.start) continue;
       const k = incomeKind(it);
-      if ((k === 'advance' || k === 'salary') && budgetDateOf(it, payDay) === p.start && it.date < from) from = it.date;
+      const early = k === 'salary' ? budgetDateOf(it, payDay) === p.start : k === 'advance' && diffDays(it.date, p.start) <= EARLY_ADVANCE_DAYS;
+      if (early && it.date < from) from = it.date;
     }
     return { from, start: p.start, end: p.end, next: p.next };
   }

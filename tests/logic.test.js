@@ -357,12 +357,11 @@ console.log('fixed cost tests passed');
 }
 {
   const base = { payDay: 17, monthlySaving: 0, startDate: '2026-10-06', statsFrom: '2026-10-06', useExpected: false };
-  t('advance paid 12 days before pay day counts in the next month', () => {
-    const adv = { id: 'a', date: '2026-10-05', amount: 250, source: 'SIMPLEX TECHNOLOGIES SIA', note: 'Avanss: Darba algas avanss par 08.2026.', kind: 'other', bankId: 'x' };
-    assert.strictEqual(L.budgetDateOf(adv, 17), '2026-10-17');
-    const lg = L.buildLedger({ settings: base, incomes: [adv], expenses: [], adjustments: [] }, '2026-10-19');
-    near(lg.periods[0].income, 0, 'not the old month'); near(lg.periods[1].income, 250, 'new month');
-    assert.strictEqual(L.budgetDateOf(Object.assign({}, adv, { date: '2026-09-25' }), 17), '2026-09-25'); // 22 days before: stays
+  t('an advance counts on the day it arrives: it is money to spend now', () => {
+    const adv = { id: 'a', date: '2026-11-05', amount: 250, source: 'SIMPLEX TECHNOLOGIES SIA', note: 'Avanss: Darba algas avanss', kind: 'other', bankId: 'x' };
+    assert.strictEqual(L.budgetDateOf(adv, 17), '2026-11-05');
+    const lg = L.buildLedger({ settings: base, incomes: [adv], expenses: [{ id: 'e', date: '2026-11-04', amount: 100, place: 'RIMI' }], adjustments: [] }, '2026-11-06');
+    near(lg.current.income, 250, 'in the current month'); near(L.todayStatus(lg, '2026-11-06').remainingMonth, 150, 'positive');
   });
   t('bank sync brings in a salary/advance from just before the start date, nothing else', () => {
     const d = { expenses: [], incomes: [], ignoredBankIds: [] };
