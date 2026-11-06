@@ -1,5 +1,5 @@
 /* Catch-up mode look: aqua colours, bubbles and sparks, and blue liquid in every card that sloshes with the
-   phone's movement. The liquid is a shallow-water simulation (240 columns per card) driven by the phone's
+   phone's movement. The liquid is a shallow-water simulation (120 columns per card, drawn as a smooth curve) driven by the phone's
    accelerometer with no smoothing, so tilts and shakes act at once; fast waves throw spray and leave foam.
    One animation loop for everything; it sleeps while the app is hidden. */
 (function (root) {
@@ -66,7 +66,7 @@
   }
 
   // ---- liquid: 1D shallow water. h = depth per column, u = speed across each column boundary ----
-  const N = 240, G = 3600, SUB = 1 / 240, CS = 120 / N; // columns, px/s² for 1 g, physics step, column scale vs the old 120
+  const N = 120, G = 3600, SUB = 1 / 240, CS = 120 / N; // columns, px/s² for 1 g, physics step, column scale vs the old 120
   function simFor(card) {
     let s = sims.get(card);
     if (s && s.canvas.isConnected) return s;
@@ -120,6 +120,21 @@
     for (let i = 0; i < N; i++) if (h[i] > cap) {
       const ex = h[i] - cap; h[i] = cap;
       if (i === 0) h[1] += ex; else if (i === N - 1) h[N - 2] += ex; else { h[i - 1] += ex / 2; h[i + 1] += ex / 2; }
+    }
+    // Springy surface: no step between two columns may be steeper than about 42 degrees. Anything steeper is
+    // shared out between them at once (water only moves, none is lost), so a hard swing makes a rounded hump,
+    // never a wall of water.
+    const lim = 0.9 * dx;
+    for (let pass = 0; pass < 40; pass++) {
+      const fwd = pass % 2 === 0;
+      let worst = 0;
+      for (let k = 1; k < N; k++) {
+        const i = fwd ? k : N - k;
+        const d = h[i - 1] - h[i];
+        if (d > lim) { const f = Math.min((d - lim) * 0.5, h[i - 1]); h[i - 1] -= f; h[i] += f; worst = Math.max(worst, d - lim); }
+        else if (d < -lim) { const f = Math.min((-d - lim) * 0.5, h[i]); h[i] -= f; h[i - 1] += f; worst = Math.max(worst, -d - lim); }
+      }
+      if (worst < 0.05) break;
     }
     return { gx, gy, dx };
   }
@@ -205,10 +220,17 @@
     }
     return y;
   }
+  // The surface as one smooth curve through the column points (curves through the midpoints), not a zigzag.
+  function curve(ctx, y, dx, move) {
+    const X = (i) => (i + 0.5) * dx;
+    if (move) ctx.moveTo(X(0), y[0]); else ctx.lineTo(X(0), y[0]);
+    for (let i = 1; i < N - 1; i++) ctx.quadraticCurveTo(X(i), y[i], (X(i) + X(i + 1)) / 2, (y[i] + y[i + 1]) / 2);
+    ctx.lineTo(X(N - 1), y[N - 1]);
+  }
   function liquidPath(ctx, y, w, H, dx) {
     ctx.beginPath();
     ctx.moveTo(0, H); ctx.lineTo(0, y[0]);
-    for (let i = 0; i < N; i++) ctx.lineTo((i + 0.5) * dx, y[i]);
+    curve(ctx, y, dx, false);
     ctx.lineTo(w, y[N - 1]); ctx.lineTo(w, H); ctx.closePath();
   }
   let orbCanvas = null;
@@ -272,14 +294,14 @@
     }
     // glow just under the surface
     ctx.beginPath();
-    for (let i = 0; i < N; i++) { const X = (i + 0.5) * dx; i ? ctx.lineTo(X, y[i]) : ctx.moveTo(X, y[i]); }
+    curve(ctx, y, dx, true);
     ctx.strokeStyle = `rgba(80, 220, 255, ${0.10 * pulse + 0.05 * E})`; ctx.lineWidth = 16; ctx.stroke();
     ctx.restore();
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     // burning surface line: wide halo, colored core, white-hot center
     ctx.beginPath();
-    for (let i = 0; i < N; i++) { const X = (i + 0.5) * dx; i ? ctx.lineTo(X, y[i]) : ctx.moveTo(X, y[i]); }
+    curve(ctx, y, dx, true);
     ctx.strokeStyle = `hsla(${hue(0)}, 100%, 60%, ${0.10 + 0.08 * E})`; ctx.lineWidth = 7; ctx.stroke();
     ctx.strokeStyle = `hsla(${hue(0)}, 100%, 70%, ${0.35 * pulse + 0.15 * E})`; ctx.lineWidth = 2.4; ctx.stroke();
     ctx.strokeStyle = `rgba(230, 255, 255, ${0.55 * pulse})`; ctx.lineWidth = 0.9; ctx.stroke();
