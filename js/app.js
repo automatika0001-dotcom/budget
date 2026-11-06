@@ -688,7 +688,7 @@
         data: { labels: all.map(dShort), datasets: [
           { label: 'Spent (cumulative)', data: all.map((d) => (d <= today ? cum[d] ?? null : null)), borderColor: css('--accent'), backgroundColor: 'rgba(200,242,106,.12)', fill: true, tension: .25, pointRadius: lastDot, pointBackgroundColor: css('--accent'), borderWidth: 2.5 },
           { label: 'Monthly limit', data: limitSeries, borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5, stepped: true },
-          { label: 'Even pace', data: all.map((_, i) => L.r2(limit * (i + 1) / n)), borderColor: css('--muted'), borderDash: [2, 4], pointRadius: 0, borderWidth: 1 }
+          { label: 'Even pace', data: limitSeries.map((lv, i) => L.r2(lv * (i + 1) / n)), borderColor: css('--muted'), borderDash: [2, 4], pointRadius: 0, borderWidth: 1 }
         ] }
       };
     } else {
