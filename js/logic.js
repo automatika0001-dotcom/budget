@@ -129,17 +129,24 @@
     const S = num(s.monthlySaving);
     const isFixed = (opts && opts.isFixed) || (() => false);
     const closed = (opts && opts.closed) || {}; // locked results of finished months, by period start
-    const incomesB = (state.incomes || []).filter((i) => !i.ignored).map((i) => Object.assign({}, i, { bdate: budgetDateOf(i, payDay) }));
-    const allExp = (state.expenses || []).filter((e) => !e.ignored);
-    // Reserved money: taken out of what's available on the day it is reserved (not spending), given back on the
-    // day it is released. A payment made from a reserve isn't the day's spending either.
+    // A locked month only counts what it held when it was locked. Anything dated inside it that it didn't
+    // include (a late bank booking, an entry added afterwards) counts in the next open month instead, on the
+    // day it was added, so no money is ever lost.
+    const lateMove = makeLateMover(closed, payDay, today);
+    const incomesB = (state.incomes || []).filter((i) => !i.ignored)
+      .map((i) => lateMove(Object.assign({}, i, { bdate: budgetDateOf(i, payDay) }), 'i', 'bdate'));
+    const allExp = (state.expenses || []).filter((e) => !e.ignored).map((e) => lateMove(Object.assign({}, e), 'e', 'date'));
+    // Reserved money: taken out of what's available from the day it is reserved until it is paid or cancelled
+    // (not spending). When paid, the reserve is given back and the real payments count instead, whatever they
+    // came to. Payments linked to a paid reserve come off the month's money but aren't that day's spending.
     const reserves = (state.reserves || []).filter((r) => r && num(r.amount) > 0 && r.date);
-    const resIds = new Set(reserves.map((r) => r.id));
-    const fromReserve = (e) => !!(e.reserveId && resIds.has(e.reserveId));
+    const paidRes = new Set(reserves.filter((r) => reserveStatus(r) === 'paid').map((r) => r.id));
+    const fromReserve = (e) => !!(e.reserveId && paidRes.has(e.reserveId));
     const resByDay = {};
     for (const r of reserves) {
       resByDay[r.date] = r2((resByDay[r.date] || 0) - num(r.amount));
-      if (r.releasedDate) resByDay[r.releasedDate] = r2((resByDay[r.releasedDate] || 0) + num(r.amount));
+      const rel = releaseDateOf(r);
+      if (rel) resByDay[rel] = r2((resByDay[rel] || 0) + num(r.amount));
     }
     const paidByDay = sumByDay(allExp.filter(fromReserve));
     const spentByDay = sumByDay(allExp.filter((e) => !fromReserve(e) && !isFixed(e)));
@@ -215,7 +222,8 @@
           let resThen = 0;
           for (const r of reserves) {
             if (r.date >= p.start && r.date <= p.end && createdAt(r) <= t) resThen -= num(r.amount);
-            if (r.releasedDate && r.releasedDate >= p.start && r.releasedDate <= p.end && (+r.releasedAt || 0) <= t) resThen += num(r.amount);
+            const rel = releaseDateOf(r);
+            if (rel && rel >= p.start && rel <= p.end && (+r.releasedAt || 0) <= t) resThen += num(r.amount);
           }
           delta = r2(num(x.target) - (incomeOf(t).income - S + carry + adjust + resThen - spentThen));
         }
@@ -245,7 +253,54 @@
       periods.push(per);
       p = periodFor(p.next, payDay);
     }
-    return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, fixedByDay, incomeByDay, adjByDay, more, statsFrom, isHoliday };
+    return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, fixedByDay, incomeByDay, adjByDay, more, statsFrom, isHoliday, items: { exp: allExp, inc: incomesB } };
+  }
+
+  // ---------- reserves ----------
+  function reserveStatus(r) {
+    if (!r || !r.releasedDate) return 'active';
+    return r.cancelled ? 'cancelled' : 'paid';
+  }
+  // The reserve is given back on its release day (never before the day it was made).
+  function releaseDateOf(r) {
+    if (!r.releasedDate) return null;
+    return r.releasedDate < r.date ? r.date : r.releasedDate;
+  }
+
+  // ---------- locked months ----------
+  // Did the lock of month c include entry x? New locks list what they held; older ones go by when x was added.
+  function lockHas(c, x, kind) {
+    if (c.ids && c.ids[kind]) return c.ids[kind].indexOf(x.id) >= 0;
+    const t = createdAt(x);
+    return !(t > 0 && t < Infinity && c.lockedAt && t >= parse(c.lockedAt).getTime() + 86400000);
+  }
+  function makeLateMover(closed, payDay, today) {
+    const locks = [];
+    for (const k in closed) {
+      const c = closed[k], p = c && c.start ? periodFor(c.start, payDay) : null;
+      if (p && c.per && p.start === c.start && p.end === c.end && today > c.end) locks.push(c);
+    }
+    if (!locks.length) return (x) => x;
+    const lockAt = (d) => locks.find((c) => d >= c.start && d <= c.end);
+    return (x, kind, field) => {
+      let c = lockAt(x[field]);
+      if (!c || lockHas(c, x, kind)) return x;
+      const t = createdAt(x);
+      const added = t > 0 && t < Infinity ? todayStr(new Date(t)) : null;
+      // walk to the next month that is open (or whose lock did include it)
+      for (let g = 0; g < 600; g++) {
+        const p = periodFor(c.end, payDay), n = periodFor(p.next, payDay);
+        const nc = lockAt(n.start);
+        if (nc && lockHas(nc, x, kind)) { x[field] = n.start; x.lateFrom = x.lateFrom || x.date; return x; }
+        if (!nc) {
+          const d = added && added > n.start ? (added < n.end ? added : n.end) : n.start;
+          x.lateFrom = x.lateFrom || x.date; x[field] = d; if (field === 'bdate') x.date = d;
+          return x;
+        }
+        c = nc;
+      }
+      return x;
+    };
   }
 
   const isWeekend = (d) => { const w = parse(d).getUTCDay(); return w === 0 || w === 6; };
@@ -321,8 +376,7 @@
     // right away; money left unspent today only raises it once the day is over (the real calculation
     // tomorrow uses what was actually spent).
     const usedToday = Math.max(t.spent, t.allow);
-    const fixedSoFar = sumRange(ledger.fixedByDay || {}, per.start, today) + sumRange((ledger.more && ledger.more.paidByDay) || {}, per.start, today);
-    const nextAllowance = next ? r2((per.effective - fixedSoFar - t.before - usedToday) / budgetDaysBetween(next, per.end, isHoliday)) : null;
+    const nextAllowance = next ? r2(Math.max(0, t.pool - t.before - usedToday) / budgetDaysBetween(next, per.end, isHoliday)) : null;
     return {
       period: per, holiday: t.holiday, dailyAllowance: t.allow, spentToday: t.spent, leftToday: r2(t.allow - t.spent),
       daysLeft: t.daysLeft, budgetDaysLeft: t.budgetDaysLeft, remainingMonth,
@@ -374,7 +428,9 @@
     return ledger.periods.filter((p) => !p.isCurrent && !p.locked && diffDays(p.end, today) >= g).map((p) => {
       const days = dailySeries(p, ledger.spentByDay, p.end, ledger.adjByDay, ledger.statsFrom, ledger.isHoliday, ledger.fixedByDay, ledger.more);
       const per = Object.assign({}, p); delete per.days; delete per.isCurrent; delete per.locked;
-      return { start: p.start, end: p.end, lockedAt: today, per, days };
+      const it = ledger.items || { exp: [], inc: [] };
+      const ids = { e: it.exp.filter((e) => e.date >= p.start && e.date <= p.end).map((e) => e.id), i: it.inc.filter((i) => i.bdate >= p.start && i.bdate <= p.end).map((i) => i.id) };
+      return { start: p.start, end: p.end, lockedAt: today, per, days, ids };
     });
   }
 
@@ -608,7 +664,7 @@
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
-    incomeKind, textKind, budgetDateOf, payRange, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
+    incomeKind, textKind, budgetDateOf, payRange, reserveStatus, releaseDateOf, createdAt, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
     cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive, applyBankTransactions
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

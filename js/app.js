@@ -162,22 +162,38 @@
   }
 
   // ---------------- reserved money for future payments ----------------
-  const activeReserves = () => (state.reserves || []).filter((r) => !r.releasedDate);
+  // Reserved = taken out of what you can spend until you mark it paid or cancelled. Paid gives it back and the
+  // real payments (whatever they came to) count instead. Every status can be changed later from the history.
+  const resStatus = (r) => L.reserveStatus(r);
+  const activeReserves = () => (state.reserves || []).filter((r) => resStatus(r) === 'active');
+  // first day of the first month that isn't locked: changes can't reach into locked months
+  const openFrom = () => { const p = ledger && ledger.periods.find((x) => !x.locked); return p ? p.start : today; };
+  const clampOpen = (d) => { const o = openFrom(); return d < o ? o : d; };
+  const resPaidWith = (r) => state.expenses.filter((e) => e.reserveId === r.id && !e.ignored);
   function reservesHtml() {
     const act = activeReserves();
+    const hist = (state.reserves || []).filter((r) => resStatus(r) !== 'active').sort((a, b) => (L.releaseDateOf(b) || '').localeCompare(L.releaseDateOf(a) || '') || (+b.releasedAt || 0) - (+a.releasedAt || 0));
     const total = act.reduce((a, r) => a + L.num(r.amount), 0);
     return `<div class="card"><div class="card-head"><h2>Reserved${act.length ? ` <span class="num" style="color:var(--text)">${money(total)}</span>` : ''}</h2><button class="btn small-btn" id="resAdd">+ Reserve</button></div>
-      ${act.length ? `<div class="list">${act.map((r) => `<div class="row res-row"><span><b>${esc(r.name)}</b><span class="small muted">${r.due ? ' · ' + dShort(r.due) : ''}</span></span>
+      ${act.length ? `<div class="list">${act.map((r) => `<div class="row res-row"><span data-resedit="${r.id}" style="cursor:pointer"><b>${esc(r.name)}</b><span class="small muted">${r.due ? ' · ' + dShort(r.due) : ''}</span></span>
         <span style="display:flex;align-items:center;gap:6px"><span class="num">${money(r.amount)}</span><button class="btn small-btn" data-respaid="${r.id}">Paid</button><button class="btn ghost small-btn" data-rescancel="${r.id}" aria-label="Cancel">×</button></span></div>`).join('')}</div>` : ''}
+      ${hist.length ? `<details class="res-hist"${ui.resHistOpen ? ' open' : ''}><summary class="small muted">History (${hist.length})</summary><div class="list">${hist.map((r) => {
+        const st = resStatus(r), paid = resPaidWith(r).reduce((a, e) => a + L.num(e.amount), 0);
+        return `<div class="row res-row" data-resedit="${r.id}" style="cursor:pointer"><span><b>${esc(r.name)}</b><span class="small muted"> · ${dShort(L.releaseDateOf(r))}</span><span class="tag ${st === 'cancelled' ? 'off' : ''}">${st}</span></span>
+          <span class="num small">${st === 'paid' && paid ? money(paid) : `<s class="muted">${money(r.amount)}</s>`}</span></div>`;
+      }).join('')}</div></details>` : ''}
     </div>`;
   }
   function bindReserves(v) {
     const a = $('#resAdd', v); if (a) a.onclick = () => openReserve();
-    $$('[data-respaid]', v).forEach((b) => (b.onclick = () => openReservePaid(state.reserves.find((r) => r.id === b.dataset.respaid))));
+    const find = (id) => (state.reserves || []).find((r) => r.id === id);
+    $$('[data-respaid]', v).forEach((b) => (b.onclick = () => openReserveEdit(find(b.dataset.respaid), 'paid')));
+    $$('[data-resedit]', v).forEach((b) => (b.onclick = () => openReserveEdit(find(b.dataset.resedit))));
     $$('[data-rescancel]', v).forEach((b) => (b.onclick = () => {
-      const r = state.reserves.find((x) => x.id === b.dataset.rescancel); if (!r) return;
-      r.releasedDate = today; r.releasedAt = Date.now(); r.cancelled = true; save(); render(); toast(money(r.amount) + ' back');
+      const r = find(b.dataset.rescancel); if (!r) return;
+      setReserveStatus(r, 'cancelled', []); save(); render(); toast(money(r.amount) + ' back');
     }));
+    const h = $('.res-hist', v); if (h) h.addEventListener('toggle', () => (ui.resHistOpen = h.open));
   }
   function openReserve() {
     openSheet(`<h3>Reserve money</h3>
@@ -189,39 +205,95 @@
       $('#rsSave', b).onclick = () => {
         const amt = L.num($('#rsAmt', b).value); if (amt <= 0) return toast('Enter an amount');
         state.reserves = state.reserves || [];
-        state.reserves.push({ id: uid(), name: $('#rsName', b).value.trim() || 'Reserved', amount: L.r2(amt), date: today, due: $('#rsDue', b).value || '' });
+        state.reserves.push({ id: uid(), created: Date.now(), name: $('#rsName', b).value.trim() || 'Reserved', amount: L.r2(amt), date: today, due: $('#rsDue', b).value || '' });
         save(); closeSheet(); render(); toast(money(amt) + ' reserved');
       };
     });
   }
-  function linkReserve(r, e) {
-    e.reserveId = r.id; r.paidExpenseId = e.id; r.releasedDate = e.date > r.date ? e.date : r.date; r.releasedAt = Date.now();
+  /**
+   * Change a reserve's status. paid: the given payments are linked to it and it is given back on the day of the
+   * last one (or today when none is picked). cancelled: given back today (or on its earlier cancel day).
+   * active again: nothing given back. Release days never fall into a locked month. Returns the reserve that
+   * ends up with the status (a copy dated today when the old one can't be reopened).
+   */
+  function setReserveStatus(r, st, payIds) {
+    const prevRel = L.releaseDateOf(r), o = openFrom();
+    for (const e of state.expenses) if (e.reserveId === r.id && !(st === 'paid' && payIds.includes(e.id))) delete e.reserveId;
+    if (st === 'active') {
+      if (prevRel && prevRel < o) {
+        // its release is part of a locked month: reserve the money again from today instead
+        const c = { id: uid(), created: Date.now(), name: r.name, amount: r.amount, date: today, due: r.due || '' };
+        state.reserves.push(c); return c;
+      }
+      delete r.releasedDate; delete r.releasedAt; delete r.cancelled; delete r.paidExpenseId;
+      return r;
+    }
+    let rel;
+    if (st === 'paid') {
+      const pays = state.expenses.filter((e) => payIds.includes(e.id));
+      pays.forEach((e) => (e.reserveId = r.id));
+      rel = pays.length ? pays.reduce((m, e) => (e.date > m ? e.date : m), r.date) : (prevRel && !r.cancelled ? prevRel : today);
+      delete r.cancelled;
+    } else {
+      rel = prevRel && r.cancelled ? prevRel : today;
+      r.cancelled = true;
+    }
+    delete r.paidExpenseId;
+    rel = clampOpen(rel < r.date ? r.date : rel);
+    if (rel !== prevRel || !r.releasedAt) r.releasedAt = Date.now();
+    r.releasedDate = rel;
+    return r;
   }
-  function openReservePaid(r) {
+  function openReserveEdit(r, want) {
     if (!r) return;
-    const linked = new Set((state.expenses || []).filter((e) => e.reserveId).map((e) => e.id));
-    const cands = state.expenses.filter((e) => !linked.has(e.id) && !e.ignored && e.date >= L.addDays(r.date, -3))
-      .sort((x, y) => Math.abs(L.num(x.amount) - r.amount) - Math.abs(L.num(y.amount) - r.amount) || y.date.localeCompare(x.date)).slice(0, 15);
-    openSheet(`<h3>${esc(r.name)} · ${money(r.amount)}</h3>
-      <p class="small muted" style="margin-top:-6px">Which payment was it?</p>
-      <div class="list">${cands.map((e) => itemRow(e, 'expense')).join('') || '<div class="empty">No payments yet</div>'}</div>
-      <button class="btn primary block" id="rpLog" style="margin-top:12px">Log ${money(r.amount)} now</button>`, (b) => {
-      $$('.item[data-id]', b).forEach((el) => (el.onclick = () => {
-        const e = state.expenses.find((x) => x.id === el.dataset.id); if (!e) return;
-        linkReserve(r, e); save(); closeSheet(); render(); toast('Paid from reserve');
+    const st0 = want || resStatus(r);
+    const editable = r.date >= openFrom(); // made in a locked month: its amount is part of that month
+    const linkedHere = new Set(resPaidWith(r).map((e) => e.id));
+    const usedElsewhere = new Set(state.expenses.filter((e) => e.reserveId && e.reserveId !== r.id).map((e) => e.id));
+    const from = L.addDays(r.date, -3);
+    const cands = state.expenses.filter((e) => linkedHere.has(e.id) || (!usedElsewhere.has(e.id) && !e.ignored && e.date >= from && e.date >= openFrom()))
+      .sort((x, y) => (linkedHere.has(y.id) - linkedHere.has(x.id)) || Math.abs(L.num(x.amount) - r.amount) - Math.abs(L.num(y.amount) - r.amount) || y.date.localeCompare(x.date)).slice(0, 25);
+    const pre = linkedHere.size ? linkedHere : new Set(st0 === 'paid' ? cands.filter((e) => Math.abs(L.num(e.amount) - r.amount) < 0.005).slice(0, 1).map((e) => e.id) : []);
+    openSheet(`<h3>${esc(r.name)}</h3>
+      <div class="field"><input id="reAmt" class="amount-input num" inputmode="decimal" value="${r.amount}" ${editable ? '' : 'disabled'}></div>
+      <div class="field"><label>For</label><input id="reName" value="${esc(r.name)}"></div>
+      <div class="field"><label>Due <span class="muted">optional</span></label><input id="reDue" type="date" value="${esc(r.due || '')}"></div>
+      <div class="seg" id="reSt" style="margin-bottom:10px">${['active', 'paid', 'cancelled'].map((k) => `<button data-st="${k}" class="${st0 === k ? 'on' : ''}">${{ active: 'Reserved', paid: 'Paid', cancelled: 'Cancelled' }[k]}</button>`).join('')}</div>
+      <div id="rePay" ${st0 === 'paid' ? '' : 'hidden'}>
+        <div class="row"><span class="label">Paid with</span><b class="num" id="reSum"></b></div>
+        <div class="list">${cands.map((e) => `<label class="item pick"><input type="checkbox" data-pick="${e.id}" ${pre.has(e.id) ? 'checked' : ''}>
+          <div class="meta"><div class="title">${esc(e.place || 'Expense')}</div><div class="sub">${dShort(e.date)}</div></div><div class="amt num">-${money(e.amount)}</div></label>`).join('') || '<div class="empty">No payments yet</div>'}</div>
+      </div>
+      <button class="btn primary block" id="reSave" style="margin-top:12px">Save</button>
+      ${editable ? '<button class="btn ghost block" id="reDel" style="margin-top:8px">Delete</button>' : ''}`, (b) => {
+      let st = st0;
+      const sum = () => { const t = $$('[data-pick]:checked', b).reduce((a, x) => a + L.num((state.expenses.find((e) => e.id === x.dataset.pick) || {}).amount), 0); $('#reSum', b).textContent = money(t); };
+      sum(); $$('[data-pick]', b).forEach((x) => (x.onchange = sum));
+      $$('#reSt button', b).forEach((x) => (x.onclick = () => {
+        st = x.dataset.st; $$('#reSt button', b).forEach((y) => y.classList.toggle('on', y === x)); $('#rePay', b).hidden = st !== 'paid';
       }));
-      $('#rpLog', b).onclick = () => {
-        const e = { id: uid(), created: Date.now(), date: today, amount: L.r2(r.amount), place: r.name, note: '' };
-        state.expenses.push(e); linkReserve(r, e); save(); closeSheet(); render(); toast('Paid from reserve');
+      $('#reSave', b).onclick = () => {
+        const amt = L.num($('#reAmt', b).value);
+        if (editable && amt <= 0) return toast('Enter an amount');
+        if (editable && Math.abs(amt - r.amount) > 0.004) { r.amount = L.r2(amt); r.created = r.created || L.createdAt(r) || Date.now(); }
+        r.name = $('#reName', b).value.trim() || 'Reserved'; r.due = $('#reDue', b).value || '';
+        const res = setReserveStatus(r, st, st === 'paid' ? $$('[data-pick]:checked', b).map((x) => x.dataset.pick) : []);
+        if (res !== r) { res.name = r.name; res.due = r.due; }
+        save(); closeSheet(); render(); toast(st === 'paid' ? 'Paid' : st === 'cancelled' ? 'Cancelled' : 'Reserved');
+      };
+      const del = $('#reDel', b);
+      if (del) del.onclick = () => {
+        for (const e of state.expenses) if (e.reserveId === r.id) delete e.reserveId;
+        state.reserves = state.reserves.filter((x) => x.id !== r.id); save(); closeSheet(); render(); toast('Deleted');
       };
     });
   }
-  // A bank payment of exactly the reserved amount, on or after the reserve day, is the payment.
+  // A new bank payment of exactly the reserved amount, on or after the reserve day, is the payment.
   function autoLinkReserves(newIds) {
     let n = 0;
     for (const r of activeReserves()) {
-      const e = state.expenses.find((x) => newIds.has(x.id) && !x.reserveId && Math.abs(L.num(x.amount) - L.num(r.amount)) < 0.005 && x.date >= r.date);
-      if (e) { linkReserve(r, e); n++; }
+      const e = state.expenses.find((x) => newIds.has(x.id) && !x.reserveId && !x.ignored && Math.abs(L.num(x.amount) - L.num(r.amount)) < 0.005 && x.date >= r.date);
+      if (e) { setReserveStatus(r, 'paid', [e.id]); n++; }
     }
     return n;
   }
@@ -471,7 +543,7 @@
     const payDay = Math.min(state.settings.payDay, L.daysInMonth(y, m));
     for (let d = 1; d <= L.daysInMonth(y, m); d++) {
       const ds = `${y}-${L.pad(m + 1)}-${L.pad(d)}`;
-      const sp = (ledger.spentByDay[ds] || 0) + (fixedOn() ? (ledger.fixedByDay[ds] || 0) : 0);
+      const sp = (ledger.spentByDay[ds] || 0) + (fixedOn() ? (ledger.fixedByDay[ds] || 0) : 0) + (ledger.more.paidByDay[ds] || 0);
       monthSpent += sp;
       const info = days[ds];
       let cls = 'day';
@@ -666,18 +738,20 @@
       const early = state.incomes.filter((i) => !i.ignored && i.date >= from && i.date < per.start && L.budgetDateOf(i, state.settings.payDay) === per.start);
       // Days before pay day were paid from last month's money, so the limit line carries them too:
       // the gap between the two lines is always what is left of this pay month's money.
+      // Payments of a paid reserve always show as spending (they come off the month's money like rent).
+      // The limit never drops below what was spent: that just means nothing is left (like the allowance, never negative).
       let preSpent = 0;
       days.forEach((d) => {
-        const sp = d.spent + (fixedOn() ? (d.fixed || 0) : 0);
+        const sp = d.spent + (fixedOn() ? (d.fixed || 0) : 0) + (d.paidRes || 0);
         run += sp; cum[d.date] = L.r2(run);
         if (d.date < per.start) {
           preSpent += sp;
           lim[d.date] = L.r2(preSpent + early.filter((i) => i.date <= d.date).reduce((t, i) => t + L.num(i.amount), 0));
           return;
         }
-        // The limit follows the money that has actually arrived (and rebalances), day by day.
-        fc += fixedOn() ? (d.fixed || 0) : 0;
-        lim[d.date] = L.r2((d.pool === undefined ? flatLimit : d.pool - before0 + fc) + preSpent);
+        // The limit follows the money that has actually arrived (and rebalances, reserves), day by day.
+        fc += (fixedOn() ? (d.fixed || 0) : 0) + (d.paidRes || 0);
+        lim[d.date] = L.r2(Math.max(run, (d.pool === undefined ? flatLimit : d.pool - before0 + fc) + preSpent));
       });
       let lastLim = days.length ? lim[days[days.length - 1].date] : flatLimit;
       const limitSeries = all.map((d) => (lim[d] !== undefined ? (lastLim = lim[d]) : lastLim));
@@ -705,6 +779,7 @@
         if (byDate[d]) {
           lastPlan = byDate[d].plan || 0; cl += lastPlan; cs += byDate[d].spent;
           if (fixedOn()) { cs += byDate[d].fixed || 0; cl += byDate[d].fixed || 0; }
+          cs += byDate[d].paidRes || 0; cl += byDate[d].paidRes || 0;
         }
         else if (counted && d > today) cl += lastPlan; // rest of the current month at its planned pace
         spentSeries.push(counted && d <= today ? L.r2(cs) : null);
@@ -888,8 +963,6 @@
       };
       if (!isNew) $('#eDel', b).onclick = () => {
         if (item.bankId) state.ignoredBankIds.push(item.bankId);
-        const rr = item.reserveId && (state.reserves || []).find((r) => r.id === item.reserveId);
-        if (rr && rr.paidExpenseId === item.id) { delete rr.releasedDate; delete rr.releasedAt; delete rr.paidExpenseId; }
         state.expenses = state.expenses.filter((x) => x.id !== item.id); save(); closeSheet(); render(); toast('Deleted');
       };
     });

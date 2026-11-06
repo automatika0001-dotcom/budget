@@ -253,3 +253,9 @@ a.btn.primary { color: var(--accent-ink); }
 .tx-list .item + .tx-day { border-top: 0; }
 .res-row { align-items: center; }
 .res-row .small-btn { padding: 6px 10px; }
+.res-hist { margin-top: 10px; }
+.res-hist summary { cursor: pointer; padding: 4px 0; list-style: none; }
+.res-hist summary::-webkit-details-marker { display: none; }
+.tag.off { background: var(--line, #2a2a2a); color: var(--muted); }
+.item.pick { cursor: pointer; }
+.item.pick input { width: 20px; height: 20px; margin-right: 10px; accent-color: var(--accent); flex: none; }

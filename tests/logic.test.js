@@ -422,7 +422,72 @@ console.log('income step tests passed');
     const ts = L.todayStatus(L.buildLedger(d, '2026-12-02'), '2026-12-02');
     near(ts.remainingMonth, 1000, 'paid from the reserve, December untouched'); near(ts.spentToday, 0, 'not spending');
   });
+  t('reserve 100, real payment 20: once paid only the 20 counts, no matter what was reserved', () => {
+    const d = mk(); d.expenses.push({ id: 'p', date: '2026-11-08', amount: 20, place: 'Tickets', reserveId: 'r' });
+    d.reserves[0].releasedDate = '2026-11-08';
+    const ts = L.todayStatus(L.buildLedger(d, '2026-11-10'), '2026-11-10');
+    near(ts.remainingMonth, 1000 - 10 - 20, 'the 80 not used is back');
+    assert.strictEqual(L.reserveStatus(d.reserves[0]), 'paid');
+  });
+  t('paid from the balance before tapping Paid: while still reserved both count, after Paid only the payment', () => {
+    const d = mk(); d.expenses.push({ id: 'p', date: '2026-11-08', amount: 100, place: 'BTA' });
+    near(L.todayStatus(L.buildLedger(d, '2026-11-09'), '2026-11-09').remainingMonth, 1000 - 10 - 100 - 100, 'still reserved');
+    d.reserves[0].releasedDate = '2026-11-09';
+    near(L.todayStatus(L.buildLedger(d, '2026-11-09'), '2026-11-09').remainingMonth, 1000 - 10 - 100, 'Paid: the reserve no longer lowers anything');
+  });
+  t('a payment linked to a cancelled reserve is normal spending again', () => {
+    const d = mk(); d.expenses.push({ id: 'p', date: '2026-11-08', amount: 30, place: 'X', reserveId: 'r' });
+    d.reserves[0].releasedDate = '2026-11-08'; d.reserves[0].cancelled = true;
+    const lg = L.buildLedger(d, '2026-11-08');
+    near(L.todayStatus(lg, '2026-11-08').spentToday, 30, 'counts as spending'); assert.strictEqual(L.reserveStatus(d.reserves[0]), 'cancelled');
+  });
+  t('a release dated before the reserve day counts on the reserve day', () => {
+    const d = mk(); d.reserves[0].releasedDate = '2026-11-02';
+    const lg = L.buildLedger(d, '2026-11-06');
+    near(L.daysInRange(lg, '2026-11-03', '2026-11-03', '2026-11-06')[0].pool, 1000, 'untouched before');
+    near(L.todayStatus(lg, '2026-11-06').remainingMonth, 990, 'nets out');
+  });
 }
+console.log('reserve history tests passed');
+
+// ---- locked months never lose money ----
+{
+  const sett = { payDay: 1, monthlySaving: 0, startDate: '2026-10-01', statsFrom: '2026-10-01', useExpected: false };
+  const base = () => ({ settings: sett, adjustments: [], reserves: [],
+    incomes: [{ id: 'i1', date: '2026-10-01', amount: 1000, source: 'S' }, { id: 'i2', date: '2026-11-01', amount: 1000, source: 'S' }],
+    expenses: [{ id: 'e1', date: '2026-10-10', amount: 100, place: 'A', bankId: '1' }] });
+  const lockOct = (d, today) => { const lg = L.buildLedger(d, today, { closed: {} }); const c = {}; L.monthsToLock(lg, today, 3).forEach((x) => (c[x.start] = x)); return c; };
+  t('a bank payment booked after its month was locked counts in the open month', () => {
+    const d = base(); const closed = lockOct(d, '2026-11-05');
+    assert.ok(closed['2026-10-01'].ids.e.includes('e1'), 'lock lists what it held');
+    d.expenses.push({ id: 'late', date: '2026-10-30', amount: 40, place: 'Late', bankId: '2' });
+    const lg = L.buildLedger(d, '2026-11-06', { closed });
+    near(lg.periods[0].spent, 100, 'October stays as locked'); near(lg.current.spent, 40, 'the late one counts now');
+    near(L.todayStatus(lg, '2026-11-06').remainingMonth, 1000 - 40, 'nothing lost'); near(lg.savedTotal, 900, 'October leftover saved');
+  });
+  t('locking twice does not move or double count anything', () => {
+    const d = base(); const closed = lockOct(d, '2026-11-05');
+    d.expenses.push({ id: 'late', date: '2026-10-30', amount: 40, place: 'Late', bankId: '2' });
+    const lg = L.buildLedger(d, '2026-12-05', { closed });
+    L.monthsToLock(lg, '2026-12-05', 3).forEach((x) => (closed[x.start] = x));
+    assert.ok(closed['2026-11-01'].ids.e.includes('late'), 'November held the late payment');
+    const lg2 = L.buildLedger(d, '2026-12-05', { closed });
+    near(lg2.periods[1].spent, 40, 'still in November'); near(lg2.current.spent, 0, 'not in December');
+  });
+  t('older locks without a list: entries added after the lock day are late, earlier ones were included', () => {
+    const d = base(); const closed = lockOct(d, '2026-11-05'); delete closed['2026-10-01'].ids;
+    d.expenses.push({ id: 'x', created: Date.parse('2026-11-08T10:00:00Z'), date: '2026-10-20', amount: 25, place: 'Hand' });
+    d.expenses.push({ id: 'y', created: Date.parse('2026-10-20T10:00:00Z'), date: '2026-10-20', amount: 5, place: 'Old' });
+    const lg = L.buildLedger(d, '2026-11-10', { closed });
+    near(lg.current.spent, 25, 'only the one added after the lock'); assert.strictEqual(lg.items.exp.find((e) => e.id === 'x').date, '2026-11-08');
+  });
+  t('next day budget never goes negative and uses only money known today', () => {
+    const d = base(); d.expenses.push({ id: 'f', date: '2026-11-25', amount: 500, place: 'Future' }, { id: 'big', date: '2026-11-03', amount: 1500, place: 'Big' });
+    const ts = L.todayStatus(L.buildLedger(d, '2026-11-03', { closed: lockOct(d, '2026-11-05') }), '2026-11-03');
+    assert.ok(ts.nextAllowance >= 0 && ts.dailyAllowance >= 0, 'never negative');
+  });
+}
+console.log('locked month tests passed');
 console.log('reserve tests passed');
 
 // ---- "Where the money went": every shop with 1% or more gets its own slice ----
