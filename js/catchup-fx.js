@@ -20,9 +20,9 @@
     const a = screenAngle(), c = Math.cos(a), s = Math.sin(a);
     const X = x * c - y * s, Y = x * s + y * c;
     const now = performance.now(), dt = slow.t ? Math.min(0.1, (now - slow.t) / 1000) : 1; slow.t = now;
-    const k = Math.min(1, dt / 0.12);
+    const k = Math.min(1, dt / 0.04);
     slow.x += (X - slow.x) * k; slow.y += (Y - slow.y) * k;
-    grav.x = slow.x * 0.8 + (X - slow.x) * 0.35; grav.y = slow.y + (Y - slow.y) * 0.35; grav.live = true;
+    grav.x = slow.x + (X - slow.x) * 0.7; grav.y = slow.y + (Y - slow.y) * 0.7; grav.live = true;
   }
   // Android reports the sensor's push against gravity, older iPhones the gravity itself: the tilt from the
   // orientation sensor tells which, so the liquid never falls the wrong way.
@@ -58,8 +58,9 @@
     document.body.appendChild(c);
     return c;
   }
-  function fit(c) {
-    const r = DPR(), w = c.clientWidth, h = c.clientHeight;
+  // the glow layers are soft anyway: drawing them at 1x keeps the phone at full frame rate
+  function fit(c, maxR) {
+    const r = Math.min(DPR(), maxR || 1), w = c.clientWidth, h = c.clientHeight;
     if (c.width !== Math.round(w * r) || c.height !== Math.round(h * r)) { c.width = Math.round(w * r); c.height = Math.round(h * r); }
     return { w, h, r };
   }
@@ -85,13 +86,13 @@
     }
     const dx = w / N, h = s.h, u = s.u;
     // flat phone: keep some "down" so the liquid still settles
-    const gx = Math.max(-1.2, Math.min(1.2, grav.x)) * G, gy = Math.max(0.3, Math.min(1.5, grav.y)) * G;
+    const gx = Math.max(-1.5, Math.min(1.5, grav.x)) * G, gy = Math.max(0.3, Math.min(1.5, grav.y)) * G;
     const vmax = (0.45 * dx) / dts, q = dts / SUB;
     s.prev.set(h);
     for (let j = 1; j < N; j++) {
       let v = u[j] + dts * (gx - (gy * (h[j] - h[j - 1])) / dx);
-      v += Math.min(0.45, 0.26 * q) * (u[j - 1] + u[j + 1] - 2 * u[j]); // viscosity: thick, heavy liquid
-      v *= 1 - 1.8 * dts; // friction
+      v += Math.min(0.45, 0.16 * q) * (u[j - 1] + u[j + 1] - 2 * u[j]); // viscosity: thick, heavy liquid
+      v *= 1 - 0.9 * dts; // friction
       if (h[j] + h[j - 1] < 0.5) v = 0;
       u[j] = v > vmax ? vmax : v < -vmax ? -vmax : v;
     }
@@ -128,8 +129,8 @@
       let hm = 0, um = 0;
       for (let i = 0; i < N; i++) if (s.h[i] > hm) hm = s.h[i];
       for (let j = 0; j <= N; j++) { const a = Math.abs(s.u[j]); if (a > um) um = a; }
-      const c = Math.sqrt(1.5 * G * hm) + um, dxs = w / N;
-      const dts = Math.min(SUB, s.acc, (0.35 * dxs) / Math.max(1, c));
+      const c = Math.sqrt(Math.max(0.3, Math.min(1.5, grav.y)) * G * hm) + um, dxs = w / N;
+      const dts = Math.min(SUB, s.acc, (0.7 * dxs) / Math.max(1, c));
       s.acc -= dts; T += dts; g = physics(s, w, H, dts); steps++;
       for (let i = 0; i < N; i++) rise[i] += s.h[i] - s.prev[i];
     }
@@ -140,17 +141,17 @@
     for (let i = 1; i < N - 1; i++) {
       const wv = rise[i] / T; // px/s upward
       const shear = Math.abs(s.u[i + 1] - s.u[i]);
-      s.foam[i] = Math.min(1, s.foam[i] * Math.exp(-T * 0.9) + T * (Math.max(0, wv - 110) / 260 + shear / 1300));
-      if (wv > 240 && s.drops.length < 120 && Math.random() < Math.min(0.6, (wv - 240) / 450)) {
+      s.foam[i] = Math.min(1, s.foam[i] * Math.exp(-T * 0.9) + T * (Math.max(0, wv - 70) / 200 + shear / 900));
+      if (wv > 150 && s.drops.length < 100 && Math.random() < Math.min(0.85, (wv - 150) / 320)) {
         const n = 1 + (Math.random() * 3) | 0;
         const uu = (s.u[i] + s.u[i + 1]) / 2;
-        for (let k = 0; k < n; k++) s.drops.push({ x: (i + Math.random()) * dx, y: top(i) - 1, vx: uu * 0.7 + (Math.random() - 0.5) * 90, vy: -(wv * (0.5 + Math.random() * 0.4)), r: 0.7 + Math.random() * 1.6 });
+        for (let k = 0; k < n; k++) s.drops.push({ x: (i + Math.random()) * dx, y: top(i) - 1, vx: uu * 0.7 + (Math.random() - 0.5) * 90, vy: -(wv * (0.6 + Math.random() * 0.5)), r: 0.7 + Math.random() * 1.6 });
       }
     }
     // walls throw spray when water slams into them
     for (const [i, j] of [[0, 1], [N - 1, N - 1]]) {
       const hit = Math.abs(s.u[j]);
-      if (hit > 380 && s.drops.length < 120 && Math.random() < 0.35) s.drops.push({ x: i ? w - 2 : 2, y: top(i) - 1, vx: (i ? -1 : 1) * Math.random() * 60, vy: -hit * (0.5 + Math.random() * 0.5), r: 0.8 + Math.random() * 1.5 });
+      if (hit > 250 && s.drops.length < 100 && Math.random() < 0.5) s.drops.push({ x: i ? w - 2 : 2, y: top(i) - 1, vx: (i ? -1 : 1) * Math.random() * 60, vy: -hit * (0.5 + Math.random() * 0.5), r: 0.8 + Math.random() * 1.5 });
     }
     s.drops = s.drops.filter((d) => {
       d.vx += g.gx * T; d.vy += g.gy * T; d.vx *= 1 - 0.6 * T; d.x += d.vx * T; d.y += d.vy * T;
