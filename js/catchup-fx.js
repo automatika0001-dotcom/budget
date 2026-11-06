@@ -97,6 +97,17 @@
       if (give > h[i] && give > 0) { const k = h[i] / give; if (out[i + 1] > 0) out[i + 1] *= k; if (out[i] < 0) out[i] *= k; }
     }
     for (let i = 0; i < N; i++) h[i] = Math.max(0, h[i] - out[i + 1] + out[i]);
+    // Smooth out column-to-column zigzags (they turn the surface into a saw blade after hard shakes) while
+    // leaving real waves almost untouched. Moves water between neighbours only, so none is lost.
+    const sm = s.out; // reuse as scratch: flow between i-1 and i
+    for (let i = 1; i < N; i++) sm[i] = 0.06 * (h[i - 1] - h[i]);
+    for (let i = 1; i < N; i++) { const f = sm[i] > 0 ? Math.min(sm[i], h[i - 1]) : Math.max(sm[i], -h[i]); h[i - 1] -= f; h[i] += f; }
+    // a column can't tower over the card: what's above the cap spills to its neighbours
+    const cap = Math.min(H - 6, s.level * 3.2);
+    for (let i = 0; i < N; i++) if (h[i] > cap) {
+      const ex = h[i] - cap; h[i] = cap;
+      if (i === 0) h[1] += ex; else if (i === N - 1) h[N - 2] += ex; else { h[i - 1] += ex / 2; h[i + 1] += ex / 2; }
+    }
     return { gx, gy, dx };
   }
   function stepLiquid(s, dt, w, H) {
