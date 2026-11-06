@@ -69,7 +69,7 @@
 
   // ---------------- GPU liquid ----------------
   const STEP = 1 / 120; // fluid step, s
-  let glc = null, gl = null, progP = null, progC = null, fbo = null, ftex = null, fw = 0, fh = 0, ptBuf = null, triBuf = null;
+  let glc = null, gl = null, progP = null, progC = null, progS = null, fbo = null, ftex = null, fw = 0, fh = 0, ptBuf = null, triBuf = null;
   let pts = new Float32Array(4 * 2000);
   const VS_P = `attribute vec2 aPos; attribute vec2 aAtt; uniform vec2 uRes; uniform float uSize; varying vec2 vAtt;
     void main(){ vec2 c = aPos / uRes * 2.0 - 1.0; gl_Position = vec4(c.x, -c.y, 0.0, 1.0); gl_PointSize = uSize; vAtt = aAtt; }`;
@@ -77,6 +77,12 @@
     void main(){ vec2 d = gl_PointCoord * 2.0 - 1.0; float r2 = dot(d, d); if (r2 > 1.0) discard;
       float k = max(0.0, exp(-r2 * 2.6) - 0.074) * 0.42;
       gl_FragColor = vec4(k, k * vAtt.x, k * vAtt.y, 0.0); }`;
+  const VS_S = `attribute vec2 aPos; attribute vec2 aAtt; uniform vec2 uRes; uniform float uScale; varying float vA;
+    void main(){ vec2 c = aPos / uRes * 2.0 - 1.0; gl_Position = vec4(c.x, -c.y, 0.0, 1.0); gl_PointSize = aAtt.x * uScale; vA = aAtt.y; }`;
+  const FS_S = `precision mediump float; varying float vA; uniform vec3 uCol;
+    void main(){ vec2 d = gl_PointCoord * 2.0 - 1.0; float r2 = dot(d, d); if (r2 > 1.0) discard;
+      float core = exp(-r2 * 9.0), halo = exp(-r2 * 2.5) * 0.45;
+      vec3 c = mix(uCol, vec3(1.0), core); gl_FragColor = vec4(c * (core + halo) * vA, 0.0); }`;
   const VS_C = `attribute vec2 aP; varying vec2 vUv; void main(){ vUv = aP * 0.5 + 0.5; gl_Position = vec4(aP, 0.0, 1.0); }`;
   const FS_C = `precision mediump float;
     uniform sampler2D uF; uniform vec2 uRes; uniform float uT; uniform vec4 uRect; uniform float uRad; uniform float uE;
@@ -86,22 +92,28 @@
       vec2 px = vec2(vUv.x, 1.0 - vUv.y) * uRes;
       if (sdr(px - (uRect.xy + uRect.zw * 0.5), uRect.zw * 0.5, uRad) > 0.0) discard;
       vec4 f = texture2D(uF, vUv);
-      float d = f.r, thr = 0.30;
-      vec3 hot = mix(vec3(0.25, 0.92, 1.0), vec3(0.62, 0.48, 1.0), 0.5 + 0.5 * sin(uT * 0.35 + px.y * 0.01));
-      if (d < thr) { float g = smoothstep(thr * 0.3, thr, d); gl_FragColor = vec4(hot * g * 0.16, g * 0.16); return; }
+      float d = f.r, thr = 0.30, t = uT;
+      vec2 p = (px - uRect.xy) * 0.02;
+      // vivid energy palette: electric cyan, deep ultramarine, violet and hot magenta, drifting over time
+      vec3 cyan = vec3(0.0, 0.95, 1.0), ultra = vec3(0.1, 0.25, 1.0), violet = vec3(0.55, 0.15, 1.0), magenta = vec3(1.0, 0.2, 0.85);
+      float h1 = 0.5 + 0.5 * sin(t * 0.4 + p.x * 0.5 - p.y * 0.3);
+      float h2 = 0.5 + 0.5 * sin(t * 0.27 + p.y * 0.7 + 1.3);
+      vec3 hot = mix(cyan, magenta, h1 * h1 * 0.8);
+      if (d < thr) { // outer glow around the liquid
+        float g = smoothstep(thr * 0.2, thr, d);
+        gl_FragColor = vec4(hot * g * 0.42, g * 0.3); return; }
       float inner = smoothstep(thr, thr * 2.6, d);
-      vec2 p = (px - uRect.xy) * 0.02; float t = uT;
-      float pl = sin(p.x * 1.7 + t * 0.9 + sin(p.y * 2.1 - t * 0.7) * 1.6) + sin(p.y * 2.4 - t * 1.1 + sin(p.x * 1.3 + t * 0.5) * 2.0) + sin((p.x + p.y) * 1.1 + t * 0.6);
-      float band = pow(abs(sin(pl * 1.6)), 6.0);
-      vec3 deep = mix(vec3(0.08, 0.16, 0.62), vec3(0.04, 0.42, 0.95), 0.5 + 0.5 * sin(t * 0.3 + p.x * 0.35));
-      vec3 col = mix(hot * 0.5, deep, inner) + hot * band * (0.45 + 0.35 * (1.0 - inner)) * (1.0 + uE * 0.6);
-      float rim = 1.0 - smoothstep(thr, thr * 1.8, d);
-      col += vec3(0.7, 1.0, 1.0) * rim * rim * (1.1 + 0.2 * sin(t * 2.3));
-      float foam = clamp(f.g / max(d, 0.01) * 1.4 - 0.4, 0.0, 1.0);
-      col += vec3(0.85, 1.0, 1.0) * foam * 0.55;
-      float spray = clamp(f.b / max(d, 0.01), 0.0, 1.0);
-      col += vec3(0.9, 1.0, 1.0) * spray * 0.4;
-      float a = clamp(mix(0.62, 0.42, inner) + rim * 0.3 + band * 0.18 + foam * 0.2, 0.0, 0.9);
+      float pl = sin(p.x * 1.7 + t * 1.1 + sin(p.y * 2.1 - t * 0.8) * 1.6) + sin(p.y * 2.4 - t * 1.3 + sin(p.x * 1.3 + t * 0.6) * 2.0) + sin((p.x + p.y) * 1.1 + t * 0.7);
+      float band = pow(abs(sin(pl * 1.6)), 5.0);
+      float band2 = pow(abs(sin(pl * 0.9 + 1.0)), 9.0);
+      vec3 deep = mix(ultra, violet, h2) * 0.85;
+      vec3 col = mix(hot * 0.75, deep, inner);
+      col += mix(cyan, magenta, h2) * band * (0.8 + 0.5 * uE) + vec3(1.0) * band2 * 0.35;
+      float rim = 1.0 - smoothstep(thr, thr * 1.9, d);
+      col += mix(vec3(0.6, 1.0, 1.0), hot, 0.3) * rim * rim * (1.4 + 0.3 * sin(t * 2.6));
+      float foam = clamp(f.g / max(d, 0.01) * 1.3 - 0.75, 0.0, 1.0);
+      col += vec3(0.8, 1.0, 1.0) * foam * 0.45;
+      float a = clamp(mix(0.78, 0.6, inner) + rim * 0.2 + band * 0.12, 0.0, 0.95);
       gl_FragColor = vec4(col * a, a);
     }`;
   function shader(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
@@ -112,7 +124,7 @@
       glc = layer('fxGL', 0);
       gl = glc.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: false, depth: false, stencil: false });
       if (!gl) throw new Error('no webgl');
-      progP = program(VS_P, FS_P); progC = program(VS_C, FS_C);
+      progP = program(VS_P, FS_P); progC = program(VS_C, FS_C); progS = program(VS_S, FS_S);
       ptBuf = gl.createBuffer(); triBuf = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, triBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
       ftex = gl.createTexture(); fbo = gl.createFramebuffer();
@@ -149,7 +161,43 @@
   function stepFluids(list, dt) {
     const n = Math.max(1, Math.min(4, Math.round(dt / STEP)));
     const gx = Math.max(-1.5, Math.min(1.5, grav.x)), gy = Math.max(0.3, Math.min(1.5, grav.y));
-    for (const { f } of list) for (let k = 0; k < n; k++) root.Fluid2D.step(f, gx, gy);
+    for (const { f } of list) {
+      for (let k = 0; k < n; k++) root.Fluid2D.step(f, gx, gy);
+      sprayAndFoam(f, n, gx, gy);
+    }
+  }
+  /* Spray: fast particles at the surface throw droplets that fly on their own and fall back.
+     Foam: where droplets land, and where the surface moves fast, white specks ride the liquid and fade. */
+  function sprayAndFoam(f, n, gx, gy) {
+    const p = f.p, g = p.g;
+    f.drops = f.drops || []; f.foam = f.foam || [];
+    const surf = p.rho0 * 0.8;
+    for (let i = 0; i < f.n; i++) {
+      if (f.rho[i] > surf) continue;
+      const sp = f.spd[i];
+      if (sp > 1.9 && f.drops.length < 160 && Math.random() < (sp - 1.9) * 0.09 * n) {
+        const k = 1 + (Math.random() * 2) | 0;
+        for (let c = 0; c < k; c++) f.drops.push({ x: f.x[i], y: f.y[i], vx: f.vx[i] * (1 + Math.random() * 0.5) + (Math.random() - 0.5) * 1.6, vy: f.vy[i] * (1 + Math.random() * 0.5) - Math.random() * 1.8, life: 1 + Math.random() * 0.6, r: 1 + Math.random() * 1.6 });
+      }
+      if (sp > 1.2 && f.foam.length < 260 && Math.random() < (sp - 1.2) * 0.05 * n) f.foam.push({ i, ox: (Math.random() - 0.5) * 6, oy: (Math.random() - 0.5) * 4, life: 1, max: 0.8 + Math.random() * 1.6, r: 0.8 + Math.random() * 1.4 });
+    }
+    const h = p.h, gw = f.gw, gh = f.gh, cell = f.cell, next = f.next;
+    const near = (x, y) => { // a liquid particle within 6 px?
+      const cx = (x / h) | 0, cy = (y / h) | 0;
+      if (cx < 0 || cy < 0 || cx >= gw || cy >= gh) return -1;
+      for (let j = cell[cy * gw + cx]; j !== -1; j = next[j]) { const dx = f.x[j] - x, dy = f.y[j] - y; if (dx * dx + dy * dy < 36) return j; }
+      return -1;
+    };
+    f.drops = f.drops.filter((d) => {
+      for (let k = 0; k < n; k++) { d.vx += gx * g; d.vy += gy * g; d.vx *= 0.995; d.x += d.vx; d.y += d.vy; }
+      d.life -= n / 120;
+      if (d.x < 1) { d.x = 1; d.vx = -d.vx * 0.4; } else if (d.x > f.w - 1) { d.x = f.w - 1; d.vx = -d.vx * 0.4; }
+      if (d.y < 1) { d.y = 1; d.vy = Math.abs(d.vy) * 0.3; }
+      if (d.y > f.H - 1) d.life = 0;
+      if (d.vy > 0) { const j = near(d.x, d.y); if (j >= 0) { if (f.foam.length < 260) f.foam.push({ i: j, ox: d.x - f.x[j], oy: d.y - f.y[j], life: 1, max: 1 + Math.random() * 1.5, r: 1 + Math.random() * 1.2 }); return false; } }
+      return d.life > 0;
+    });
+    f.foam = f.foam.filter((m) => (m.life -= n / 120 / m.max) > 0 && m.i < f.n);
   }
   function drawFluids(list, W, H, t) {
     const r = glSize(W, H);
@@ -195,6 +243,25 @@
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     gl.disable(gl.SCISSOR_TEST);
+    // 3) spray droplets and foam specks: bright glowing points added on top
+    let q = 0; const sp = [];
+    for (const { f, rect } of list) {
+      for (const d of f.drops || []) sp.push(rect.left + d.x, rect.top + d.y, d.r * 6, Math.min(1, d.life * 1.4));
+      for (const m of f.foam || []) sp.push(rect.left + f.x[m.i] + m.ox, rect.top + f.y[m.i] + m.oy, m.r * 5, m.life * 0.9);
+    }
+    q = sp.length / 4;
+    if (q) {
+      gl.useProgram(progS); gl.blendFunc(gl.ONE, gl.ONE);
+      gl.bindBuffer(gl.ARRAY_BUFFER, ptBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(sp), gl.DYNAMIC_DRAW);
+      const a1 = gl.getAttribLocation(progS, 'aPos'), a2 = gl.getAttribLocation(progS, 'aAtt');
+      gl.enableVertexAttribArray(a1); gl.vertexAttribPointer(a1, 2, gl.FLOAT, false, 16, 0);
+      gl.enableVertexAttribArray(a2); gl.vertexAttribPointer(a2, 2, gl.FLOAT, false, 16, 8);
+      gl.uniform2f(gl.getUniformLocation(progS, 'uRes'), W, H);
+      gl.uniform1f(gl.getUniformLocation(progS, 'uScale'), r);
+      gl.uniform3f(gl.getUniformLocation(progS, 'uCol'), 0.35, 0.95, 1.0);
+      gl.drawArrays(gl.POINTS, 0, q);
+      gl.disableVertexAttribArray(a2);
+    }
   }
   // Chain lightning: once a card's liquid is charged up (lots of loose fast droplets), arcs jump between them.
   function chargeAndArc(list, now) {
