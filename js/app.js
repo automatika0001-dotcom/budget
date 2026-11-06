@@ -165,12 +165,13 @@
   }
 
   // ---------------- catch-up mode ----------------
-  // Behind on the last 30 days (over minus under)? Each day's limit is lowered until it's paid back, within the
-  // chosen number of days, but never under the minimum per day (then it takes longer).
+  // Behind the even pace this month? Each day's limit is lowered until it's paid back: either within a chosen
+  // number of days or by living on a chosen daily budget, never under the minimum per day (then it takes longer).
+  // Today counts live: going over today's limit adds to what's missing straight away.
   const catchPlan = () => {
     const c = state.settings.catchup;
     if (c && c.on && c.v !== 2) { // started before 1.18.5: its amount added up every day's over, recount it
-      c.v = 2; c.start = today; c.debt = Math.max(0, L.paceGap(ledger, today).gap);
+      c.v = 2; c.start = today; c.debt = Math.max(0, L.paceGap(ledger, today, L.addDays(today, -1)).gap);
       if (!(c.debt > 0)) c.on = false;
       save();
     }
@@ -184,18 +185,29 @@
     if (ts.nextDate && ts.nextAllowance !== null) out.nextAllowance = cp.nextLimit(ts.nextDate, ts.nextAllowance);
     return out;
   }
-  // How far ahead of the even pace this pay month's spending is (same as the Stats chart).
-  const paceBalance = () => L.paceGap(ledger, today);
+  // The line in the main box while catching up.
+  function catchLineHtml() {
+    const c = state.settings.catchup;
+    if (!c || !c.on) return '';
+    const cp = catchPlan();
+    if (!cp) return '';
+    if (cp.done || cp.missing <= 0.004) return '<div class="cu-line">All caught up. Your daily budget is back to normal.</div>';
+    if (!cp.eta) return `<div class="cu-line"><b class="num">${money(cp.missing)}</b> still missing. At this minimum it can't be caught up: lower it in Catch-up mode.</div>`;
+    const n = cp.etaDays, dd = `${n} day${n === 1 ? '' : 's'}`;
+    return `<div class="cu-line"><b class="num">${dd}</b> until caught up, <b class="num">${money(cp.missing)}</b> still missing. After ${dd} your daily budget will be <b class="num">${money(cp.after)}</b>.</div>`;
+  }
+  // How far ahead of the even pace this pay month's spending was by yesterday (same as the Stats chart).
+  const paceBalance = () => L.paceGap(ledger, today, L.addDays(today, -1));
   function catchupHtml(ts) {
     const c = state.settings.catchup || {};
     const cp = c.on ? catchPlan() : null;
     let body = '';
     if (c.on && cp) {
-      body = cp.done ? '<div class="row"><span class="label">All caught up</span><b class="num">0</b></div>'
-        : `<div class="row"><span class="label">Left to catch up</span><b class="num">${money(cp.debt)}</b></div>
+      body = cp.done || cp.missing <= 0.004 ? '<div class="row"><span class="label">All caught up</span><b class="num">0</b></div>'
+        : `<div class="row"><span class="label">Still missing</span><b class="num">${money(cp.missing)}</b></div>
           ${ts.catchTake ? `<div class="row"><span class="label">Today's budget</span><span class="num">${money(ts.rawAllowance)} - ${money(ts.catchTake)} = <b>${money(ts.dailyAllowance)}</b></span></div>` : ''}
-          <div class="row"><span class="label">Balanced</span><span class="num">${cp.eta ? `${dShort(cp.eta)} · ${cp.etaDays} day${cp.etaDays === 1 ? '' : 's'}` : 'never at this minimum'}</span></div>
-          <button class="btn ghost block" id="cuEdit" style="margin-top:8px">Change</button>`;
+          <div class="row"><span class="label">Caught up</span><span class="num">${cp.eta ? `${dShort(cp.eta)} · ${cp.etaDays} day${cp.etaDays === 1 ? '' : 's'}` : 'never at this minimum'}</span></div>`;
+      body += '<button class="btn ghost block" id="cuEdit" style="margin-top:8px">Change</button>';
     }
     return `<div class="card catchup-card"><div class="toggle"><span><b>Catch-up mode</b></span><input type="checkbox" id="cuOn" ${c.on ? 'checked' : ''}></div>${body}</div>`;
   }
@@ -214,38 +226,59 @@
     const debt = editing ? (cp ? cp.debt : 0) : bal.gap;
     const raw = ts.rawAllowance !== undefined ? ts.rawAllowance : ts.dailyAllowance;
     const isHol = ledger.isHoliday || (() => false);
+    const day0 = L.daysInRange(ledger, today, today, today)[0];
+    const avail = day0 && day0.pool !== undefined ? day0.pool - day0.before : raw * Math.max(1, ts.budgetDaysLeft || 1);
     if (!(debt > 0.004)) {
       openSheet(`<h3>Catch-up mode</h3>
-        <div class="row"><span class="label">Spent this month</span><span class="num">${money(bal.spent)}</span></div>
-        <div class="row"><span class="label">Even pace by today</span><span class="num">${money(bal.pace)}</span></div>
-        <div class="row total"><span>Nothing to catch up</span><span class="num good">${money(-bal.gap)} under</span></div>
+        ${bal ? `<div class="row"><span class="label">Spent this month, by yesterday</span><span class="num">${money(bal.spent)}</span></div>
+        <div class="row"><span class="label">Even pace by yesterday</span><span class="num">${money(bal.pace)}</span></div>
+        <div class="row total"><span>Nothing to catch up</span><span class="num good">${money(-bal.gap)} under</span></div>` : '<div class="row total"><span>All caught up</span></div>'}
         <button class="btn primary block" id="cuOk" style="margin-top:12px">OK</button>`, (b) => { $('#cuOk', b).onclick = closeSheet; });
       return;
     }
     const minDef = c.min > 0 ? c.min : Math.max(0, Math.floor(L.typicalDaily(ledger) * 0.5));
+    const daysDef = editing && cp && cp.etaDays ? cp.etaDays : c.days || 14;
     openSheet(`<h3>Catch-up mode</h3>
-      ${bal ? `<div class="row"><span class="label">Spent this month</span><span class="num">${money(bal.spent)}</span></div>
-      <div class="row"><span class="label">Even pace by today</span><span class="num">${money(bal.pace)}</span></div>` : ''}
+      ${bal ? `<div class="row"><span class="label">Spent this month, by yesterday</span><span class="num">${money(bal.spent)}</span></div>
+      <div class="row"><span class="label">Even pace by yesterday</span><span class="num">${money(bal.pace)}</span></div>` : ''}
       <div class="row total"><span>To catch up</span><span class="num">${money(debt)}</span></div>
-      <div class="field" style="margin-top:12px"><label>Catch up within (days)</label><input id="cuDays" class="num" inputmode="numeric" value="${editing ? Math.max(1, L.diffDays(today, cp.end) + 1) : c.days || 14}"></div>
-      <div class="field"><label>Minimum per day, ${SYM}</label><input id="cuMin" class="num" inputmode="decimal" value="${minDef}"></div>
-      <div class="card" style="margin:0 0 12px"><div class="row"><span class="label">Today's budget</span><span class="num" id="cuToday"></span></div>
-        <div class="row"><span class="label">Balanced in</span><b class="num" id="cuEta"></b></div></div>
+      <div class="field" style="margin-top:12px"><label>Catch up within (days)</label><input id="cuDays" class="num" inputmode="numeric" value="${daysDef}"></div>
+      <div class="field"><label>Daily budget while catching up, ${SYM}</label><input id="cuBud" class="num" inputmode="decimal"></div>
+      <div class="field"><label>Never less than, ${SYM} a day</label><input id="cuMin" class="num" inputmode="decimal" value="${minDef}"></div>
+      <div class="card" style="margin:0 0 12px">
+        <div class="row"><span class="label">Today</span><span class="num" id="cuToday"></span></div>
+        <div class="row"><span class="label">Caught up in</span><b class="num" id="cuEta"></b></div>
+        <div class="row"><span class="label">Then a day</span><b class="num" id="cuAfter"></b></div></div>
       <button class="btn primary block" id="cuGo">${editing ? 'Save' : 'Start catching up'}</button>`, (b) => {
-      const calc = () => {
+      // Days and daily budget are two ways to say the same thing: change one and the other follows.
+      let mode = c.on && c.budget > 0 && editing ? 'budget' : 'days';
+      if (mode === 'budget') $('#cuBud', b).value = c.budget;
+      const cfgNow = () => {
         const days = Math.max(1, parseInt($('#cuDays', b).value, 10) || 1), min = Math.max(0, L.num($('#cuMin', b).value));
-        const endDay = L.addDays(today, days - 1);
-        const take = Math.max(0, Math.min(debt / Math.max(1, L.budgetDaysBetween(today, endDay, isHol)), raw - min, debt));
-        $('#cuToday', b).innerHTML = take > 0.004 ? `${money(raw)} - ${money(take)} = <b>${money(raw - take)}</b>` : `${money(raw)}`;
-        const e = L.catchupEta(ledger, debt, endDay, min, today, raw);
-        if (!e) { $('#cuEta', b).textContent = 'Never: the minimum is at or above a usual day\'s budget'; $('#cuEta', b).className = 'num bad'; $('#cuGo', b).disabled = true; return; }
-        $('#cuEta', b).textContent = `${e.days} day${e.days === 1 ? '' : 's'} · ${dShort(e.date)}${e.date > endDay ? ` (minimum stretches it from ${days})` : ''}`;
-        $('#cuEta', b).className = 'num'; $('#cuGo', b).disabled = false;
+        const bud = L.num($('#cuBud', b).value);
+        return mode === 'budget' && bud > 0 ? { start: today, days, min, budget: bud } : { start: today, days, min, budget: 0 };
       };
-      calc(); $('#cuDays', b).oninput = calc; $('#cuMin', b).oninput = calc;
+      const calc = () => {
+        const cfg = cfgNow(), take = L.catchupTake(cfg, isHol);
+        const tk = take(today, raw, debt, false);
+        $('#cuToday', b).innerHTML = tk > 0.004 ? `${money(raw)} - ${money(tk)} = <b>${money(raw - tk)}</b>` : `${money(raw)}`;
+        const f = L.catchupForecast(ledger, take, debt, today, avail, today);
+        if (mode === 'days' && document.activeElement !== $('#cuBud', b)) $('#cuBud', b).value = L.r2(raw - tk);
+        if (!f) {
+          $('#cuEta', b).textContent = 'Never: above what a usual day has'; $('#cuEta', b).className = 'num bad'; $('#cuAfter', b).textContent = ''; $('#cuGo', b).disabled = true; return;
+        }
+        if (mode === 'budget' && document.activeElement !== $('#cuDays', b)) $('#cuDays', b).value = f.days;
+        const wanted = parseInt($('#cuDays', b).value, 10) || 1;
+        $('#cuEta', b).textContent = `${f.days} day${f.days === 1 ? '' : 's'} · ${dShort(f.date)}${mode === 'days' && f.days > wanted ? ` (minimum stretches it from ${wanted})` : ''}`;
+        $('#cuEta', b).className = 'num'; $('#cuAfter', b).textContent = money(f.after); $('#cuGo', b).disabled = false;
+      };
+      calc();
+      $('#cuDays', b).oninput = () => { mode = 'days'; calc(); };
+      $('#cuBud', b).oninput = () => { mode = 'budget'; calc(); };
+      $('#cuMin', b).oninput = calc;
       $('#cuGo', b).onclick = () => {
-        const days = Math.max(1, parseInt($('#cuDays', b).value, 10) || 1), min = Math.max(0, L.num($('#cuMin', b).value));
-        state.settings.catchup = { v: 2, on: true, start: today, days, min: L.r2(min), debt: L.r2(debt) };
+        const cfg = cfgNow();
+        state.settings.catchup = { v: 2, on: true, start: today, days: cfg.days, min: L.r2(cfg.min), budget: L.r2(cfg.budget), debt: L.r2(debt) };
         save(); closeSheet(); render(); toast(editing ? 'Catch-up updated' : 'Catching up');
       };
     });
@@ -451,6 +484,7 @@
         <div class="caption">Vacation mode</div>
         <div class="big holiday-word">HOLIDAY!</div>
         ${spent ? `<div class="holiday-over num">Over budget: ${money(ts.spentToday)}</div>` : '<div class="small muted" style="margin-bottom:6px">Today has no budget. Enjoy it.</div>'}
+        ${catchLineHtml()}
         ${yesterdayHtml()}
         ${nextBoxHtml(ts)}
       </div>`;
@@ -462,6 +496,7 @@
           <span class="chip">Daily budget <b class="num">${money(ts.dailyAllowance)}</b></span>
           <span class="chip">Spent today <b class="num">${money(ts.spentToday)}</b></span>
         </div>
+        ${catchLineHtml()}
         ${yesterdayHtml()}
         ${nextBoxHtml(ts)}
       </div>`;

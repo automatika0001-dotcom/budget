@@ -312,3 +312,5 @@ body.catchup .btn.ghost { background: rgba(10, 34, 40, .85); }
 body.catchup .icon-btn { background: #0f2a2f; border-color: rgba(var(--accent-rgb), .45); }
 body.catchup .seg { background: rgba(8, 26, 30, .9); }
 body.catchup .chip, body.catchup .tomorrow { background: rgba(16, 44, 50, .9); }
+.cu-line { margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: rgba(var(--accent-rgb), .08); border: 1px solid rgba(var(--accent-rgb), .25); font-size: 14px; line-height: 1.45; }
+.cu-line b { color: var(--accent); }

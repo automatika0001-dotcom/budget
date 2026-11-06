@@ -539,7 +539,7 @@ console.log('pay range tests passed');
   t('the minimum per day wins: it takes longer instead', () => {
     const cfg = { on: true, start: '2026-11-01', days: 10, min: 95, debt: 100 };
     const cp = L.catchupPlan(L.buildLedger(mk(), '2026-11-01'), cfg, '2026-11-01');
-    near(cp.today.limit, 95, 'never under the minimum'); assert.strictEqual(cp.etaDays, 20);
+    near(cp.today.limit, 95, 'never under the minimum'); assert.ok(cp.etaDays > 10 && cp.etaDays <= 20, 'takes longer than 10 days: ' + cp.etaDays);
     assert.strictEqual(L.catchupDays(100, 10, 5), 20); assert.strictEqual(L.catchupDays(100, 10, 50), 10); assert.strictEqual(L.catchupDays(100, 10, 0), Infinity);
   });
   t('once paid back the limit is normal again', () => {
@@ -568,3 +568,23 @@ console.log('catch-up tests passed');
   });
 }
 console.log('pace gap tests passed');
+
+{
+  const sett = { payDay: 1, monthlySaving: 0, startDate: '2026-11-01', statsFrom: '2026-11-01', useExpected: false };
+  const mk = (exp) => ({ settings: sett, adjustments: [], reserves: [], incomes: [{ id: 'i', date: '2026-11-01', amount: 3000, source: 'S' }], expenses: exp || [] });
+  t('a daily budget instead of days: everything above it goes to the debt', () => {
+    const cfg = { on: true, start: '2026-11-01', days: 1, min: 0, budget: 80, debt: 100 };
+    const cp = L.catchupPlan(L.buildLedger(mk(), '2026-11-01'), cfg, '2026-11-01');
+    near(cp.today.limit, 80, 'lives on 80'); near(cp.today.take, 20, '20 back a day');
+    assert.ok(cp.etaDays >= 4 && cp.etaDays <= 5, 'about 5 days: ' + cp.etaDays);
+    assert.ok(cp.after > 100, 'afterwards the budget is above normal, the kept money stays in the month: ' + cp.after);
+  });
+  t('going over today\'s limit counts straight away', () => {
+    const cfg = { on: true, start: '2026-11-01', days: 10, min: 0, debt: 100 };
+    const calm = L.catchupPlan(L.buildLedger(mk(), '2026-11-01'), cfg, '2026-11-01');
+    const over = L.catchupPlan(L.buildLedger(mk([{ id: 'a', date: '2026-11-01', amount: 150, place: 'X' }]), '2026-11-01'), cfg, '2026-11-01');
+    near(calm.missing, 90, 'planned: 10 back today'); near(over.missing, 150, '50 over the normal budget today');
+    assert.ok(over.etaDays > calm.etaDays || over.today.limit === calm.today.limit, 'forecast redone');
+  });
+}
+console.log('catch-up live tests passed');
