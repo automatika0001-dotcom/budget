@@ -4,7 +4,7 @@
    One animation loop for everything; it sleeps while the app is hidden. */
 (function (root) {
   'use strict';
-  let on = false, raf = 0, bg = null, zap = null, lastT = 0;
+  let on = false, raf = 0, bg = null, zap = null, lastT = 0, frameAvg = 16, lite = false;
   // apparent gravity on the screen in units of g (x: right, y: down). Includes shakes: moving the phone right
   // pushes the liquid left, like a real glass.
   const grav = { x: 0, y: 1, live: false, src: '' };
@@ -139,12 +139,14 @@
     return { gx, gy, dx };
   }
   function stepLiquid(s, dt, w, H) {
-    s.acc = Math.min(s.acc + dt, 0.05);
+    // Never let a slow frame make the next one heavier (that spiral is what lagged for a minute after opening
+    // the app while the phone was still busy): at most 1/30 s of physics and 14 steps per frame, the rest is dropped.
+    s.acc = Math.min(s.acc + dt, 1 / 30);
     let g = null, steps = 0; const rise = s.rise; rise.fill(0);
     // Step size follows the fastest wave (CFL): hard swings pile water up and speed waves up, and too big a
     // step is what turned the surface into a saw blade.
     let T = 0;
-    while (s.acc >= SUB * 0.5 && steps < 48) {
+    while (s.acc >= SUB * 0.5 && steps < 14) {
       let hm = 0, um = 0;
       for (let i = 0; i < N; i++) if (s.h[i] > hm) hm = s.h[i];
       for (let j = 0; j <= N; j++) { const a = Math.abs(s.u[j]); if (a > um) um = a; }
@@ -153,7 +155,7 @@
       s.acc -= dts; T += dts; g = physics(s, w, H, dts); steps++;
       for (let i = 0; i < N; i++) rise[i] += s.h[i] - s.prev[i];
     }
-    if (steps >= 48) s.acc = 0;
+    if (steps >= 14) s.acc = 0;
     if (!g || T <= 0) return;
     const dx = g.dx, top = (i) => H - s.h[i];
     // spray where the surface shoots up fast, foam where the water is rough
@@ -271,7 +273,7 @@
     ctx.clip();
     ctx.globalCompositeOperation = 'lighter';
     // drifting plasma glows
-    for (let k = 0; k < 3; k++) {
+    for (let k = 0; k < (lite ? 1 : 3); k++) {
       const cx = w * (0.5 + 0.45 * Math.sin(t * (0.21 + k * 0.07) + k * 2)), cy = minTop + (H - minTop) * (0.45 + 0.3 * Math.sin(t * 0.3 + k));
       const r = Math.max(30, (H - minTop) * 0.9);
       const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
@@ -280,7 +282,7 @@
       ctx.fillStyle = rg; ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
     }
     // flowing energy ribbons following the surface
-    for (let k = 0; k < 5; k++) {
+    for (let k = 0; k < (lite ? 2 : 5); k++) {
       const off = 6 + k * 9, ph = t * (0.7 + k * 0.23) + k * 1.9, amp = 3 + k * 0.8;
       ctx.beginPath();
       for (let i = 0; i <= N; i += 4) {
@@ -365,7 +367,7 @@
     return `${r}, ${g}, ${b}`;
   }
   function refreshTints(card, s, now) {
-    if (s.tintCard === card && now - (s.tintAt || 0) < 500) return;
+    if (s.tintCard === card && now - (s.tintAt || 0) < 1200) return;
     s.tintCard = card; s.tintAt = now;
     const cr = card.getBoundingClientRect(), out = [];
     for (const el of card.querySelectorAll('*')) {
@@ -434,6 +436,9 @@
     if (!on) return;
     if (document.hidden) { lastT = 0; raf = requestAnimationFrame(frame); return; }
     const dt = Math.min(0.05, lastT ? (now - lastT) / 1000 : 0.016);
+    // Busy phone (just opened, still loading): draw a lighter liquid until frames are quick again.
+    frameAvg += (dt * 1000 - frameAvg) * 0.1;
+    lite = lite ? frameAvg > 19 : frameAvg > 24;
     lastT = now;
     if (!grav.live) { grav.x = Math.sin(now / 1500) * 0.25; grav.y = 1; } // no sensor (computer): a gentle sway
     const vh = root.innerHeight;
