@@ -10,7 +10,7 @@
   const grav = { x: 0, y: 1, live: false, src: '' };
   const sims = new Map(); // card -> liquid state
   const bubbles = []; // background bubbles
-  let sparkAt = 0, spark = null;
+  let sparkAt = 0, spark = null, zapDirty = false;
   const DPR = () => Math.min(2, root.devicePixelRatio || 1);
   const screenAngle = () => (((screen.orientation && screen.orientation.angle) || root.orientation || 0) * Math.PI) / 180;
   // Heavy liquid: the slow part of the signal (how the phone is tilted) counts almost fully, quick jolts only
@@ -128,7 +128,7 @@
     // shared out between them at once (water only moves, none is lost), so a hard swing makes a rounded hump,
     // never a wall of water.
     const lim = 0.9 * dx;
-    for (let pass = 0; pass < 40; pass++) {
+    for (let pass = 0; pass < 12; pass++) {
       const fwd = pass % 2 === 0;
       let worst = 0;
       for (let k = 1; k < N; k++) {
@@ -241,6 +241,17 @@
     curve(ctx, y, dx, false);
     ctx.lineTo(w, y[N - 1]); ctx.lineTo(w, H); ctx.closePath();
   }
+  // soft round glows drawn once and stamped (making a gradient every frame is slow on phones)
+  const glowCache = [];
+  function glowSprite(k) {
+    if (glowCache[k]) return glowCache[k];
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const x = c.getContext('2d'), rg = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+    const col = ['0, 200, 255', '90, 120, 255', '170, 90, 255'][k % 3];
+    rg.addColorStop(0, `rgba(${col}, 0.14)`); rg.addColorStop(1, `rgba(${col}, 0)`);
+    x.fillStyle = rg; x.fillRect(0, 0, 64, 64);
+    return (glowCache[k] = c);
+  }
   let orbCanvas = null;
   function orbSprite() { // one glowing orb drawn once, stamped for every drop
     if (orbCanvas) return orbCanvas;
@@ -282,10 +293,9 @@
     for (let k = 0; k < (lite ? 1 : 3); k++) {
       const cx = w * (0.5 + 0.45 * Math.sin(t * (0.21 + k * 0.07) + k * 2)), cy = minTop + (H - minTop) * (0.45 + 0.3 * Math.sin(t * 0.3 + k));
       const r = Math.max(30, (H - minTop) * 0.9);
-      const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-      rg.addColorStop(0, `hsla(${hue(k * 2)}, 100%, 60%, ${0.10 + 0.05 * E})`);
-      rg.addColorStop(1, 'hsla(220, 100%, 50%, 0)');
-      ctx.fillStyle = rg; ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+      ctx.globalAlpha = Math.min(1, 0.65 + 0.35 * E);
+      ctx.drawImage(glowSprite(k), cx - r, cy - r, r * 2, r * 2);
+      ctx.globalAlpha = 1;
     }
     // flowing energy ribbons following the surface
     for (let k = 0; k < (lite ? 2 : 5); k++) {
@@ -314,13 +324,19 @@
     ctx.strokeStyle = `hsla(${hue(0)}, 100%, 70%, ${0.35 * pulse + 0.15 * E})`; ctx.lineWidth = 2.4; ctx.stroke();
     ctx.strokeStyle = `rgba(230, 255, 255, ${0.55 * pulse})`; ctx.lineWidth = 0.9; ctx.stroke();
     // foam: hot sparks riding the surface
-    for (let i = 0; i < N; i++) {
-      const f = s.foam[i];
-      if (f < 0.06) continue;
-      const seed = Math.sin(i * 12.9898 + ((lastT / 120) | 0) * 0.37) * 43758.5;
-      const jx = seed - Math.floor(seed), jy = seed * 7.1 - Math.floor(seed * 7.1);
-      ctx.fillStyle = `rgba(190, 250, 255, ${Math.min(0.9, f)})`;
-      ctx.beginPath(); ctx.arc((i + jx) * dx, y[i] + jy * 3 * f, 0.7 + f * 1.6, 0, 6.283); ctx.fill();
+    // (grouped into 3 brightness levels: 3 draws instead of one per spark)
+    for (let lv = 0; lv < 3; lv++) {
+      const lo = [0.06, 0.35, 0.65][lv], hi = [0.35, 0.65, 2][lv];
+      ctx.beginPath();
+      for (let i = 0; i < N; i++) {
+        const f = s.foam[i];
+        if (f < lo || f >= hi) continue;
+        const seed = Math.sin(i * 12.9898 + ((lastT / 120) | 0) * 0.37) * 43758.5;
+        const jx = seed - Math.floor(seed), jy = seed * 7.1 - Math.floor(seed * 7.1);
+        const X = (i + jx) * dx, Y = y[i] + jy * 3 * f, R = 0.7 + f * 1.6;
+        ctx.moveTo(X + R, Y); ctx.arc(X, Y, R, 0, 6.283);
+      }
+      ctx.fillStyle = `rgba(190, 250, 255, ${[0.3, 0.6, 0.9][lv]})`; ctx.fill();
     }
     // spray: small glowing orbs
     const orb = orbSprite();
@@ -372,8 +388,10 @@
     if (c.h > 155 && c.h < 200) return null; // the aqua of the theme itself
     return `${r}, ${g}, ${b}`;
   }
+  let tintBudget = 0;
   function refreshTints(card, s, now) {
-    if (s.tintCard === card && now - (s.tintAt || 0) < 1200) return;
+    if (s.tintCard === card && now - (s.tintAt || 0) < 4000) return;
+    if (tintBudget-- <= 0) return; // reading styles makes the browser recalculate: one card per frame at most
     s.tintCard = card; s.tintAt = now;
     const cr = card.getBoundingClientRect(), out = [];
     for (const el of card.querySelectorAll('*')) {
@@ -441,6 +459,10 @@
     raf = 0;
     if (!on) return;
     if (document.hidden) { lastT = 0; raf = requestAnimationFrame(frame); return; }
+    // 60 frames a second, steady: on 90/120 Hz screens every other screen refresh is skipped, so each frame has
+    // twice the time and the motion stays even instead of stuttering.
+    if (lastT && now - lastT < 1000 / 64) { raf = requestAnimationFrame(frame); return; }
+    tintBudget = 1;
     const dt = Math.min(0.05, lastT ? (now - lastT) / 1000 : 0.016);
     // Busy phone (just opened, still loading): draw a lighter liquid until frames are quick again.
     frameAvg += (dt * 1000 - frameAvg) * 0.1;
@@ -449,21 +471,30 @@
     if (!grav.live) { grav.x = Math.sin(now / 1500) * 0.25; grav.y = 1; } // no sensor (computer): a gentle sway
     const vh = root.innerHeight;
     for (const [card, s] of sims) if (!card.isConnected) { s.canvas.remove(); sims.delete(card); }
+    // only cards whose lower part (where the liquid is) is on screen
     const cards = Array.from(document.querySelectorAll('.view:not([hidden]) .card, .sheet:not([hidden]) .card')).filter((c) => {
-      const r = c.getBoundingClientRect(); return r.bottom > 0 && r.top < vh && r.width > 0;
+      const r = c.getBoundingClientRect(); return r.bottom > 0 && r.bottom - Math.min(r.height, 160) < vh && r.width > 0;
     });
     for (const card of cards) {
       const s = simFor(card);
-      const { w, h, r } = fit(s.canvas);
+      const w = card.clientWidth, h = card.clientHeight;
       if (!w || !h) continue;
+      // The canvas only covers the bottom of the card, where the liquid can reach: far fewer pixels to draw.
+      const lvl = Math.min(Math.max(h * 0.26, 22), 80), regionH = Math.min(h, Math.round(lvl * 3.4 + 40));
+      if (s.regionH !== regionH) { s.canvas.style.height = regionH + 'px'; s.regionH = regionH; }
+      const { r } = fit(s.canvas);
       stepLiquid(s, dt, w, h);
       refreshTints(card, s, now);
-      const ctx = s.canvas.getContext('2d');
-      ctx.setTransform(r, 0, 0, r, 0, 0); ctx.clearRect(0, 0, w, h);
+      const ctx = s.ctx || (s.ctx = s.canvas.getContext('2d', { desynchronized: true }));
+      ctx.setTransform(r, 0, 0, r, 0, -(h - regionH) * r); ctx.clearRect(0, h - regionH, w, regionH);
       drawLiquid(s, ctx, w, h);
     }
-    { const { w, h, r } = fit(bg); const ctx = bg.getContext('2d'); ctx.setTransform(r, 0, 0, r, 0, 0); stepBg(dt, w, h, ctx); }
-    { const { w, h, r } = fit(zap); const ctx = zap.getContext('2d'); ctx.setTransform(r, 0, 0, r, 0, 0); stepZap(now, w, h, ctx, cards); }
+    { const { w, h, r } = fit(bg); const ctx = bg.getContext('2d', { desynchronized: true }); ctx.setTransform(r, 0, 0, r, 0, 0); stepBg(dt, w, h, ctx); }
+    // the spark layer covers the whole screen: only touch it when a spark is (or just was) on it
+    if (spark || now > sparkAt || zapDirty) {
+      const { w, h, r } = fit(zap); const ctx = zap.getContext('2d', { desynchronized: true }); ctx.setTransform(r, 0, 0, r, 0, 0);
+      stepZap(now, w, h, ctx, cards); zapDirty = !!spark;
+    }
     raf = requestAnimationFrame(frame);
   }
 
