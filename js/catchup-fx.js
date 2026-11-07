@@ -1,58 +1,19 @@
-/* Catch-up mode look: aqua colours, bubbles and sparks, and blue liquid in every card that sloshes with the
-   phone's movement. The liquid is a shallow-water simulation (120 columns per card, drawn as a smooth curve) driven by the phone's
-   accelerometer with no smoothing, so tilts and shakes act at once; fast waves throw spray and leave foam.
+/* Catch-up mode look: aqua colours, bubbles and sparks, and glowing liquid in every card. The liquid is a
+   shallow-water simulation (120 columns per card, drawn as a smooth curve). It is mostly calm with a slow sway,
+   and now and then a wave of random strength and speed rolls through or something drops in; strong waves throw
+   spray and leave foam.
    One animation loop for everything; it sleeps while the app is hidden. */
 (function (root) {
   'use strict';
   let on = false, raf = 0, bg = null, zap = null, lastT = 0, frameAvg = 16, lite = false;
-  // apparent gravity on the screen in units of g (x: right, y: down). Includes shakes: moving the phone right
-  // pushes the liquid left, like a real glass.
-  const grav = { x: 0, y: 1, live: false, src: '' };
+  // No sensors: every card's liquid has its own quiet weather (see weather()). grav only drifts the bubbles.
+  const grav = { x: 0, y: 1 };
   const sims = new Map(); // card -> liquid state
   const bubbles = []; // background bubbles
   let sparkAt = 0, spark = null, zapDirty = false;
   const DPR = () => Math.min(2, root.devicePixelRatio || 1);
-  const screenAngle = () => (((screen.orientation && screen.orientation.angle) || root.orientation || 0) * Math.PI) / 180;
-  // Heavy liquid: the slow part of the signal (how the phone is tilted) counts almost fully, quick jolts only
-  // partly, so it leans with the phone right away but doesn't jump at every twitch.
-  const slow = { x: 0, y: 1, t: 0 };
-  function toScreen(x, y) {
-    if (!isFinite(x) || !isFinite(y)) return; // a broken sensor reading must never poison the liquid
-    const a = screenAngle(), c = Math.cos(a), s = Math.sin(a);
-    const X = x * c - y * s, Y = x * s + y * c;
-    const now = performance.now(), dt = slow.t ? Math.min(0.1, (now - slow.t) / 1000) : 1; slow.t = now;
-    const k = Math.min(1, dt / 0.04);
-    slow.x += (X - slow.x) * k; slow.y += (Y - slow.y) * k;
-    grav.x = slow.x + (X - slow.x) * 0.7; grav.y = slow.y + (Y - slow.y) * 0.7; grav.live = true;
-  }
-  // Android reports the sensor's push against gravity, older iPhones the gravity itself: the tilt from the
-  // orientation sensor tells which, so the liquid never falls the wrong way.
-  let flipVotes = 0, orientY = null, motionAt = 0;
-  function onMotion(e) {
-    const a = e.accelerationIncludingGravity;
-    if (!a || !isFinite(a.x) || !isFinite(a.y) || a.x === null || a.y === null) return;
-    grav.src = 'motion'; motionAt = performance.now();
-    let x = -a.x / 9.81, y = a.y / 9.81;
-    if (orientY !== null && Math.abs(orientY) > 0.4 && Math.abs(y) > 0.4) flipVotes = Math.max(-20, Math.min(20, flipVotes + (Math.sign(orientY) !== Math.sign(y) ? 1 : -1)));
-    if (flipVotes > 0) { x = -x; y = -y; }
-    toScreen(x, y);
-  }
-  function onOrient(e) {
-    if (e.gamma === null || e.beta === null) return;
-    const g = ((e.gamma || 0) * Math.PI) / 180, b = ((e.beta || 0) * Math.PI) / 180;
-    orientY = Math.sin(b);
-    // Use tilt whenever motion readings stop coming (some phones send them only for a moment after opening).
-    if (grav.src !== 'motion' || performance.now() - motionAt > 250) toScreen(Math.sin(g) * Math.cos(b), Math.sin(b));
-  }
-
-  /** iOS needs a tap before it shares motion data. Call from the switch's click. */
-  function askMotion() {
-    try {
-      const O = root.DeviceOrientationEvent, M = root.DeviceMotionEvent;
-      if (M && typeof M.requestPermission === 'function') M.requestPermission().catch(() => {});
-      if (O && typeof O.requestPermission === 'function') O.requestPermission().catch(() => {});
-    } catch (e) { /* not available */ }
-  }
+  /** Kept so the app can still call it; the liquid no longer uses the phone's sensors. */
+  function askMotion() {}
 
   function layer(id, z) {
     const c = document.createElement('canvas');
@@ -88,8 +49,7 @@
     }
     const dx = w / N, h = s.h, u = s.u;
     // flat phone: keep some "down" so the liquid still settles
-    if (!isFinite(grav.x) || !isFinite(grav.y)) { grav.x = 0; grav.y = 1; slow.x = 0; slow.y = 1; }
-    const gx = Math.max(-1.5, Math.min(1.5, grav.x)) * G, gy = Math.max(0.3, Math.min(1.5, grav.y)) * G;
+    const gx = Math.max(-1.5, Math.min(1.5, s.gx || 0)) * G, gy = G;
     const vmax = (0.45 * dx) / dts, q = dts / SUB;
     s.prev.set(h);
     for (let j = 1; j < N; j++) {
@@ -141,7 +101,33 @@
     }
     return { gx, gy, dx };
   }
+  /* The weather of one card's liquid: a slow, barely-there sway, and every 3 to 15 s an event: usually a gentle
+     push that rolls a wave across, sometimes a strong one, sometimes a drop falling in at a random spot. Each card
+     has its own, so they don't move in step. */
+  function weather(s, dt) {
+    s.wt = (s.wt || 0) + dt;
+    if (s.ph === undefined) { s.ph = Math.random() * 6.28; s.next = 3 + Math.random() * 8; }
+    if (s.wt >= s.next) {
+      const strong = Math.random() < 0.18, dir = Math.random() < 0.5 ? -1 : 1;
+      if (Math.random() < 0.35) { // a drop falls in: a bump that spreads out as rings of waves
+        const c = 8 + Math.random() * (N - 16), wd = 3 + Math.random() * 6, amp = (strong ? 18 : 5) + Math.random() * (strong ? 20 : 10);
+        let add = 0; const bump = new Float32Array(N);
+        for (let i = 0; i < N; i++) { bump[i] = amp * Math.exp(-((i - c) * (i - c)) / (2 * wd * wd)); add += bump[i]; }
+        for (let i = 0; i < N; i++) s.h[i] = Math.max(0, s.h[i] + bump[i] - add / N);
+      } else {
+        s.ev = { t0: s.wt, dur: 0.3 + Math.random() * (strong ? 0.6 : 1.4), amp: dir * (strong ? 0.45 + Math.random() * 0.55 : 0.06 + Math.random() * 0.22) };
+      }
+      s.next = s.wt + 3 + Math.random() * 12;
+    }
+    let gx = Math.sin(s.wt * 0.31 + s.ph) * 0.035 + Math.sin(s.wt * 0.093 + s.ph * 2) * 0.045;
+    if (s.ev) {
+      const q = (s.wt - s.ev.t0) / s.ev.dur;
+      if (q >= 1) s.ev = null; else gx += s.ev.amp * Math.sin(Math.PI * q);
+    }
+    s.gx = gx;
+  }
   function stepLiquid(s, dt, w, H) {
+    weather(s, dt);
     if (!isFinite(s.acc) || !isFinite(s.h[0]) || !isFinite(s.h[N >> 1]) || !isFinite(s.u[N >> 1])) { // never stay frozen
       s.h.fill(s.level || 0); s.u.fill(0); s.acc = 0; s.drops = []; s.foam.fill(0);
     }
@@ -156,7 +142,7 @@
       let hm = 0, um = 0;
       for (let i = 0; i < N; i++) if (s.h[i] > hm) hm = s.h[i];
       for (let j = 0; j <= N; j++) { const a = Math.abs(s.u[j]); if (a > um) um = a; }
-      const c = Math.sqrt(Math.max(0.3, Math.min(1.5, grav.y)) * G * hm) + um, dxs = w / N;
+      const c = Math.sqrt(G * hm) + um, dxs = w / N;
       const dts = Math.min(SUB, s.acc, (0.7 * dxs) / Math.max(1, c));
       s.acc -= dts; T += dts; g = physics(s, w, H, dts); steps++;
       for (let i = 0; i < N; i++) rise[i] += s.h[i] - s.prev[i];
@@ -468,7 +454,6 @@
     frameAvg += (dt * 1000 - frameAvg) * 0.1;
     lite = lite ? frameAvg > 19 : frameAvg > 24;
     lastT = now;
-    if (!grav.live) { grav.x = Math.sin(now / 1500) * 0.25; grav.y = 1; } // no sensor (computer): a gentle sway
     const vh = root.innerHeight;
     for (const [card, s] of sims) if (!card.isConnected) { s.canvas.remove(); sims.delete(card); }
     // only cards whose lower part (where the liquid is) is on screen
@@ -504,21 +489,17 @@
     on = true;
     bg = bg || layer('fxBg', 0);
     zap = zap || layer('fxZap', 40);
-    root.addEventListener('devicemotion', onMotion);
-    root.addEventListener('deviceorientation', onOrient);
     lastT = 0; raf = requestAnimationFrame(frame);
   }
   function stop() {
     document.body.classList.remove('catchup');
     on = false;
     if (raf) cancelAnimationFrame(raf); raf = 0;
-    root.removeEventListener('devicemotion', onMotion);
-    root.removeEventListener('deviceorientation', onOrient);
     for (const s of sims.values()) s.canvas.remove();
     sims.clear(); bubbles.length = 0; spark = null;
     if (bg) { bg.remove(); bg = null; }
     if (zap) { zap.remove(); zap = null; }
   }
 
-  root.CatchupFX = { start, stop, askMotion, isOn: () => on, _grav: grav, _sims: sims };
+  root.CatchupFX = { start, stop, askMotion, isOn: () => on, _sims: sims };
 })(window);
