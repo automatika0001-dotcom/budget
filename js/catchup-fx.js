@@ -17,6 +17,7 @@
   // partly, so it leans with the phone right away but doesn't jump at every twitch.
   const slow = { x: 0, y: 1, t: 0 };
   function toScreen(x, y) {
+    if (!isFinite(x) || !isFinite(y)) return; // a broken sensor reading must never poison the liquid
     const a = screenAngle(), c = Math.cos(a), s = Math.sin(a);
     const X = x * c - y * s, Y = x * s + y * c;
     const now = performance.now(), dt = slow.t ? Math.min(0.1, (now - slow.t) / 1000) : 1; slow.t = now;
@@ -26,11 +27,11 @@
   }
   // Android reports the sensor's push against gravity, older iPhones the gravity itself: the tilt from the
   // orientation sensor tells which, so the liquid never falls the wrong way.
-  let flipVotes = 0, orientY = null;
+  let flipVotes = 0, orientY = null, motionAt = 0;
   function onMotion(e) {
     const a = e.accelerationIncludingGravity;
-    if (!a || typeof a.x !== 'number' || a.x === null) return;
-    grav.src = 'motion';
+    if (!a || !isFinite(a.x) || !isFinite(a.y) || a.x === null || a.y === null) return;
+    grav.src = 'motion'; motionAt = performance.now();
     let x = -a.x / 9.81, y = a.y / 9.81;
     if (orientY !== null && Math.abs(orientY) > 0.4 && Math.abs(y) > 0.4) flipVotes = Math.max(-20, Math.min(20, flipVotes + (Math.sign(orientY) !== Math.sign(y) ? 1 : -1)));
     if (flipVotes > 0) { x = -x; y = -y; }
@@ -40,7 +41,8 @@
     if (e.gamma === null || e.beta === null) return;
     const g = ((e.gamma || 0) * Math.PI) / 180, b = ((e.beta || 0) * Math.PI) / 180;
     orientY = Math.sin(b);
-    if (grav.src !== 'motion') toScreen(Math.sin(g) * Math.cos(b), Math.sin(b));
+    // Use tilt whenever motion readings stop coming (some phones send them only for a moment after opening).
+    if (grav.src !== 'motion' || performance.now() - motionAt > 250) toScreen(Math.sin(g) * Math.cos(b), Math.sin(b));
   }
 
   /** iOS needs a tap before it shares motion data. Call from the switch's click. */
@@ -86,6 +88,7 @@
     }
     const dx = w / N, h = s.h, u = s.u;
     // flat phone: keep some "down" so the liquid still settles
+    if (!isFinite(grav.x) || !isFinite(grav.y)) { grav.x = 0; grav.y = 1; slow.x = 0; slow.y = 1; }
     const gx = Math.max(-1.5, Math.min(1.5, grav.x)) * G, gy = Math.max(0.3, Math.min(1.5, grav.y)) * G;
     const vmax = (0.45 * dx) / dts, q = dts / SUB;
     s.prev.set(h);
@@ -139,6 +142,9 @@
     return { gx, gy, dx };
   }
   function stepLiquid(s, dt, w, H) {
+    if (!isFinite(s.acc) || !isFinite(s.h[0]) || !isFinite(s.h[N >> 1]) || !isFinite(s.u[N >> 1])) { // never stay frozen
+      s.h.fill(s.level || 0); s.u.fill(0); s.acc = 0; s.drops = []; s.foam.fill(0);
+    }
     // Never let a slow frame make the next one heavier (that spiral is what lagged for a minute after opening
     // the app while the phone was still busy): at most 1/30 s of physics and 14 steps per frame, the rest is dropped.
     s.acc = Math.min(s.acc + dt, 1 / 30);
