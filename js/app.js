@@ -183,8 +183,8 @@
     const row = (r, kind, on) => `<label class="item pick"><input type="checkbox" data-${kind}="${esc(r.key)}" ${on ? 'checked' : ''}>
       <div class="meta"><div class="title">${esc(r.name)}</div><div class="sub">${r.n}× · ${dShort(r.last)}</div></div><div class="amt num">${money(r.total)}</div></label>`;
     openSheet(`<h3>Short-term investment</h3>
-      <div class="field"><label>Money goes out to (counts as spending until paid back)</label><div class="list">${exps.slice(0, 40).map((r) => row(r, 'ie', expOn(r.key))).join('')}</div></div>
-      <div class="field"><label>Money comes back from (pays it back, the rest is profit)</label><div class="list">${incs.slice(0, 30).map((r) => row(r, 'ii', incOn(r.key))).join('') || '<div class="empty">No income yet</div>'}</div></div>
+      <div class="field"><label>Paid to</label><div class="list">${exps.slice(0, 40).map((r) => row(r, 'ie', expOn(r.key))).join('')}</div></div>
+      <div class="field"><label>Paid back by</label><div class="list">${incs.slice(0, 30).map((r) => row(r, 'ii', incOn(r.key))).join('') || '<div class="empty">No income yet</div>'}</div></div>
       <button class="btn primary block" id="ivSave">Save</button>`, (b) => {
       $('#ivSave', b).onclick = () => {
         $$('[data-ie]', b).forEach((x) => {
@@ -192,7 +192,7 @@
           if (x.checked) cfg.map[k] = 'invest'; else if (cfg.map[k] === 'invest') delete cfg.map[k];
         });
         ic.income = $$('[data-ii]', b).filter((x) => x.checked).map((x) => x.dataset.ii);
-        save(); closeSheet(); render(); toast('Investment sources saved');
+        save(); closeSheet(); render(); toast('Saved');
       };
     });
   }
@@ -202,7 +202,7 @@
     const title = kind === 'income' ? (e.source || 'Income') : (e.place || 'Expense');
     return `<div class="item" data-kind="${kind}" data-id="${e.id}">
       <div class="dot">${initial}</div>
-      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && L.incomeKind(e) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.reserveId ? '<span class="tag">reserved</span>' : ''}${(() => { const v = investOf(e.id); if (!v) return ''; if (kind === 'income') return `<span class="tag">investment: ${v.paidBack ? money(v.paidBack) + ' back, ' : ''}${money(v.profit)} profit</span>`; return `<span class="tag">${v.repaid >= v.fullAmount - 0.004 ? 'paid back' : v.repaid > 0 ? money(v.repaid) + ' paid back' : 'invested'}</span>`; })()}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
+      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && L.incomeKind(e) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.reserveId ? '<span class="tag">reserved</span>' : ''}${(() => { const v = investOf(e.id); if (!v) return ''; if (kind === 'income') return `<span class="tag">+${money(v.profit)} profit</span>`; return `<span class="tag">${v.repaid >= v.fullAmount - 0.004 ? 'paid back' : v.repaid > 0 ? money(v.repaid) + ' back' : 'invested'}</span>`; })()}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
       <div class="sub">${dShort(e.date)}${kind === 'expense' ? (() => { const id = window.Industry.classifyExpense(e, state.settings.industry); const x = id && window.Industry.allIndustries(state.settings.industry).find((y) => y.id === id); return x ? ` · <span style="color:${x.color}">${esc(x.name)}</span>` : ''; })() : ''}${e.note ? ' · ' + esc(e.note) : ''}</div></div>
       <div class="amt num ${kind === 'income' ? 'good' : ''}">${kind === 'income' ? '+' : '-'}${money(e.amount)}</div></div>`;
   }
@@ -212,7 +212,11 @@
     const v = per && per.invest;
     const any = v && (v.out || v.payouts || v.open);
     if (!any && !(investCfg().income.length || Object.values(state.settings.industry.map || {}).includes('invest'))) return '';
-    return `<div class="inv-line small"><span>Short-term investment: ${money(v ? v.out : 0)} in${v && v.back ? `, ${money(v.back)} paid back` : ''}${v && v.profit ? `, <b class="good">+${money(v.profit)}</b> profit` : ''}${v && v.open ? ` · ${money(v.open)} still out, counted as spent` : ''}</span>
+    const parts = [`${money(v ? v.out : 0)} in`];
+    if (v && v.back) parts.push(`${money(v.back)} back`);
+    if (v && v.profit) parts.push(`<b class="good">+${money(v.profit)}</b> profit`);
+    if (v && v.open) parts.push(`${money(v.open)} out`);
+    return `<div class="inv-line small"><span>Investments: ${parts.join(' · ')}</span>
       <button class="btn ghost small-btn" id="invSrc">Sources</button></div>`;
   }
 
@@ -661,7 +665,7 @@
       <div class="card">
         <h2>Monthly allowance</h2>
         <div class="row"><span class="label">Income (net)${per.incomeExpected ? ' <span class="tag">expected</span>' : ''}</span><span class="num">${money(per.income)}</span></div>
-        ${per.invest && per.invest.profit ? `<div class="row"><span class="label small">of which short-term investment profit</span><span class="num small good">+${money(per.invest.profit)}</span></div>` : ''}
+        ${per.invest && per.invest.profit ? `<div class="row"><span class="label small">of which investment profit</span><span class="num small good">+${money(per.invest.profit)}</span></div>` : ''}
         ${per.advance > 0 ? `<div class="row"><span class="label small">of which advance received${per.incomeExpected ? ', ' + money(per.salaryToCome) + ' still to come' : ''}</span><span class="num small muted">${money(per.advance)}</span></div>` : ''}
         <div class="row"><span class="label">Savings</span><span class="num">-${money(per.saving)}</span></div>
         ${per.carryIn ? `<div class="row"><span class="label">${per.carryIn < 0 ? 'Overspend from last month' : 'Rollover from last month'}</span><span class="num ${per.carryIn < 0 ? 'bad' : 'good'}">${signed(per.carryIn)}</span></div>` : ''}
