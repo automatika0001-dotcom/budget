@@ -250,35 +250,60 @@
         <div class="row"><span class="label">Caught up in</span><b class="num" id="cuEta"></b></div>
         <div class="row"><span class="label">Then a day</span><b class="num" id="cuAfter"></b></div></div>
       <button class="btn primary block" id="cuGo">${editing ? 'Save' : 'Start catching up'}</button>`, (b) => {
-      // Days and daily budget are two ways to say the same thing: change one and the other follows.
-      let mode = c.on && c.budget > 0 && editing ? 'budget' : 'days';
-      if (mode === 'budget') $('#cuBud', b).value = c.budget;
-      const cfgNow = () => {
-        const days = Math.max(1, parseInt($('#cuDays', b).value, 10) || 1), min = Math.max(0, L.num($('#cuMin', b).value));
-        const bud = L.num($('#cuBud', b).value);
-        return mode === 'budget' && bud > 0 ? { start: today, days, min, budget: bud } : { start: today, days, min, budget: 0 };
-      };
-      const calc = () => {
-        const cfg = cfgNow(), take = L.catchupTake(cfg, isHol);
-        const tk = take(today, raw, debt, false);
+      /* Days and daily budget are one plan seen two ways: you live on the daily budget and are caught up after
+         that many days. The plan is always kept as a daily budget, so the two fields can never disagree:
+         - type days: the highest daily budget that gets you there in that many days is filled in;
+         - type a budget: the days it takes are filled in.
+         The minimum per day is the lowest budget possible; if the days you ask for need less than that, the
+         budget stays at the minimum and the days show the fastest you can do (corrected when you leave the field). */
+      const minNow = () => Math.max(0, L.num($('#cuMin', b).value));
+      const fc = (B) => L.catchupForecast(ledger, L.catchupTake({ start: today, days: 1, min: minNow(), budget: Math.max(B, 0.01) }, isHol), debt, today, avail, today);
+      const top = Math.max(raw, L.typicalDaily(ledger)); // above this nothing is ever paid back
+      function budgetForDays(n) {
+        let lo = minNow(), hi = top;
+        const fast = fc(lo);
+        if (!fast || fast.days > n) return { B: lo, f: fast, tooFast: true };
+        for (let k = 0; k < 30; k++) { const mid = (lo + hi) / 2, f = fc(mid); if (f && f.days <= n) lo = mid; else hi = mid; }
+        const B = Math.floor(lo * 100) / 100;
+        return { B, f: fc(B), tooFast: false };
+      }
+      let B = c.on && c.budget > 0 && editing ? c.budget : null, note = '';
+      const show = (f, from) => {
+        const tk = Math.max(0, Math.min(debt, raw - Math.max(B, minNow())));
         $('#cuToday', b).innerHTML = tk > 0.004 ? `${money(raw)} - ${money(tk)} = <b>${money(raw - tk)}</b>` : `${money(raw)}`;
-        const f = L.catchupForecast(ledger, take, debt, today, avail, today);
-        if (mode === 'days' && document.activeElement !== $('#cuBud', b)) $('#cuBud', b).value = L.r2(raw - tk);
+        if (from !== 'bud') $('#cuBud', b).value = L.r2(B);
         if (!f) {
-          $('#cuEta', b).textContent = 'Never: above what a usual day has'; $('#cuEta', b).className = 'num bad'; $('#cuAfter', b).textContent = ''; $('#cuGo', b).disabled = true; return;
+          $('#cuEta', b).textContent = 'Never: this budget is above what a usual day has'; $('#cuEta', b).className = 'num bad';
+          $('#cuAfter', b).textContent = ''; $('#cuGo', b).disabled = true; return;
         }
-        if (mode === 'budget' && document.activeElement !== $('#cuDays', b)) $('#cuDays', b).value = f.days;
-        const wanted = parseInt($('#cuDays', b).value, 10) || 1;
-        $('#cuEta', b).textContent = `${f.days} day${f.days === 1 ? '' : 's'} · ${dShort(f.date)}${mode === 'days' && f.days > wanted ? ` (minimum stretches it from ${wanted})` : ''}`;
-        $('#cuEta', b).className = 'num'; $('#cuAfter', b).textContent = money(f.after); $('#cuGo', b).disabled = false;
+        if (from !== 'days') $('#cuDays', b).value = f.days;
+        $('#cuEta', b).textContent = `${f.days} day${f.days === 1 ? '' : 's'} · ${dShort(f.date)}${note}`;
+        $('#cuEta', b).className = note ? 'num bad' : 'num';
+        $('#cuAfter', b).textContent = money(f.after); $('#cuGo', b).disabled = false;
       };
-      calc();
-      $('#cuDays', b).oninput = () => { mode = 'days'; calc(); };
-      $('#cuBud', b).oninput = () => { mode = 'budget'; calc(); };
-      $('#cuMin', b).oninput = calc;
+      const fromDays = () => {
+        const n = Math.max(1, parseInt($('#cuDays', b).value, 10) || 1);
+        const r = budgetForDays(n); B = r.B;
+        note = r.tooFast && r.f ? ` (fastest at your minimum, not ${n})` : '';
+        show(r.f, 'days');
+      };
+      const fromBudget = () => {
+        const v = L.num($('#cuBud', b).value);
+        if (!(v > 0)) return;
+        B = Math.max(v, minNow()); note = v < minNow() ? ' (budget raised to your minimum)' : '';
+        show(fc(B), 'bud');
+      };
+      let last = B !== null ? 'bud' : 'days';
+      if (B !== null) { $('#cuBud', b).value = B; fromBudget(); } else fromDays();
+      $('#cuDays', b).oninput = () => { last = 'days'; fromDays(); };
+      $('#cuBud', b).oninput = () => { last = 'bud'; fromBudget(); };
+      $('#cuMin', b).oninput = () => (last === 'days' ? fromDays() : fromBudget());
+      // leaving a field puts the real, matching numbers in both
+      $('#cuDays', b).onblur = () => { const f = fc(B); if (f) $('#cuDays', b).value = f.days; };
+      $('#cuBud', b).onblur = () => { $('#cuBud', b).value = L.r2(B); };
       $('#cuGo', b).onclick = () => {
-        const cfg = cfgNow();
-        state.settings.catchup = { v: 2, on: true, start: today, days: cfg.days, min: L.r2(cfg.min), budget: L.r2(cfg.budget), debt: L.r2(debt) };
+        const f = fc(B); if (!f) return;
+        state.settings.catchup = { v: 2, on: true, start: today, days: f.days, min: L.r2(minNow()), budget: L.r2(Math.max(B, minNow())), debt: L.r2(debt) };
         save(); closeSheet(); render(); toast(editing ? 'Catch-up updated' : 'Catching up');
       };
     });
