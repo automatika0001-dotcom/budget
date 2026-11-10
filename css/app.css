@@ -318,3 +318,10 @@ body.catchup .chip, body.catchup .tomorrow { background: rgba(16, 44, 50, .9); }
 .cu-line b { color: var(--accent); }
 .inv-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: rgba(255, 209, 102, .07); border: 1px solid rgba(255, 209, 102, .22); color: var(--muted); }
 .inv-line .small-btn { flex: none; }
+.inv-line { align-items: flex-start; }
+.inv-rows { flex: 1; min-width: 0; }
+.inv-title { font-weight: 600; color: var(--text); margin-bottom: 2px; }
+.inv-row { display: flex; justify-content: space-between; gap: 10px; line-height: 1.6; }
+.inv-row b { color: var(--text); font-weight: 600; }
+.inv-row b.good { color: var(--good); }
+.inv-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }

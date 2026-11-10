@@ -212,12 +212,13 @@
     const v = per && per.invest;
     const any = v && (v.out || v.payouts || v.open);
     if (!any && !(investCfg().income.length || Object.values(state.settings.industry.map || {}).includes('invest'))) return '';
-    const parts = [`${money(v ? v.out : 0)} in`];
-    if (v && v.back) parts.push(`${money(v.back)} back`);
-    if (v && v.profit) parts.push(`<b class="good">+${money(v.profit)}</b> profit`);
-    if (v && v.open) parts.push(`${money(v.open)} out`);
-    return `<div class="inv-line small"><span>Investments: ${parts.join(' · ')}</span>
-      <button class="btn ghost small-btn" id="invSrc">Sources</button></div>`;
+    // one line each, label left and amount right, so nothing wraps into the next
+    const line = (label, val, cls) => `<div class="inv-row"><span>${label}</span><b class="num ${cls || ''}">${val}</b></div>`;
+    const rows = [line('Invested', money(v ? v.out : 0))];
+    if (v && v.back) rows.push(line('Paid back', money(v.back)));
+    if (v && v.profit) rows.push(line('Profit', '+' + money(v.profit), 'good'));
+    if (v && v.open) rows.push(line('Still out', money(v.open)));
+    return `<div class="inv-line small"><div class="inv-rows"><div class="inv-title"><span>Investments</span><button class="btn ghost small-btn" id="invSrc">Sources</button></div>${rows.join('')}</div></div>`;
   }
 
   // ---------------- catch-up mode ----------------
