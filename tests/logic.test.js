@@ -588,3 +588,41 @@ console.log('pace gap tests passed');
   });
 }
 console.log('catch-up live tests passed');
+
+// ---- short-term investments ----
+{
+  const sett = { payDay: 1, monthlySaving: 0, startDate: '2026-11-01', statsFrom: '2026-11-01', useExpected: false };
+  const isE = (e) => /ADS/.test(e.place), isI = (i) => /STRIPE/.test(i.source);
+  const opts = { isInvestExp: isE, isInvestInc: isI };
+  const mk = (extra) => Object.assign({ settings: sett, adjustments: [], reserves: [],
+    incomes: [{ id: 'i', date: '2026-11-01', amount: 1000, source: 'SALARY' }],
+    expenses: [{ id: 'a', date: '2026-11-02', amount: 30, place: 'ADS' }, { id: 'b', date: '2026-11-02', amount: 10, place: 'RIMI' }] }, extra || {});
+  t('an investment counts as spending until it is paid back', () => {
+    const lg = L.buildLedger(mk(), '2026-11-04', opts);
+    near(lg.current.spent, 40, 'both count'); near(lg.current.invest.open, 30, 'still out');
+  });
+  t('a payout pays it back: the 30 stops being spending, only the profit is income', () => {
+    const d = mk(); d.incomes.push({ id: 'p', date: '2026-11-05', amount: 43.49, source: 'STRIPE' });
+    const lg = L.buildLedger(d, '2026-11-06', opts);
+    near(lg.current.spent, 10, 'only Rimi'); near(lg.current.income, 1013.49, 'salary + profit');
+    near(L.todayStatus(lg, '2026-11-06').remainingMonth, 1003.49, 'same money as without the category: 1000 + 43.49 - 40');
+    near(lg.current.invest.back, 30, 'paid back'); near(lg.current.invest.profit, 13.49, 'profit');
+  });
+  t('a payout smaller than what was put in: the rest stays spending, no profit', () => {
+    const d = mk(); d.incomes.push({ id: 'p', date: '2026-11-05', amount: 20, source: 'STRIPE' });
+    const lg = L.buildLedger(d, '2026-11-06', opts);
+    near(lg.current.spent, 20, '10 of ads + 10 Rimi'); near(lg.current.invest.profit, 0, 'no profit'); near(lg.current.invest.open, 10, 'still out');
+  });
+  t('a payout only pays back what was spent before it', () => {
+    const d = mk(); d.incomes.push({ id: 'p', date: '2026-11-01', amount: 50, source: 'STRIPE' });
+    const lg = L.buildLedger(d, '2026-11-06', opts);
+    near(lg.current.invest.profit, 50, 'nothing to pay back yet: all profit'); near(lg.current.spent, 40, 'ads still spending');
+  });
+  t('a rebalance made before the payout keeps its meaning', () => {
+    const d = mk(); d.adjustments.push({ id: 'r', created: Date.parse('2026-11-03T10:00:00Z'), date: '2026-11-03', target: 500 });
+    d.incomes.push({ id: 'p', created: Date.parse('2026-11-05T10:00:00Z'), date: '2026-11-05', amount: 43.49, source: 'STRIPE' });
+    const lg = L.buildLedger(d, '2026-11-06', opts);
+    near(L.todayStatus(lg, '2026-11-06').remainingMonth, 543.49, 'what you had then plus the whole payout');
+  });
+}
+console.log('investment tests passed');

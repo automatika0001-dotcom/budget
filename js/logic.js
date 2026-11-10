@@ -136,6 +136,9 @@
     const incomesB = (state.incomes || []).filter((i) => !i.ignored)
       .map((i) => lateMove(Object.assign({}, i, { bdate: budgetDateOf(i, payDay) }), 'i', 'bdate'));
     const allExp = (state.expenses || []).filter((e) => !e.ignored).map((e) => lateMove(Object.assign({}, e), 'e', 'date'));
+    // Short-term investments: money put in counts as spending until a payout from the chosen sources pays it
+    // back. Then the paid-back part stops counting as spending, and only the profit counts as income.
+    const invest = applyInvestments(allExp, incomesB, (opts && opts.isInvestExp) || (() => false), (opts && opts.isInvestInc) || (() => false), closed, payDay, today);
     // Reserved money: taken out of what's available from the day it is reserved until it is paid or cancelled
     // (not spending). When paid, the reserve is given back and the real payments count instead, whatever they
     // came to. Payments linked to a paid reserve come off the month's money but aren't that day's spending.
@@ -218,7 +221,9 @@
         let delta = num(x.amount);
         if (x.target !== undefined && x.target !== null && createdAt(x) < Infinity) {
           const t = createdAt(x); rbDay = x.date;
-          const spentThen = allExp.reduce((sum, e) => (e.date >= p.start && e.date <= p.end && knownAt(e, t) ? sum + num(e.amount) : sum), 0);
+          // an investment paid back by a payout nobody knew of yet still counted in full back then
+          const amtAt = (e) => num(e.amount) + (e.repaidBy || []).reduce((a, x) => (knownAt(x.inc, t) ? a : a + x.amt), 0);
+          const spentThen = allExp.reduce((sum, e) => (e.date >= p.start && e.date <= p.end && knownAt(e, t) ? sum + amtAt(e) : sum), 0);
           let resThen = 0;
           for (const r of reserves) {
             if (r.date >= p.start && r.date <= p.end && createdAt(r) <= t) resThen -= num(r.amount);
@@ -237,7 +242,8 @@
       const paidRes = sumRange(paidByDay, p.start, p.end);
       const spent = r2(daily + fixed + paidRes); // all money that went out this period
       const leftover = r2(effective - spent);
-      const per = Object.assign({}, p, { incomeSteps, incomeLater: r2(incomeLater), income, incomeExpected, salaryToCome, advance: r2(advance), saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), adjust, effectiveBase, effective, reserve: r2(reserve), spent, daily: r2(daily), fixed: r2(fixed), paidRes: r2(paidRes), leftover, isCurrent });
+      const inv = investIn(invest, p.start, p.end);
+      const per = Object.assign({}, p, { invest: inv, incomeSteps, incomeLater: r2(incomeLater), income, incomeExpected, salaryToCome, advance: r2(advance), saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), adjust, effectiveBase, effective, reserve: r2(reserve), spent, daily: r2(daily), fixed: r2(fixed), paidRes: r2(paidRes), leftover, isCurrent });
       if (!isCurrent) {
         // Closed month: an overspend carries into the next month; anything left over goes to savings.
         let toSavings = 0, carryOut = 0;
@@ -253,7 +259,56 @@
       periods.push(per);
       p = periodFor(p.next, payDay);
     }
-    return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, fixedByDay, incomeByDay, adjByDay, more, statsFrom, isHoliday, items: { exp: allExp, inc: incomesB } };
+    return { periods, savedTotal: r2(savedTotal), current: periods.find((x) => x.isCurrent) || null, spentByDay, fixedByDay, incomeByDay, adjByDay, more, statsFrom, isHoliday, items: { exp: allExp, inc: incomesB }, invest };
+  }
+
+  // ---------- short-term investments ----------
+  /**
+   * Pays investment expenses back from investment payouts, oldest first (a payout only pays back what was
+   * spent on or before its day). Changes the working copies in place:
+   *  - an investment expense's amount drops by what was paid back (it no longer counts as spending);
+   *  - a payout's amount becomes its profit (payout minus what it paid back);
+   *  - money paid back for an expense in a locked month can't leave that month, so it is added to the payout
+   *    instead (same total, nothing counted twice).
+   * Returns { exps, pays } with the details for showing them.
+   */
+  function applyInvestments(exps, incs, isInvE, isInvI, closed, payDay, today) {
+    const lockedAt = (d) => {
+      for (const k in closed) {
+        const c = closed[k], pp = c && c.start ? periodFor(c.start, payDay) : null;
+        if (pp && c.per && pp.start === c.start && pp.end === c.end && today > c.end && d >= c.start && d <= c.end) return true;
+      }
+      return false;
+    };
+    const es = exps.filter(isInvE).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : createdAt(a) - createdAt(b)));
+    const ps = incs.filter(isInvI).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : createdAt(a) - createdAt(b)));
+    for (const e of es) { e.invest = true; e.fullAmount = num(e.amount); e.repaid = 0; e.repaidBy = []; }
+    for (const pay of ps) {
+      const P = num(pay.amount);
+      let left = P, lockedBack = 0;
+      for (const e of es) {
+        if (left <= 0.004) break;
+        if (e.date > pay.date) break;
+        const open = r2(e.fullAmount - e.repaid);
+        if (open <= 0.004) continue;
+        const amt = r2(Math.min(open, left));
+        e.repaid = r2(e.repaid + amt); left = r2(left - amt);
+        e.repaidBy.push({ inc: pay, amt });
+        if (lockedAt(e.date)) lockedBack = r2(lockedBack + amt);
+      }
+      pay.invest = true; pay.fullAmount = P; pay.paidBack = r2(P - left); pay.profit = r2(left);
+      pay.amount = r2(left + lockedBack);
+    }
+    for (const e of es) if (!lockedAt(e.date)) e.amount = r2(e.fullAmount - e.repaid);
+    return { exps: es, pays: ps };
+  }
+  /** Investment totals for [from, to]: out (put in), back (of that, paid back since), profit (payouts' profit). */
+  function investIn(invest, from, to) {
+    let out = 0, back = 0, profit = 0, payouts = 0;
+    for (const e of invest.exps) if (e.date >= from && e.date <= to) { out += e.fullAmount; back += e.repaid; }
+    for (const p of invest.pays) if (p.date >= from && p.date <= to) { profit += p.profit; payouts += p.fullAmount; }
+    let open = 0; for (const e of invest.exps) open += e.fullAmount - e.repaid;
+    return { out: r2(out), back: r2(back), profit: r2(profit), payouts: r2(payouts), open: r2(open) };
   }
 
   // ---------- reserves ----------
@@ -796,7 +851,7 @@
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
-    incomeKind, textKind, budgetDateOf, payRange, reserveStatus, overUnder, paceGap, catchupDays, addBudgetDays, catchupPlan, catchupTake, catchupForecast, typicalDaily, releaseDateOf, createdAt, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
+    incomeKind, textKind, budgetDateOf, payRange, reserveStatus, overUnder, paceGap, catchupDays, addBudgetDays, catchupPlan, catchupTake, catchupForecast, typicalDaily, releaseDateOf, createdAt, applyInvestments, investIn, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
     cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive, applyBankTransactions
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

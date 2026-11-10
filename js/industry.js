@@ -26,6 +26,7 @@
     { id: 'cash', name: 'Cash withdrawals', color: '#d9d9d9' },
     { id: 'people', name: 'Transfers to people', color: '#b8c4bf' },
     { id: 'finance', name: 'Crypto & finance', color: '#e6b422' },
+    { id: 'invest', name: 'Short-term investment', color: '#ffd166' },
     { id: 'other', name: 'Unclassified', color: '#5b6662' }
   ];
   const BY_ID = Object.fromEntries(INDUSTRIES.map((x) => [x.id, x]));

@@ -126,7 +126,7 @@
   function recompute() {
     today = L.todayStr();
     const cfg = state.settings.industry;
-    const opts = { isFixed: (e) => window.Industry.isFixedExpense(e, cfg), closed: state.closed || (state.closed = {}) };
+    const opts = { isFixed: (e) => window.Industry.isFixedExpense(e, cfg), closed: state.closed || (state.closed = {}), isInvestExp: isInvestExp, isInvestInc: isInvestInc };
     ledger = L.buildLedger(state, today, opts);
     // A finished month is locked 3 days after it ends (late bank bookings): its results never change again.
     const locks = L.monthsToLock(ledger, today, 3);
@@ -154,14 +154,66 @@
   function needsSetup() { return !state.settings.startDate; }
 
   // ---------------- TODAY ----------------
+  // ---------------- short-term investments ----------------
+  // Expenses in the "Short-term investment" category (a shop set to it, or one payment) count as spending
+  // until money from one of the chosen income sources (Stripe, say) pays them back. Then the paid-back part no
+  // longer counts as spending or for catch-up, and only the profit counts as income.
+  const investCfg = () => state.settings.invest || (state.settings.invest = { income: [] });
+  const isInvestExp = (e) => window.Industry.classifyExpense(e, state.settings.industry) === 'invest';
+  const isInvestInc = (i) => { const k = window.Industry.brandKey(i.source); return investCfg().income.some((x) => window.Industry.keysMatch(k, x)); };
+  const investOf = (id) => { const iv = ledger && ledger.invest; if (!iv) return null; return iv.exps.find((x) => x.id === id) || iv.pays.find((x) => x.id === id) || null; };
+  function openInvestSetup(preKey) {
+    const I = window.Industry, cfg = state.settings.industry, ic = investCfg();
+    const group = (list, nameOf) => {
+      const g = {};
+      for (const x of list) {
+        if (x.ignored) continue;
+        const nm = nameOf(x) || '?', k = I.brandKey(nm) || nm;
+        const r = g[k] || (g[k] = { key: k, name: nm, n: 0, total: 0, last: '' });
+        r.n++; r.total += L.num(x.amount); if (x.date > r.last) r.last = x.date;
+      }
+      return Object.values(g);
+    };
+    const exps = group(state.expenses, (e) => e.bankPlace || e.place);
+    const incs = group(state.incomes, (i) => i.source);
+    const expOn = (k) => cfg.map[k] === 'invest' || k === preKey;
+    const incOn = (k) => ic.income.some((x) => I.keysMatch(k, x));
+    exps.sort((a, b) => expOn(b.key) - expOn(a.key) || b.last.localeCompare(a.last));
+    incs.sort((a, b) => incOn(b.key) - incOn(a.key) || b.last.localeCompare(a.last));
+    const row = (r, kind, on) => `<label class="item pick"><input type="checkbox" data-${kind}="${esc(r.key)}" ${on ? 'checked' : ''}>
+      <div class="meta"><div class="title">${esc(r.name)}</div><div class="sub">${r.n}× · ${dShort(r.last)}</div></div><div class="amt num">${money(r.total)}</div></label>`;
+    openSheet(`<h3>Short-term investment</h3>
+      <div class="field"><label>Money goes out to (counts as spending until paid back)</label><div class="list">${exps.slice(0, 40).map((r) => row(r, 'ie', expOn(r.key))).join('')}</div></div>
+      <div class="field"><label>Money comes back from (pays it back, the rest is profit)</label><div class="list">${incs.slice(0, 30).map((r) => row(r, 'ii', incOn(r.key))).join('') || '<div class="empty">No income yet</div>'}</div></div>
+      <button class="btn primary block" id="ivSave">Save</button>`, (b) => {
+      $('#ivSave', b).onclick = () => {
+        $$('[data-ie]', b).forEach((x) => {
+          const k = x.dataset.ie;
+          if (x.checked) cfg.map[k] = 'invest'; else if (cfg.map[k] === 'invest') delete cfg.map[k];
+        });
+        ic.income = $$('[data-ii]', b).filter((x) => x.checked).map((x) => x.dataset.ii);
+        save(); closeSheet(); render(); toast('Investment sources saved');
+      };
+    });
+  }
+
   function itemRow(e, kind) {
     const initial = esc((e.place || e.source || '?').trim().charAt(0).toUpperCase());
     const title = kind === 'income' ? (e.source || 'Income') : (e.place || 'Expense');
     return `<div class="item" data-kind="${kind}" data-id="${e.id}">
       <div class="dot">${initial}</div>
-      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && L.incomeKind(e) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.reserveId ? '<span class="tag">reserved</span>' : ''}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
+      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && L.incomeKind(e) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.reserveId ? '<span class="tag">reserved</span>' : ''}${(() => { const v = investOf(e.id); if (!v) return ''; if (kind === 'income') return `<span class="tag">investment: ${v.paidBack ? money(v.paidBack) + ' back, ' : ''}${money(v.profit)} profit</span>`; return `<span class="tag">${v.repaid >= v.fullAmount - 0.004 ? 'paid back' : v.repaid > 0 ? money(v.repaid) + ' paid back' : 'invested'}</span>`; })()}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
       <div class="sub">${dShort(e.date)}${kind === 'expense' ? (() => { const id = window.Industry.classifyExpense(e, state.settings.industry); const x = id && window.Industry.allIndustries(state.settings.industry).find((y) => y.id === id); return x ? ` · <span style="color:${x.color}">${esc(x.name)}</span>` : ''; })() : ''}${e.note ? ' · ' + esc(e.note) : ''}</div></div>
       <div class="amt num ${kind === 'income' ? 'good' : ''}">${kind === 'income' ? '+' : '-'}${money(e.amount)}</div></div>`;
+  }
+
+  // The investment line in This month: what went in, what came back, the profit, and what is still out.
+  function investLineHtml(per) {
+    const v = per && per.invest;
+    const any = v && (v.out || v.payouts || v.open);
+    if (!any && !(investCfg().income.length || Object.values(state.settings.industry.map || {}).includes('invest'))) return '';
+    return `<div class="inv-line small"><span>Short-term investment: ${money(v ? v.out : 0)} in${v && v.back ? `, ${money(v.back)} paid back` : ''}${v && v.profit ? `, <b class="good">+${money(v.profit)}</b> profit` : ''}${v && v.open ? ` · ${money(v.open)} still out, counted as spent` : ''}</span>
+      <button class="btn ghost small-btn" id="invSrc">Sources</button></div>`;
   }
 
   // ---------------- catch-up mode ----------------
@@ -598,6 +650,7 @@
         <div class="row"><span class="label">Left of monthly allowance</span><b class="num ${ts.remainingMonth < 0 ? 'bad' : ''}">${money(ts.remainingMonth)}</b></div>
         <div style="margin:10px 0 6px" class="bar"><i class="${spentPct >= 1 ? 'bad' : ''}" style="width:${(spentPct * 100).toFixed(1)}%"></i><span class="pace" style="left:${(pacePct * 100).toFixed(1)}%"></span></div>
         <div class="small muted" style="display:flex;justify-content:space-between"><span>Spent ${money(per.spent)} of ${money(per.effective)}</span><span>${ts.daysLeft} day${ts.daysLeft === 1 ? '' : 's'} left</span></div>
+        ${investLineHtml(per)}
         ${formulaHtml(ts)}
         ${statusLine()}
       </div>
@@ -608,6 +661,7 @@
       <div class="card">
         <h2>Monthly allowance</h2>
         <div class="row"><span class="label">Income (net)${per.incomeExpected ? ' <span class="tag">expected</span>' : ''}</span><span class="num">${money(per.income)}</span></div>
+        ${per.invest && per.invest.profit ? `<div class="row"><span class="label small">of which short-term investment profit</span><span class="num small good">+${money(per.invest.profit)}</span></div>` : ''}
         ${per.advance > 0 ? `<div class="row"><span class="label small">of which advance received${per.incomeExpected ? ', ' + money(per.salaryToCome) + ' still to come' : ''}</span><span class="num small muted">${money(per.advance)}</span></div>` : ''}
         <div class="row"><span class="label">Savings</span><span class="num">-${money(per.saving)}</span></div>
         ${per.carryIn ? `<div class="row"><span class="label">${per.carryIn < 0 ? 'Overspend from last month' : 'Rollover from last month'}</span><span class="num ${per.carryIn < 0 ? 'bad' : 'good'}">${signed(per.carryIn)}</span></div>` : ''}
@@ -636,6 +690,7 @@
     const ta = $('#txAll'); if (ta) ta.onclick = () => openTxLog('all', 60);
     bindReserves(v);
     bindCatchup(v, ts);
+    const iv = $('#invSrc', v); if (iv) iv.onclick = () => openInvestSetup();
     const ps = $('#pwSet'); if (ps) ps.onclick = (ev) => { ev.preventDefault(); openPasswordSheet(); };
     const ht = $('#hideTip'); if (ht) ht.onclick = (ev) => { ev.preventDefault(); try { localStorage.setItem('budget.hideInstall', '1'); } catch (e) {} $('#installTip').remove(); };
     $('#qInc').onclick = () => openIncome(null);
@@ -1126,11 +1181,13 @@
         const amt = L.num($('#eAmt', b).value);
         if (amt <= 0) return toast('Enter an amount');
         const rec = Object.assign(item || { id: uid(), created: Date.now() }, { amount: L.r2(amt), place: $('#ePlace', b).value.trim() || 'Unknown', date: $('#eDate', b).value || today, note: $('#eNote', b).value.trim() });
-        const ind = $('#eInd', b).value;
+        const ind = $('#eInd', b).value, wasInv = isNew ? false : isInvestExp(item);
         if (ind) rec.industry = ind; else delete rec.industry; // this one transaction only; the shop's other payments keep their category
+        const askInvest = ind === 'invest' && !wasInv;
         if (isNew) state.expenses.push(rec);
         else if (rec.bankId) rec.edited = true; // your edit wins over later bank updates
         save(); closeSheet(); render(); toast(isNew ? 'Saved' : 'Updated');
+        if (askInvest) openInvestSetup(window.Industry.brandKey(rec.bankPlace || rec.place)); // pick where it goes out and comes back
       };
       if (!isNew) $('#eDel', b).onclick = () => {
         if (item.bankId) state.ignoredBankIds.push(item.bankId);
@@ -1572,6 +1629,7 @@
       }));
       const assign = (key, ind) => {
         cfg.map[key] = ind; save(); render();
+        if (ind === 'invest') { openInvestSetup(key); return; }
         const nm = inds.find((x) => x.id === ind).name;
         openClassify(); toast(key + ' → ' + nm);
       };
