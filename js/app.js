@@ -236,13 +236,16 @@
     }
     return L.catchupPlan(ledger, c, today);
   };
-  /** How much of the catch-up is done, 0 to 1 (the cards fill with liquid as it goes). */
+  /** How far along the catch-up is, 0 to 1 (the cards fill with liquid as it goes): days already behind you out
+   *  of all the days, these plus the days still to go. 15 days left after 1 day done = 1/16. Going over the limit
+   *  adds days still to go, so the level drops; spending less brings it up. */
   function catchProgress() {
     const c = state.settings.catchup, cp = c && c.on ? catchPlan() : null;
     if (!cp) return 0;
     if (cp.done || cp.missing <= 0.004) return 1;
-    const total = c.total > 0 ? c.total : c.debt;
-    return Math.max(0, Math.min(1, 1 - cp.missing / total));
+    if (!cp.etaDays) return 0;
+    const done = Math.max(0, L.diffDays(c.began || c.start, today));
+    return Math.max(0, Math.min(1, done / (done + cp.etaDays)));
   }
   function withCatchup(ts) {
     const cp = catchPlan();
@@ -372,7 +375,9 @@
         const f = fc(B); if (!f) return;
         // total = what there was to catch up when it started (kept when you change the plan), for the progress
         const total = editing && c.total > 0 ? Math.max(c.total, debt) : debt;
-        state.settings.catchup = { v: 2, on: true, start: today, days: f.days, min: L.r2(minNow()), budget: L.r2(Math.max(B, minNow())), debt: L.r2(debt), total: L.r2(total) };
+        // began = the first day of this catch-up (kept when you change the plan), for the progress
+        const began = editing && c.began ? c.began : editing && c.start ? c.start : today;
+        state.settings.catchup = { v: 2, on: true, start: today, began, days: f.days, min: L.r2(minNow()), budget: L.r2(Math.max(B, minNow())), debt: L.r2(debt), total: L.r2(total) };
         save(); closeSheet(); render(); toast(editing ? 'Catch-up updated' : 'Catching up');
       };
     });

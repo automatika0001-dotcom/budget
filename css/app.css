@@ -313,7 +313,7 @@ body.catchup .btn:not(.primary):not(.danger) { background: rgba(14, 44, 50, .92)
 body.catchup .btn.ghost { background: rgba(10, 34, 40, .85); }
 body.catchup .icon-btn { background: #0f2a2f; border-color: rgba(var(--accent-rgb), .45); }
 body.catchup .seg { background: rgba(8, 26, 30, .9); }
-body.catchup .chip, body.catchup .tomorrow { background: rgba(16, 44, 50, .9); }
+body.catchup .chip, body.catchup .tomorrow, body.catchup .cu-line { background: rgba(10, 34, 40, .38); }
 .cu-line { margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: rgba(var(--accent-rgb), .08); border: 1px solid rgba(var(--accent-rgb), .25); font-size: 14px; line-height: 1.45; }
 .cu-line b { color: var(--accent); }
 .inv-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: rgba(255, 209, 102, .07); border: 1px solid rgba(255, 209, 102, .22); color: var(--muted); }
