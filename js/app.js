@@ -1033,16 +1033,15 @@
     const sebUser = state.settings.bank.provider === 'eb' && (!!state.settings.bank.sessionId || state.expenses.some((e) => e.bankId));
     const inds = sebUser ? window.Industry.byIndustry(statExp, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.industry) : [];
     const indTotal = inds.reduce((a, x) => a + x.total, 0);
-    // Short-term investment in this range: still out = put in here and not paid back yet;
-    // P&L so far = payouts received here minus what was put in here, not counting what is still out
+    // Short-term investment: Still out = everything put in and not paid back yet (any time);
+    // P&L so far = profit of the payouts in this range (only investments that were paid back)
     const invNote = (() => {
-      const iv = ledger.invest; if (!iv) return '';
+      const iv = ledger.invest; if (!iv || (!iv.exps.length && !iv.pays.length)) return '';
       const f = from > ledger.statsFrom ? from : ledger.statsFrom;
-      let out = 0, open = 0, pays = 0;
-      for (const e of iv.exps) if (e.date >= f && e.date <= to) { out += e.fullAmount; open += e.fullAmount - e.repaid; }
-      for (const x of iv.pays) if (x.date >= f && x.date <= to) pays += x.fullAmount;
-      if (!out && !pays) return '';
-      const pl = L.r2(pays - out + open);
+      let open = 0, pl = 0;
+      for (const e of iv.exps) open += e.fullAmount - e.repaid;
+      for (const x of iv.pays) if (x.date >= f && x.date <= to) pl += x.profit;
+      pl = L.r2(pl);
       return `<div class="inv-sub small"><div>Still out: <b class="num">${money(L.r2(open))}</b></div><div>P&amp;L so far: <b class="num ${pl < 0 ? 'bad' : 'good'}">${pl < 0 ? '-' : '+'}${money(Math.abs(pl))}</b></div></div>`;
     })();
 
