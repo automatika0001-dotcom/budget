@@ -1034,7 +1034,7 @@
     const inds = sebUser ? window.Industry.byIndustry(statExp, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.industry) : [];
     const indTotal = inds.reduce((a, x) => a + x.total, 0);
     // Short-term investment in this range: still out = put in here and not paid back yet;
-    // P&L = payouts received here minus what was put in here
+    // P&L so far = payouts received here minus what was put in here, not counting what is still out
     const invNote = (() => {
       const iv = ledger.invest; if (!iv) return '';
       const f = from > ledger.statsFrom ? from : ledger.statsFrom;
@@ -1042,8 +1042,8 @@
       for (const e of iv.exps) if (e.date >= f && e.date <= to) { out += e.fullAmount; open += e.fullAmount - e.repaid; }
       for (const x of iv.pays) if (x.date >= f && x.date <= to) pays += x.fullAmount;
       if (!out && !pays) return '';
-      const pl = L.r2(pays - out);
-      return `<div class="inv-sub small"><div>Still out: <b class="num">${money(L.r2(open))}</b></div><div>P&amp;L: <b class="num ${pl < 0 ? 'bad' : 'good'}">${pl < 0 ? '-' : '+'}${money(Math.abs(pl))}</b></div></div>`;
+      const pl = L.r2(pays - out + open);
+      return `<div class="inv-sub small"><div>Still out: <b class="num">${money(L.r2(open))}</b></div><div>P&amp;L so far: <b class="num ${pl < 0 ? 'bad' : 'good'}">${pl < 0 ? '-' : '+'}${money(Math.abs(pl))}</b></div></div>`;
     })();
 
     v.innerHTML = `
