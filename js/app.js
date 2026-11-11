@@ -147,7 +147,9 @@
     $$('.tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === ui.tab));
     Object.values(ui.charts).forEach((c) => c.destroy()); ui.charts = {};
     // catch-up colours first, so charts drawn below pick them up
-    if (window.CatchupFX) { if (state.settings.catchup && state.settings.catchup.on) window.CatchupFX.start(); else window.CatchupFX.stop(); }
+    if (window.CatchupFX) {
+      if (state.settings.catchup && state.settings.catchup.on) { window.CatchupFX.setFill(catchProgress()); window.CatchupFX.start(); } else window.CatchupFX.stop();
+    }
     ({ today: renderToday, calendar: renderCalendar, money: renderMoney, stats: renderStats, goal: renderGoal })[ui.tab]();
   }
 
@@ -234,6 +236,14 @@
     }
     return L.catchupPlan(ledger, c, today);
   };
+  /** How much of the catch-up is done, 0 to 1 (the cards fill with liquid as it goes). */
+  function catchProgress() {
+    const c = state.settings.catchup, cp = c && c.on ? catchPlan() : null;
+    if (!cp) return 0;
+    if (cp.done || cp.missing <= 0.004) return 1;
+    const total = c.total > 0 ? c.total : c.debt;
+    return Math.max(0, Math.min(1, 1 - cp.missing / total));
+  }
   function withCatchup(ts) {
     const cp = catchPlan();
     if (!ts || !cp || !cp.today || ts.holiday) return ts;
@@ -360,7 +370,9 @@
       $('#cuBud', b).onblur = () => { $('#cuBud', b).value = L.r2(B); };
       $('#cuGo', b).onclick = () => {
         const f = fc(B); if (!f) return;
-        state.settings.catchup = { v: 2, on: true, start: today, days: f.days, min: L.r2(minNow()), budget: L.r2(Math.max(B, minNow())), debt: L.r2(debt) };
+        // total = what there was to catch up when it started (kept when you change the plan), for the progress
+        const total = editing && c.total > 0 ? Math.max(c.total, debt) : debt;
+        state.settings.catchup = { v: 2, on: true, start: today, days: f.days, min: L.r2(minNow()), budget: L.r2(Math.max(B, minNow())), debt: L.r2(debt), total: L.r2(total) };
         save(); closeSheet(); render(); toast(editing ? 'Catch-up updated' : 'Catching up');
       };
     });

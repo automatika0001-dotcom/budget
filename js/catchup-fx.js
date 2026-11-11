@@ -5,6 +5,7 @@
    One animation loop for everything; it sleeps while the app is hidden. */
 (function (root) {
   'use strict';
+  let fill = 0.25; // how full the cards are
   let on = false, raf = 0, bg = null, zap = null, lastT = 0, frameAvg = 16, lite = false;
   // No sensors: every card's liquid has its own quiet weather (see weather()). grav only drifts the bubbles.
   const grav = { x: 0, y: 1 };
@@ -36,15 +37,19 @@
     const canvas = document.createElement('canvas');
     canvas.className = 'liquid';
     card.prepend(canvas);
-    s = { canvas, h: new Float32Array(N), prev: new Float32Array(N), u: new Float32Array(N + 1), out: new Float32Array(N + 1), rise: new Float32Array(N), foam: new Float32Array(N), drops: [], bub: [], acc: 0, level: 0, w: 0 };
+    s = { canvas, h: new Float32Array(N), prev: new Float32Array(N), u: new Float32Array(N + 1), out: new Float32Array(N + 1), rise: new Float32Array(N), foam: new Float32Array(N), drops: [], bub: [], acc: 0, level: undefined, w: 0 };
     sims.set(card, s);
     return s;
   }
   function physics(s, w, H, dts) {
-    const level = Math.min(Math.max(H * 0.26, 22), 80);
-    if (s.level !== level || s.w !== w) { // new or resized card: refill to the level, keep the motion
-      const mass = s.level ? s.h.reduce((a, b) => a + b, 0) : 0;
-      if (!mass) s.h.fill(level); else { const k = (level * N) / mass; for (let i = 0; i < N; i++) s.h[i] *= k; }
+    // How full the card is = how much is caught up (0 = empty, 1 = full). The level glides to its new
+    // height instead of jumping; the water keeps its waves while it rises or sinks.
+    const target = Math.max(0, Math.min(H - 8, fill * (H - 8)));
+    let level = s.level === undefined || s.w !== w ? target : s.level + (target - s.level) * Math.min(1, dts * 1.2);
+    if (Math.abs(level - target) < 0.05) level = target;
+    if (s.level !== level || s.w !== w) {
+      const mass = s.h.reduce((a, b) => a + b, 0);
+      if (mass < 0.01 || s.w !== w) s.h.fill(level); else { const k = (level * N) / mass; for (let i = 0; i < N; i++) s.h[i] *= k; }
       s.level = level; s.w = w;
     }
     const dx = w / N, h = s.h, u = s.u;
@@ -129,7 +134,7 @@
   function stepLiquid(s, dt, w, H) {
     weather(s, dt);
     if (!isFinite(s.acc) || !isFinite(s.h[0]) || !isFinite(s.h[N >> 1]) || !isFinite(s.u[N >> 1])) { // never stay frozen
-      s.h.fill(s.level || 0); s.u.fill(0); s.acc = 0; s.drops = []; s.foam.fill(0);
+      s.h.fill(s.level || 0); s.u.fill(0); if (!isFinite(s.level)) s.level = undefined; s.acc = 0; s.drops = []; s.foam.fill(0);
     }
     // Never let a slow frame make the next one heavier (that spiral is what lagged for a minute after opening
     // the app while the phone was still busy): at most 1/30 s of physics and 14 steps per frame, the rest is dropped.
@@ -465,7 +470,7 @@
       const w = card.clientWidth, h = card.clientHeight;
       if (!w || !h) continue;
       // The canvas only covers the bottom of the card, where the liquid can reach: far fewer pixels to draw.
-      const lvl = Math.min(Math.max(h * 0.26, 22), 80), regionH = Math.min(h, Math.round(lvl * 3.4 + 40));
+      const lvl = fill * h, regionH = Math.min(h, Math.round(lvl * 1.6 + 110));
       if (s.regionH !== regionH) { s.canvas.style.height = regionH + 'px'; s.regionH = regionH; }
       const { r } = fit(s.canvas);
       stepLiquid(s, dt, w, h);
@@ -501,5 +506,7 @@
     if (zap) { zap.remove(); zap = null; }
   }
 
-  root.CatchupFX = { start, stop, askMotion, isOn: () => on, _sims: sims };
+  /** How much of the catch-up is done, 0 to 1: sets how full every card is. */
+  function setFill(f) { fill = Math.max(0, Math.min(1, +f || 0)); }
+  root.CatchupFX = { start, stop, askMotion, setFill, isOn: () => on, _sims: sims };
 })(window);
