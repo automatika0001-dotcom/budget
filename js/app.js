@@ -1033,6 +1033,18 @@
     const sebUser = state.settings.bank.provider === 'eb' && (!!state.settings.bank.sessionId || state.expenses.some((e) => e.bankId));
     const inds = sebUser ? window.Industry.byIndustry(statExp, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.industry) : [];
     const indTotal = inds.reduce((a, x) => a + x.total, 0);
+    // Short-term investment in this range: still out = put in here and not paid back yet;
+    // P&L = payouts received here minus what was put in here
+    const invNote = (() => {
+      const iv = ledger.invest; if (!iv) return '';
+      const f = from > ledger.statsFrom ? from : ledger.statsFrom;
+      let out = 0, open = 0, pays = 0;
+      for (const e of iv.exps) if (e.date >= f && e.date <= to) { out += e.fullAmount; open += e.fullAmount - e.repaid; }
+      for (const x of iv.pays) if (x.date >= f && x.date <= to) pays += x.fullAmount;
+      if (!out && !pays) return '';
+      const pl = L.r2(pays - out);
+      return `<div class="inv-sub small"><div>Still out: <b class="num">${money(L.r2(open))}</b></div><div>P&amp;L: <b class="num ${pl < 0 ? 'bad' : 'good'}">${pl < 0 ? '-' : '+'}${money(Math.abs(pl))}</b></div></div>`;
+    })();
 
     v.innerHTML = `
       <div class="seg"><button data-m="month" class="${ui.statsMode === 'month' ? 'on' : ''}">Month</button><button data-m="year" class="${ui.statsMode === 'year' ? 'on' : ''}">Year</button></div>
@@ -1049,7 +1061,7 @@
       </div>
       ${sebUser ? `<div class="card"><div class="card-head"><h2>Spending by industry</h2><div style="display:flex;gap:6px"><button class="btn small-btn" id="indSort">Sort shops</button><button class="btn small-btn" id="indExport">Export</button></div></div>
         ${inds.length ? `<div class="chart-box pie"><canvas id="c4"></canvas></div>
-        <div class="list" style="margin-top:10px">${inds.map((x) => `<div class="row ${x.id === 'other' ? 'tappable' : ''}" data-ind="${x.id}"><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${x.color};margin-right:8px"></i>${esc(x.name)}${x.id === 'other' ? ' <span class="tag">sort ›</span>' : ''}</span><span class="num">${money(x.total)} <span class="muted small">${((x.total / indTotal) * 100).toFixed(0)}%</span></span></div>`).join('')}</div>`
+        <div class="list" style="margin-top:10px">${inds.map((x) => `<div class="row ${x.id === 'other' ? 'tappable' : ''}" data-ind="${x.id}"><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${x.color};margin-right:8px"></i>${esc(x.name)}${x.id === 'other' ? ' <span class="tag">sort ›</span>' : ''}${x.id === 'invest' ? invNote : ''}</span><span class="num">${money(x.total)} <span class="muted small">${((x.total / indTotal) * 100).toFixed(0)}%</span></span></div>`).join('')}</div>`
         : '<div class="empty">No expenses in this range</div>'}
       </div>` : ''}
       <div class="card"><h2>Daily budget: over / under</h2>

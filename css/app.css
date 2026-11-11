@@ -325,3 +325,7 @@ body.catchup .chip, body.catchup .tomorrow { background: rgba(16, 44, 50, .9); }
 .inv-row b { color: var(--text); font-weight: 600; }
 .inv-row b.good { color: var(--good); }
 .inv-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.inv-sub { margin: 2px 0 0 18px; color: var(--muted); line-height: 1.5; }
+.inv-sub b { font-weight: 600; color: var(--text); }
+.inv-sub b.bad { color: var(--bad); }
+.inv-sub b.good { color: var(--good); }
