@@ -127,7 +127,9 @@
   function recompute() {
     today = L.todayStr();
     const cfg = state.settings.industry;
-    const opts = { isFixed: (e) => window.Industry.isFixedExpense(e, cfg), closed: state.closed || (state.closed = {}), isInvestExp: isInvestExp, isInvestInc: isInvestInc };
+    // Planned costs (rent, utilities, business expenses, short-term investments) come off the month's money but are
+    // never a day's spending, so they can't put any day over its limit.
+    const opts = { isFixed: (e) => window.Industry.isFixedExpense(e, cfg) || isInvestExp(e), closed: state.closed || (state.closed = {}), isInvestExp: isInvestExp, isInvestInc: isInvestInc };
     ledger = L.buildLedger(state, today, opts);
     // A finished month is locked 3 days after it ends (late bank bookings): its results never change again.
     const locks = L.monthsToLock(ledger, today, 3);
@@ -1131,7 +1133,7 @@
   const chartAnim = () => (ui.animate ? { duration: 700, easing: 'easeOutCubic' } : false);
   // Rent & utilities switch for statistics and the calendar
   const fixedOn = () => state.settings.statsFixed !== false;
-  const isFixedE = (e) => window.Industry.isFixedExpense(e, state.settings.industry);
+  const isFixedE = (e) => window.Industry.isFixedExpense(e, state.settings.industry) || isInvestExp(e);
   const fixedSwitchHtml = () => `<div class="toggle fixswitch"><span>Rent &amp; utilities</span><input type="checkbox" id="fxToggle" ${fixedOn() ? 'checked' : ''}></div>`;
   function bindFixedSwitch(v) {
     const t = $('#fxToggle', v);
