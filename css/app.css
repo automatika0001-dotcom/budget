@@ -362,3 +362,4 @@ body.catchup.lava .btn.ghost { background: rgba(40, 16, 8, .85); }
 body.catchup.lava .icon-btn { background: #2f140b; }
 body.catchup.lava .seg { background: rgba(30, 12, 6, .9); }
 body.catchup.lava .chip, body.catchup.lava .tomorrow, body.catchup.lava .cu-line { background: rgba(40, 16, 8, .38); }
+.bad-input { border-color: var(--bad) !important; color: var(--bad); }

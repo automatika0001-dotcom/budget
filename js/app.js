@@ -413,7 +413,7 @@
       ${queued ? `<div class="row"><span class="label">Starts after catch-up</span><span class="num">${dShort(s0)}</span></div>` : `<div class="row"><span class="label">Today's daily budget</span><span class="num">${money(raw)}</span></div>`}
       <div class="seg" id="bfSeg" style="margin:10px 0"><button data-g="amount" class="${goalMode === 'amount' ? 'on' : ''}">Amount</button><button data-g="daily" class="${goalMode === 'daily' ? 'on' : ''}">Daily budget goal</button></div>
       <div id="bfAmt"><div class="field"><label>Buffer to set aside, ${SYM}</label><input id="bfG" class="num" inputmode="decimal" value="${gDef}"></div>
-        <div class="field"><label>Build it within (days)</label><input id="bfDays" class="num" inputmode="numeric" value="${dDef}"></div>
+        <div class="field"><label>Build it within (days) <span class="muted" id="bfDMin"></span></label><input id="bfDays" class="num" inputmode="numeric" value="${dDef}"></div>
         <div class="field"><label>Daily budget while building, ${SYM}</label><input id="bfBud" class="num" inputmode="decimal"></div></div>
       <div id="bfDaily" hidden><div class="field"><label>Daily budget I want after, ${SYM}</label><input id="bfT" class="num" inputmode="decimal" value="${bf.goal || ''}"></div></div>
       <div class="field"><label>Minimum, ${SYM} a day (never less)</label><input id="bfMin" class="num" inputmode="decimal" value="${minDef}"></div>
@@ -443,14 +443,23 @@
         for (let k = 0; k < 30; k++) { const mid = (lo + hi) / 2, f = fc(mid, G); if (f && f.days <= n) lo = mid; else hi = mid; }
         const Bb = Math.floor(lo * 100) / 100; return { B: Bb, f: fc(Bb, G), slow: false };
       };
+      const fewest = () => { const f = G > 0.004 ? fc(minNow(), G) : null; $('#bfDMin', b).textContent = f ? `at least ${f.days}` : ''; return f ? f.days : null; };
       const fromDays = () => {
-        G = L.num($('#bfG', b).value); if (!(G > 0)) { out(null); return; }
-        const n = Math.max(1, parseInt($('#bfDays', b).value, 10) || 1), r = budgetFor(n);
-        B = r.B; note = r.slow ? ` (fastest at your minimum, not ${n})` : '';
+        G = L.num($('#bfG', b).value); $('#bfDays', b).classList.remove('bad-input');
+        if (!(G > 0)) { fewest(); out(null); return; }
+        const n = Math.max(1, parseInt($('#bfDays', b).value, 10) || 1), lowest = fewest();
+        if (lowest && n < lowest) { // can't be built that fast even on the minimum
+          $('#bfDays', b).classList.add('bad-input'); B = minNow(); put('#bfBud', L.r2(B));
+          $('#bfGOut', b).textContent = money(G); $('#bfEta', b).textContent = `At least ${lowest} days at your minimum`; $('#bfEta', b).className = 'num bad';
+          if ($('#bfEta2', b)) $('#bfEta2', b).textContent = ''; $('#bfAfter', b).textContent = ''; $('#bfGo', b).disabled = true; return;
+        }
+        const r = budgetFor(n);
+        B = r.B; note = '';
         put('#bfBud', L.r2(B)); out(r.f);
       };
       const fromBudget = () => {
         G = L.num($('#bfG', b).value); const v = L.num($('#bfBud', b).value); if (!(G > 0) || !(v > 0)) { out(null); return; }
+        fewest(); $('#bfDays', b).classList.remove('bad-input');
         const m = minNow(); B = Math.max(v, m); note = v < m ? ` (not under your minimum ${money(m)})` : '';
         const f = fc(B, G); if (f) put('#bfDays', f.days); out(f);
       };
@@ -474,9 +483,11 @@
       $('#bfBud', b).oninput = () => { last = 'bud'; fromBudget(); };
       $('#bfMin', b).oninput = () => (mode === 'daily' ? fromGoal() : fromMin());
       $('#bfT', b).oninput = fromGoal;
-      $('#bfDays', b).onblur = () => { const f = fc(B, G); if (f) $('#bfDays', b).value = f.days; };
+      $('#bfDays', b).onblur = () => { const lo = fewest(), n = parseInt($('#bfDays', b).value, 10) || 0; if (lo && n < lo) { $('#bfDays', b).value = lo; fromDays(); } };
       setMode(mode);
       $('#bfGo', b).onclick = () => {
+        const lo = fewest(), n = parseInt($('#bfDays', b).value, 10) || 0;
+        if (mode === 'amount' && last !== 'bud' && lo && n < lo) { $('#bfDays', b).value = lo; fromDays(); return; }
         const f = fc(B, G); if (!f || !(G > 0)) return;
         const began = editing && bf.began && !queued ? bf.began : s0;
         state.settings.buffer = { v: 2, on: true, start: s0, began, days: f.days, target: f.date, min: L.r2(minNow()), budget: L.r2(B), debt: L.r2(G), total: L.r2(editing && bf.total > 0 ? Math.max(bf.total, G) : G), goal: mode === 'daily' ? L.num($('#bfT', b).value) : null, waiting: queued };
@@ -508,7 +519,7 @@
       ${bal ? `<div class="row"><span class="label">Spent this month, by yesterday</span><span class="num">${money(bal.spent)}</span></div>
       <div class="row"><span class="label">Even pace by yesterday</span><span class="num">${money(bal.pace)}</span></div>` : ''}
       <div class="row total"><span>To catch up</span><span class="num">${money(debt)}</span></div>
-      <div class="field" style="margin-top:12px"><label>Catch up within (days)</label><input id="cuDays" class="num" inputmode="numeric" value="${daysDef}"></div>
+      <div class="field" style="margin-top:12px"><label>Catch up within (days) <span class="muted" id="cuDMin"></span></label><input id="cuDays" class="num" inputmode="numeric" value="${daysDef}"></div>
       <div class="field"><label>Daily budget while catching up, ${SYM}</label><input id="cuBud" class="num" inputmode="decimal"></div>
       <div class="field"><label>Minimum, ${SYM} a day (never less)</label><input id="cuMin" class="num" inputmode="decimal" value="${minDef}"></div>
       <div class="card" style="margin:0 0 12px">
@@ -539,16 +550,26 @@
         $('#cuAfter', b).textContent = money(f.after); $('#cuGo', b).disabled = false;
         if ($('#cuBuf', b)) { const qb = bufferAfter({ eta: f.date, availAfter: f.availAfter }); $('#cuBuf', b).textContent = qb ? `${qb.days} days · ${dShort(qb.date)}` : 'can\'t at its minimum'; }
       };
+      // The fewest days possible: living on the minimum every day. Fewer can't be chosen.
+      const fewest = () => { const f = fc(minNow()); $('#cuDMin', b).textContent = f ? `at least ${f.days}` : ''; return f ? f.days : null; };
+      const tooFew = (n) => {
+        $('#cuDays', b).classList.add('bad-input'); B = minNow(); put('#cuBud', L.r2(B));
+        $('#cuEta', b).textContent = `At least ${fewest()} days at your minimum`; $('#cuEta', b).className = 'num bad';
+        $('#cuAfter', b).textContent = ''; $('#cuGo', b).disabled = true;
+      };
       const fromDays = () => {
         const n = Math.max(1, parseInt($('#cuDays', b).value, 10) || 1), m = minNow();
-        const fast = fc(m);
-        if (!fast || fast.days > n) { B = m; note = fast ? ` (fastest at your minimum, not ${n})` : ''; put('#cuBud', L.r2(B)); show(fast); return; }
+        const fast = fc(m), lowest = fewest();
+        $('#cuDays', b).classList.remove('bad-input');
+        if (!fast) { B = m; note = ''; put('#cuBud', L.r2(B)); show(null); return; }
+        if (lowest && n < lowest) { tooFew(n); return; }
         let lo = m, hi = Math.max(m, top);
         for (let k = 0; k < 30; k++) { const mid = (lo + hi) / 2, f = fc(mid); if (f && f.days <= n) lo = mid; else hi = mid; }
         B = Math.floor(lo * 100) / 100; note = ''; put('#cuBud', L.r2(B)); show(fc(B));
       };
       const fromBudget = () => {
         const v = L.num($('#cuBud', b).value); if (!(v > 0)) return;
+        fewest(); $('#cuDays', b).classList.remove('bad-input');
         const m = minNow(); B = Math.max(v, m); note = v < m ? ` (not under your minimum ${money(m)})` : '';
         const f = fc(B); if (f) put('#cuDays', f.days); show(f);
       };
@@ -559,8 +580,11 @@
       $('#cuDays', b).oninput = () => { last = 'days'; fromDays(); };
       $('#cuBud', b).oninput = () => { last = 'bud'; fromBudget(); };
       $('#cuMin', b).oninput = fromMin;
-      $('#cuDays', b).onblur = () => { const f = fc(B); if (f) $('#cuDays', b).value = f.days; note = ''; show(f); };
+      // leaving the days box with too few puts in the fewest possible
+      $('#cuDays', b).onblur = () => { const lo = fewest(), n = parseInt($('#cuDays', b).value, 10) || 0; if (lo && n < lo) { $('#cuDays', b).value = lo; fromDays(); } };
       $('#cuGo', b).onclick = () => {
+        const lo = fewest(), n = parseInt($('#cuDays', b).value, 10) || 0;
+        if (lo && n < lo) { $('#cuDays', b).value = lo; fromDays(); return; }
         const f = fc(B); if (!f) return;
         // total = what there was to catch up when it started (kept when you change the plan), for the progress
         const total = editing && c.total > 0 ? Math.max(c.total, debt) : debt;
