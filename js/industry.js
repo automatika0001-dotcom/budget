@@ -191,7 +191,17 @@
   }
 
   const FIXED = new Set(['rent', 'utilities']);
-  const isFixedExpense = (e, cfg) => FIXED.has(classifyExpense(e, cfg));
+  // Planned costs: they come off the month's money (so the daily budget is worked out again) but are not daily
+  // spending (never "over today's limit", not in over/under). Rent and utilities always; any category you mark
+  // as planned (cfg.planned), and a category of your own named like "business expenses".
+  const isPlannedInd = (id, cfg) => {
+    if (!id) return false;
+    if (FIXED.has(id)) return true;
+    if (cfg && Array.isArray(cfg.planned)) { if (cfg.planned.includes(id)) return true; if (cfg.notPlanned && cfg.notPlanned.includes(id)) return false; }
+    const c = cfg && (cfg.custom || []).find((x) => x.id === id);
+    return !!(c && /business/i.test(c.name) && !(cfg.notPlanned || []).includes(id));
+  };
+  const isFixedExpense = (e, cfg) => isPlannedInd(classifyExpense(e, cfg), cfg);
   /** Rules saved under a word that is no longer a brand ("SABIEDRIBA" = "company") move to each shop's real brand. */
   function fixMapKeys(cfg, expenses) {
     if (!cfg || !cfg.map) return false;
@@ -207,7 +217,7 @@
     }
     return changed;
   }
-  const api = { autoIndustry, fixMapKeys, FIXED, isFixedExpense, INDUSTRIES, RULES, brandKey, keysMatch, classify, classifyExpense, allIndustries, byIndustry, unclassifiedGroups, unclassifiedCsv };
+  const api = { autoIndustry, fixMapKeys, FIXED, isFixedExpense, isPlannedInd, INDUSTRIES, RULES, brandKey, keysMatch, classify, classifyExpense, allIndustries, byIndustry, unclassifiedGroups, unclassifiedCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Industry = api;
 })(typeof window !== 'undefined' ? window : globalThis);

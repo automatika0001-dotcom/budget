@@ -545,7 +545,7 @@
     const perEnd = ledger.current ? ledger.current.end : from, typ = typicalDaily(ledger);
     let dd = num(debt), a = num(avail), d = from;
     const afterOn = (day) => (day <= perEnd ? r2(Math.max(0, a) / Math.max(1, budgetDaysBetween(day, perEnd, isHol))) : typ);
-    if (dd <= 0.004) return { date: null, days: 0, after: afterOn(from) };
+    if (dd <= 0.004) return { date: null, days: 0, after: afterOn(from), availAfter: a };
     for (let g = 0; g < 3000; g++, d = addDays(d, 1)) {
       if (isHol(d)) continue;
       const inMonth = d <= perEnd;
@@ -554,7 +554,7 @@
       if (t <= 0.004 && !inMonth) return null;
       if (inMonth) a -= raw - t;
       dd = r2(dd - t);
-      if (dd <= 0.004) return { date: d, days: diffDays(countFrom, d) + 1, after: afterOn(addDays(d, 1)) };
+      if (dd <= 0.004) return { date: d, days: diffDays(countFrom, d) + 1, after: afterOn(addDays(d, 1)), availAfter: a }; // availAfter: this month's money left the next morning
     }
     return null;
   }
@@ -595,7 +595,7 @@
       if (!nextDate || done || !t) return nextRaw;
       return r2(nextRaw - take(nextDate, nextRaw, missing, isHol(nextDate)));
     };
-    return { byDay, today: t, debt: r2(debt), missing: r2(missing), done, eta: forecast && forecast.date, etaDays: forecast ? forecast.days : null, after: forecast ? forecast.after : null, nextLimit, take };
+    return { byDay, today: t, debt: r2(debt), missing: r2(missing), done, eta: forecast && forecast.date, etaDays: forecast ? forecast.days : null, after: forecast ? forecast.after : null, availAfter: forecast ? forecast.availAfter : null, nextLimit, take };
   }
 
   /** Amount to store so that what's left to spend this period becomes `target`. */
