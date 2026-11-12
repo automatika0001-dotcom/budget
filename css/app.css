@@ -279,20 +279,20 @@ body.catchup {
 body.catchup main, body.catchup .topbar { position: relative; z-index: 1; }
 body.catchup .topbar { position: sticky; z-index: 5; }
 body.catchup .card { position: relative; overflow: hidden; isolation: isolate;
-  box-shadow: 0 0 0 1px rgba(63, 242, 225, .18), 0 0 22px rgba(63, 242, 225, .07); }
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), .18), 0 0 22px rgba(var(--accent-rgb), .07); }
 /* the pulsing glow is a layer that only fades in and out (the GPU does that for free; animating the shadow
    itself repainted every card on every frame) */
 body.catchup .card::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 2;
-  box-shadow: inset 0 0 0 1px rgba(63, 242, 225, .3), inset 0 0 26px rgba(63, 242, 225, .12);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .3), inset 0 0 26px rgba(var(--accent-rgb), .12);
   opacity: 0; animation: cu-glow 3.2s ease-in-out infinite; will-change: opacity; }
 body.catchup .card:nth-child(2n)::after { animation-delay: -1.1s; }
 body.catchup .card:nth-child(3n)::after { animation-delay: -2.3s; }
 .card > canvas.liquid { position: absolute; inset: auto 0 0 0; width: 100%; height: 100%; pointer-events: none; z-index: -1; border-radius: inherit; will-change: transform; }
 .fx-layer { will-change: transform; }
 body.catchup .hero { background: radial-gradient(120% 90% at 100% 0%, #0f3a44 0%, var(--surface) 60%); }
-body.catchup .hero .big { text-shadow: 0 0 18px rgba(63, 242, 225, .45); animation: cu-flicker 5s steps(1) infinite; }
+body.catchup .hero .big { text-shadow: 0 0 18px rgba(var(--accent-rgb), .45); animation: cu-flicker 5s steps(1) infinite; }
 body.catchup .tag, body.catchup .banner { background: #0f3236; border-color: #1d5a5e; }
-body.catchup .btn.primary { box-shadow: 0 0 16px rgba(63, 242, 225, .35); }
+body.catchup .btn.primary { box-shadow: 0 0 16px rgba(var(--accent-rgb), .35); }
 @keyframes cu-glow { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
 @keyframes cu-flicker {
   0%, 91%, 95%, 100% { opacity: 1; }
@@ -336,3 +336,29 @@ body.catchup .chip, body.catchup .tomorrow, body.catchup .cu-line { background: 
 .inv-fold > summary::-webkit-details-marker { display: none; }
 .inv-fold[open] > summary { margin-bottom: 6px; }
 .inv-fold[open] > summary .muted { transform: rotate(180deg); display: inline-block; }
+
+/* catch-up and buffer: two switches side by side */
+.mode-switches { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mode-switches .toggle { margin: 0; padding: 6px 10px; border-radius: 12px; background: rgba(var(--accent-rgb), .06); border: 1px solid rgba(var(--accent-rgb), .2); }
+.mode-switches + * { margin-top: 10px; }
+
+/* ---------- buffer mode: lava (molten orange liquid, bubbling, white lightning with a lava glow) ---------- */
+body.catchup.lava {
+  --accent: #ff8a3d;
+  --accent-ink: #2b0d02;
+  --accent-fill: rgba(255, 138, 61, .13);
+  --accent-rgb: 255, 138, 61;
+  --good: #ffc04d;
+  --bg: #130806;
+  --surface: #1e0e0a;
+  --surface-2: #29140e;
+  --line: #43231a;
+}
+body.catchup.lava .hero { background: radial-gradient(120% 90% at 100% 0%, #4a1c0c 0%, var(--surface) 60%); }
+body.catchup.lava .hero .big { text-shadow: 0 0 10px rgba(255, 255, 255, .35), 0 0 22px rgba(255, 120, 30, .55); }
+body.catchup.lava .tag, body.catchup.lava .banner { background: #3a1a0e; border-color: #6a2e14; }
+body.catchup.lava .btn:not(.primary):not(.danger) { background: rgba(50, 20, 10, .92); }
+body.catchup.lava .btn.ghost { background: rgba(40, 16, 8, .85); }
+body.catchup.lava .icon-btn { background: #2f140b; }
+body.catchup.lava .seg { background: rgba(30, 12, 6, .9); }
+body.catchup.lava .chip, body.catchup.lava .tomorrow, body.catchup.lava .cu-line { background: rgba(40, 16, 8, .38); }

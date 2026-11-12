@@ -1,4 +1,4 @@
-/* Catch-up mode look: aqua colours, bubbles and sparks, and glowing liquid in every card. The liquid is a
+/* Catch-up mode look (and buffer mode's lava version): aqua colours, bubbles and sparks, and glowing liquid in every card. The liquid is a
    shallow-water simulation (120 columns per card, drawn as a smooth curve). It is mostly calm with a slow sway,
    and now and then a wave of random strength and speed rolls through or something drops in; strong waves throw
    spray and leave foam.
@@ -6,6 +6,18 @@
 (function (root) {
   'use strict';
   let fill = 0.25; // how full the cards are
+  // Two looks: water (catch-up: aqua, blue lightning) and lava (buffer: molten orange, bubbling all the time,
+  // white lightning with a lava-coloured glow).
+  let theme = 'water';
+  const PAL = {
+    water: { body: ['30, 150, 255', '25, 60, 200', '40, 20, 140'], bodyA: [0.18, 0.12, 0.08], hue: [188, 40], under: '80, 220, 255', core: '230, 255, 255', foam: '190, 250, 255',
+      orb: ['235, 255, 255', '80, 200, 255', '40, 90, 255'], glow: ['0, 200, 255', '90, 120, 255', '170, 90, 255'], arc: ['120, 200, 255', '160, 240, 255', '255, 255, 255'], arcNode: '220, 250, 255',
+      bub: '150, 230, 255', bgRing: '90, 240, 230', bgHi: '200, 255, 250', zapGlow: '120, 250, 255', zap: '210, 255, 255', zap2: '80, 220, 255', skipHue: [155, 200], bubRate: 1.6 },
+    lava: { body: ['255, 120, 20', '210, 45, 10', '110, 12, 4'], bodyA: [0.34, 0.26, 0.22], hue: [20, 14], under: '255, 130, 40', core: '255, 245, 215', foam: '255, 205, 130',
+      orb: ['255, 250, 235', '255, 140, 40', '200, 40, 0'], glow: ['255, 110, 20', '255, 60, 10', '255, 170, 40'], arc: ['255, 120, 30', '255, 205, 150', '255, 255, 255'], arcNode: '255, 240, 220',
+      bub: '255, 180, 90', bgRing: '255, 140, 60', bgHi: '255, 225, 185', zapGlow: '255, 120, 30', zap: '255, 250, 240', zap2: '255, 160, 80', skipHue: [0, 45], bubRate: 7 }
+  };
+  const P = () => PAL[theme];
   let on = false, raf = 0, bg = null, zap = null, lastT = 0, frameAvg = 16, lite = false;
   // No sensors: every card's liquid has its own quiet weather (see weather()). grav only drifts the bubbles.
   const grav = { x: 0, y: 1 };
@@ -200,8 +212,20 @@
       }
     }
     // small bubbles rising inside
-    if (Math.random() < T * 1.6) s.bub.push({ x: Math.random() * w, y: H - 2, r: 0.8 + Math.random() * 1.8, vy: 16 + Math.random() * 22, wob: Math.random() * 6 });
-    s.bub = s.bub.filter((b) => { b.y -= b.vy * T; b.wob += T * 4; const i = Math.max(0, Math.min(N - 1, (b.x / dx) | 0)); return b.y > top(i) + b.r; });
+    const lava = theme === 'lava';
+    if (Math.random() < T * P().bubRate) s.bub.push(lava
+      ? { x: Math.random() * w, y: H - 2, r: 1.5 + Math.random() * 3.5, vy: 10 + Math.random() * 18, wob: Math.random() * 6 }
+      : { x: Math.random() * w, y: H - 2, r: 0.8 + Math.random() * 1.8, vy: 16 + Math.random() * 22, wob: Math.random() * 6 });
+    s.bub = s.bub.filter((b) => {
+      b.y -= b.vy * T; b.wob += T * 4; if (lava) b.r = Math.min(7, b.r + T * 0.8); // lava bubbles swell as they rise
+      const i = Math.max(0, Math.min(N - 1, (b.x / dx) | 0));
+      if (b.y > top(i) + b.r) return true;
+      if (lava) { // it bursts at the surface: a dip, a ring of glow and a few blobs of spatter
+        s.h[i] = Math.max(0, s.h[i] - b.r * 0.6); s.foam[i] = Math.min(1, s.foam[i] + 0.5);
+        if (s.drops.length < 100) for (let k = 0, n = 1 + ((b.r / 2) | 0); k < n; k++) s.drops.push({ x: b.x, y: top(i) - 1, vx: (Math.random() - 0.5) * 70, vy: -(60 + Math.random() * 90 * (b.r / 4)), r: 0.6 + Math.random() * 1.2 });
+      }
+      return false;
+    });
   }
   // Drawn surface = simulated surface + a slow ambient swell (three soft sines), so the liquid is never dead
   // still. Only where there is water; dry spots stay flat.
@@ -233,12 +257,12 @@
     ctx.lineTo(w, y[N - 1]); ctx.lineTo(w, H); ctx.closePath();
   }
   // soft round glows drawn once and stamped (making a gradient every frame is slow on phones)
-  const glowCache = [];
+  let glowCache = [];
   function glowSprite(k) {
     if (glowCache[k]) return glowCache[k];
     const c = document.createElement('canvas'); c.width = c.height = 64;
     const x = c.getContext('2d'), rg = x.createRadialGradient(32, 32, 0, 32, 32, 32);
-    const col = ['0, 200, 255', '90, 120, 255', '170, 90, 255'][k % 3];
+    const col = P().glow[k % 3];
     rg.addColorStop(0, `rgba(${col}, 0.14)`); rg.addColorStop(1, `rgba(${col}, 0)`);
     x.fillStyle = rg; x.fillRect(0, 0, 64, 64);
     return (glowCache[k] = c);
@@ -248,9 +272,9 @@
     if (orbCanvas) return orbCanvas;
     orbCanvas = document.createElement('canvas'); orbCanvas.width = orbCanvas.height = 32;
     const c = orbCanvas.getContext('2d'), rg = c.createRadialGradient(16, 16, 0, 16, 16, 16);
-    rg.addColorStop(0, 'rgba(235, 255, 255, 0.95)');
-    rg.addColorStop(0.35, 'rgba(80, 200, 255, 0.55)');
-    rg.addColorStop(1, 'rgba(40, 90, 255, 0)');
+    rg.addColorStop(0, `rgba(${P().orb[0]}, 0.95)`);
+    rg.addColorStop(0.35, `rgba(${P().orb[1]}, 0.55)`);
+    rg.addColorStop(1, `rgba(${P().orb[2]}, 0)`);
     c.fillStyle = rg; c.fillRect(0, 0, 32, 32);
     return orbCanvas;
   }
@@ -268,12 +292,13 @@
     let minTop = H;
     for (let i = 0; i < N; i++) if (y[i] < minTop) minTop = y[i];
     const E = Math.min(1.6, s.energy || 0), pulse = 0.85 + 0.15 * Math.sin(t * 2.3 + s.level);
-    const hue = (k) => `${(188 + 40 * Math.sin(t * 0.35 + k)) | 0}`; // cyan to electric blue to violet
+    const pl = P();
+    const hue = (k) => `${(pl.hue[0] + pl.hue[1] * Math.sin(t * 0.35 + k)) | 0}`; // water: cyan to violet; lava: red to orange
     // body
     const g = ctx.createLinearGradient(0, minTop, 0, H);
-    g.addColorStop(0, `rgba(30, 150, 255, ${0.18 + 0.06 * E})`);
-    g.addColorStop(0.5, 'rgba(25, 60, 200, 0.12)');
-    g.addColorStop(1, 'rgba(40, 20, 140, 0.08)');
+    g.addColorStop(0, `rgba(${pl.body[0]}, ${pl.bodyA[0] + 0.06 * E})`);
+    g.addColorStop(0.5, `rgba(${pl.body[1]}, ${pl.bodyA[1]})`);
+    g.addColorStop(1, `rgba(${pl.body[2]}, ${pl.bodyA[2]})`);
     liquidPath(ctx, y, w, H, dx);
     ctx.fillStyle = g; ctx.fill();
     ctx.save();
@@ -304,7 +329,7 @@
     // glow just under the surface
     ctx.beginPath();
     curve(ctx, y, dx, true);
-    ctx.strokeStyle = `rgba(80, 220, 255, ${0.10 * pulse + 0.05 * E})`; ctx.lineWidth = 16; ctx.stroke();
+    ctx.strokeStyle = `rgba(${pl.under}, ${0.10 * pulse + 0.05 * E})`; ctx.lineWidth = 16; ctx.stroke();
     ctx.restore();
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
@@ -313,7 +338,7 @@
     curve(ctx, y, dx, true);
     ctx.strokeStyle = `hsla(${hue(0)}, 100%, 60%, ${0.10 + 0.08 * E})`; ctx.lineWidth = 7; ctx.stroke();
     ctx.strokeStyle = `hsla(${hue(0)}, 100%, 70%, ${0.35 * pulse + 0.15 * E})`; ctx.lineWidth = 2.4; ctx.stroke();
-    ctx.strokeStyle = `rgba(230, 255, 255, ${0.55 * pulse})`; ctx.lineWidth = 0.9; ctx.stroke();
+    ctx.strokeStyle = `rgba(${pl.core}, ${0.55 * pulse})`; ctx.lineWidth = 0.9; ctx.stroke();
     // foam: hot sparks riding the surface
     // (grouped into 3 brightness levels: 3 draws instead of one per spark)
     for (let lv = 0; lv < 3; lv++) {
@@ -327,7 +352,7 @@
         const X = (i + jx) * dx, Y = y[i] + jy * 3 * f, R = 0.7 + f * 1.6;
         ctx.moveTo(X + R, Y); ctx.arc(X, Y, R, 0, 6.283);
       }
-      ctx.fillStyle = `rgba(190, 250, 255, ${[0.3, 0.6, 0.9][lv]})`; ctx.fill();
+      ctx.fillStyle = `rgba(${pl.foam}, ${[0.3, 0.6, 0.9][lv]})`; ctx.fill();
     }
     // spray: small glowing orbs
     const orb = orbSprite();
@@ -337,15 +362,16 @@
       const life = Math.max(0, (a.until - lastT) / 200);
       ctx.beginPath();
       for (let k = 1; k < a.pts.length; k++) zig(ctx, a.pts[k - 1][0], a.pts[k - 1][1], a.pts[k][0], a.pts[k][1], 9);
-      ctx.strokeStyle = `rgba(120, 200, 255, ${0.25 * life + 0.1})`; ctx.lineWidth = 6; ctx.stroke();
-      ctx.strokeStyle = `rgba(160, 240, 255, ${0.6 * life + 0.25})`; ctx.lineWidth = 2; ctx.stroke();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)'; ctx.lineWidth = 0.8; ctx.stroke();
-      for (const p of a.pts) { ctx.fillStyle = 'rgba(220, 250, 255, 0.9)'; ctx.beginPath(); ctx.arc(p[0], p[1], 2.2, 0, 6.283); ctx.fill(); }
+      ctx.strokeStyle = `rgba(${pl.arc[0]}, ${0.25 * life + 0.1})`; ctx.lineWidth = 6; ctx.stroke();
+      ctx.strokeStyle = `rgba(${pl.arc[1]}, ${0.6 * life + 0.25})`; ctx.lineWidth = 2; ctx.stroke();
+      ctx.strokeStyle = `rgba(${pl.arc[2]}, 0.95)`; ctx.lineWidth = 0.8; ctx.stroke();
+      for (const p of a.pts) { ctx.fillStyle = `rgba(${pl.arcNode}, 0.9)`; ctx.beginPath(); ctx.arc(p[0], p[1], 2.2, 0, 6.283); ctx.fill(); }
     }
     // bubbles: faint rings
     for (const b of s.bub) {
-      ctx.strokeStyle = 'rgba(150, 230, 255, 0.35)'; ctx.lineWidth = 0.8;
-      ctx.beginPath(); ctx.arc(b.x + Math.sin(b.wob) * 1.5, b.y, b.r, 0, 6.283); ctx.stroke();
+      ctx.beginPath(); ctx.arc(b.x + Math.sin(b.wob) * 1.5, b.y, b.r, 0, 6.283);
+      if (theme === 'lava') { ctx.fillStyle = `rgba(${pl.core}, 0.28)`; ctx.fill(); ctx.strokeStyle = `rgba(${pl.bub}, 0.7)`; ctx.lineWidth = 1.1; ctx.stroke(); }
+      else { ctx.strokeStyle = `rgba(${pl.bub}, 0.35)`; ctx.lineWidth = 0.8; ctx.stroke(); }
     }
     ctx.restore();
     // Coloured things in the card (red warnings, yellow, green...) tint the liquid around them: a soft glow of
@@ -376,7 +402,7 @@
     if (m[4] !== undefined && +m[4] < 0.5) return null;
     const r = +m[1], g = +m[2], b = +m[3], c = hueOf(r, g, b);
     if (c.s < 0.45 || c.l < 0.25 || c.l > 0.85) return null; // grey, too dark, white
-    if (c.h > 155 && c.h < 200) return null; // the aqua of the theme itself
+    if (c.h > P().skipHue[0] && c.h < P().skipHue[1]) return null; // the colour of the theme itself
     return `${r}, ${g}, ${b}`;
   }
   let tintBudget = 0;
@@ -411,9 +437,9 @@
       b.y -= b.vy * dt; b.wob += dt * 2; b.x += (grav.x * 30 + Math.sin(b.wob) * 8) * dt;
       if (b.y < -20) { bubbles.splice(i, 1); continue; }
       ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, 6.283);
-      ctx.strokeStyle = 'rgba(90, 240, 230, 0.35)'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.strokeStyle = `rgba(${P().bgRing}, 0.35)`; ctx.lineWidth = 1; ctx.stroke();
       ctx.beginPath(); ctx.arc(b.x - b.r * 0.35, b.y - b.r * 0.35, b.r * 0.25, 0, 6.283);
-      ctx.fillStyle = 'rgba(200, 255, 250, 0.45)'; ctx.fill();
+      ctx.fillStyle = `rgba(${P().bgHi}, 0.45)`; ctx.fill();
     }
   }
   function bolt(ctx, x1, y1, x2, y2, spread) {
@@ -437,10 +463,10 @@
     if (spark) {
       if (now > spark.until) { spark = null; return; }
       ctx.save();
-      ctx.shadowColor = 'rgba(120, 250, 255, 0.9)'; ctx.shadowBlur = 12;
-      ctx.strokeStyle = 'rgba(210, 255, 255, 0.95)'; ctx.lineWidth = 1.6;
+      ctx.shadowColor = `rgba(${P().zapGlow}, 0.9)`; ctx.shadowBlur = theme === 'lava' ? 18 : 12;
+      ctx.strokeStyle = `rgba(${P().zap}, 0.95)`; ctx.lineWidth = 1.6;
       bolt(ctx, spark.x1, spark.y1, spark.x2, spark.y2, 14);
-      ctx.strokeStyle = 'rgba(80, 220, 255, 0.6)'; ctx.lineWidth = 1;
+      ctx.strokeStyle = `rgba(${P().zap2}, 0.6)`; ctx.lineWidth = 1;
       bolt(ctx, spark.x1, spark.y1, spark.x2 + 10, spark.y2 - 8, 18);
       ctx.restore();
     }
@@ -497,7 +523,7 @@
     lastT = 0; raf = requestAnimationFrame(frame);
   }
   function stop() {
-    document.body.classList.remove('catchup');
+    document.body.classList.remove('catchup', 'lava');
     on = false;
     if (raf) cancelAnimationFrame(raf); raf = 0;
     for (const s of sims.values()) s.canvas.remove();
@@ -508,5 +534,13 @@
 
   /** How much of the catch-up is done, 0 to 1: sets how full every card is. */
   function setFill(f) { fill = Math.max(0, Math.min(1, +f || 0)); }
-  root.CatchupFX = { start, stop, askMotion, setFill, isOn: () => on, _sims: sims };
+  /** 'water' (catch-up) or 'lava' (buffer). */
+  function setTheme(t) {
+    t = t === 'lava' ? 'lava' : 'water';
+    document.body.classList.toggle('lava', t === 'lava');
+    if (t === theme) return;
+    theme = t; glowCache = []; orbCanvas = null; bubbles.length = 0;
+    for (const s of sims.values()) s.tintAt = 0;
+  }
+  root.CatchupFX = { start, stop, askMotion, setFill, setTheme, isOn: () => on, _sims: sims };
 })(window);
