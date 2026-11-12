@@ -646,3 +646,23 @@ console.log('catch-up live tests passed');
   });
 }
 console.log('investment tests passed');
+
+// ---- 1.25.2 fixes ----
+{
+  const t2 = (name, fn) => { fn(); console.log('ok  ' + name); };
+  t2('a payout does not pay back an order put in on its own day', () => {
+    const e = [{ id: 'a', date: '2026-11-10', amount: 30 }, { id: 'b', date: '2026-11-12', amount: 20 }];
+    const i = [{ id: 'p', date: '2026-11-12', amount: 40, source: 'S' }];
+    const r = L.applyInvestments(e, i, () => true, () => true, {}, 1, '2026-11-12');
+    assert.strictEqual(r.exps.find((x) => x.id === 'a').repaid, 30);
+    assert.strictEqual(r.exps.find((x) => x.id === 'b').repaid, 0);
+    assert.strictEqual(r.pays[0].profit, 10);
+  });
+  t2('carryLeft: last month overspend not yet paid back shrinks over the month', () => {
+    const lg = { current: { start: '2026-11-01', end: '2026-11-30', carryIn: -30 }, statsFrom: '2026-11-01', isHoliday: () => false };
+    assert.strictEqual(L.carryLeft(lg, '2026-10-31'), 30);
+    assert.strictEqual(L.carryLeft(lg, '2026-11-30'), 0);
+    const mid = L.carryLeft(lg, '2026-11-15'); assert.ok(mid > 0 && mid < 30);
+    assert.strictEqual(L.carryLeft({ current: { start: '2026-11-01', end: '2026-11-30', carryIn: 5 } }, '2026-11-15'), 0);
+  });
+}

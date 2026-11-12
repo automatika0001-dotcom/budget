@@ -265,7 +265,7 @@
   // ---------- short-term investments ----------
   /**
    * Pays investment expenses back from investment payouts, oldest first (a payout only pays back what was
-   * spent on or before its day). Changes the working copies in place:
+   * spent before its day: a payout arriving the same day as a new order is for earlier ones). Changes the working copies in place:
    *  - an investment expense's amount drops by what was paid back (it no longer counts as spending);
    *  - a payout's amount becomes its profit (payout minus what it paid back);
    *  - money paid back for an expense in a locked month can't leave that month, so it is added to the payout
@@ -288,7 +288,7 @@
       let left = P, lockedBack = 0;
       for (const e of es) {
         if (left <= 0.004) break;
-        if (e.date > pay.date) break;
+        if (e.date >= pay.date) break; // only money put in before the payout's day (a payout is for earlier orders)
         const open = r2(e.fullAmount - e.repaid);
         if (open <= 0.004) continue;
         const amt = r2(Math.min(open, left));
@@ -481,6 +481,20 @@
     const k = budgetDaysBetween(p0, last, isHol), K = Math.max(1, budgetDaysBetween(p0, per.end, isHol));
     const pace = P + Math.max(0, Lm - P) * (k / K);
     return { spent: r2(S), pace: r2(pace), gap: r2(S - pace) };
+  }
+  /**
+   * The part of last month's overspend (carried into this month) not paid back yet by `upTo`. The carry lowers
+   * this month's budget, so living at the even pace pays it back evenly over the month's budget days; what is
+   * left of it counts toward catch-up together with this month's own gap (paceGap).
+   */
+  function carryLeft(ledger, upTo) {
+    const per = ledger.current;
+    if (!per || !(num(per.carryIn) < 0)) return 0;
+    const isHol = ledger.isHoliday || (() => false);
+    const p0 = ledger.statsFrom > per.start ? ledger.statsFrom : per.start;
+    const K = Math.max(1, budgetDaysBetween(p0, per.end, isHol));
+    const k = upTo < p0 ? 0 : Math.min(K, budgetDaysBetween(p0, upTo, isHol));
+    return r2(-num(per.carryIn) * (1 - k / K));
   }
   /** Budget days needed to pay back `debt` within `days`, when a day may give at most `cap` (budget minus minimum). */
   function catchupDays(debt, days, cap) {
@@ -871,7 +885,7 @@
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
-    incomeKind, textKind, budgetDateOf, payRange, reserveStatus, overUnder, paceGap, catchupDays, addBudgetDays, catchupPlan, catchupTake, catchupForecast, typicalDaily, releaseDateOf, createdAt, applyInvestments, investIn, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
+    incomeKind, textKind, budgetDateOf, payRange, reserveStatus, overUnder, paceGap, carryLeft, catchupDays, addBudgetDays, catchupPlan, catchupTake, catchupForecast, typicalDaily, releaseDateOf, createdAt, applyInvestments, investIn, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
     cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive, applyBankTransactions
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

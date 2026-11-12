@@ -250,7 +250,7 @@
     const cp = L.catchupPlan(ledger, c, today);
     // Money that came in (an investment's profit, a refund, extra income) can put you back on or ahead of the
     // even pace before the planned days are over: then there is nothing left to catch up, so the mode ends.
-    if (c && c.on && cp && !cp.done && L.paceGap(ledger, today).gap <= 0.004) {
+    if (c && c.on && cp && !cp.done && L.paceGap(ledger, today).gap + L.carryLeft(ledger, today) <= 0.004) {
       c.on = false; c.endedAhead = today; save();
       setTimeout(() => { try { toast('Caught up: back on pace, catch-up mode ended'); } catch (e) {} }, 0);
       return null;
@@ -288,7 +288,8 @@
     return `<div class="cu-line"><b class="num">${dd}</b> until caught up, <b class="num">${money(cp.missing)}</b> still missing. After ${dd} your daily budget will be <b class="num">${money(cp.after)}</b>.</div>`;
   }
   // How far ahead of the even pace this pay month's spending was by yesterday (same as the Stats chart).
-  const paceBalance = () => L.paceGap(ledger, today, L.addDays(today, -1));
+  // Last month's overspend is counted too: the part of it this month hasn't paid back yet.
+  const paceBalance = () => { const y = L.addDays(today, -1), g = L.paceGap(ledger, today, y), cl = L.carryLeft(ledger, y); return Object.assign({}, g, { carry: cl, gap: L.r2(g.gap + cl) }); };
   function catchupHtml(ts) {
     const c = state.settings.catchup || {};
     const cp = c.on ? catchPlan() : null;
@@ -323,6 +324,7 @@
       openSheet(`<h3>Catch-up mode</h3>
         ${bal ? `<div class="row"><span class="label">Spent this month, by yesterday</span><span class="num">${money(bal.spent)}</span></div>
         <div class="row"><span class="label">Even pace by yesterday</span><span class="num">${money(bal.pace)}</span></div>
+        ${bal.carry > 0.004 ? `<div class="row"><span class="label">Last month's overspend not paid back yet</span><span class="num">${money(bal.carry)}</span></div>` : ''}
         <div class="row total"><span>Nothing to catch up</span><span class="num good">${money(-bal.gap)} under</span></div>` : '<div class="row total"><span>All caught up</span></div>'}
         <button class="btn primary block" id="cuOk" style="margin-top:12px">OK</button>`, (b) => { $('#cuOk', b).onclick = closeSheet; });
       return;

@@ -59,3 +59,12 @@ const g = I.unclassifiedGroups([{ date: 'x', amount: 2, place: 'MILLENIUMS SIA' 
 assert.deepStrictEqual(g.map((x) => [x.key, x.count, x.total]), [['ROJA', 1, 9], ['MILLENIUMS', 2, 5]]);
 assert.ok(I.byIndustry([{ date: '2026-10-01', amount: 5, place: 'KAC-Pragas' }], '2026-10-01', '2026-10-31', cfg)[0].name === 'Snacks');
 console.log(`ok  ${n} statement merchants classified; ${I.INDUSTRIES.length} industries`);
+
+{
+  const I2 = require('../js/industry.js');
+  const cfg = { map: { VEIKALS: 'groceries', SABIEDRIBA: 'eating' }, custom: [] };
+  I2.fixMapKeys(cfg, [{ place: 'VEIKALS' }, { place: 'SABIEDRIBA PICA' }]);
+  require('assert').strictEqual(cfg.map.VEIKALS, 'groceries');
+  require('assert').strictEqual(cfg.map.PICA, 'eating');
+  console.log('ok  a shop named just VEIKALS keeps its category');
+}

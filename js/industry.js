@@ -198,6 +198,8 @@
     let changed = false;
     for (const k of Object.keys(cfg.map)) {
       if (!STOP.has(k)) continue;
+      // a shop whose whole name is that word ("VEIKALS") has no better key: its rule stays
+      if ((expenses || []).some((e) => brandKey(placeOf(e)) === k)) continue;
       const id = cfg.map[k]; delete cfg.map[k]; changed = true;
       for (const e of expenses || []) {
         if (norm(placeOf(e)).split(' ').includes(k)) { const nk = brandKey(placeOf(e)); if (nk && !STOP.has(nk) && !cfg.map[nk]) cfg.map[nk] = id; }
