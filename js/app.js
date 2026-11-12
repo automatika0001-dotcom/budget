@@ -216,9 +216,11 @@
     if (!any && !(investCfg().income.length || Object.values(state.settings.industry.map || {}).includes('invest'))) return '';
     // one line each, label left and amount right, so nothing wraps into the next
     const line = (label, val, cls) => `<div class="inv-row"><span>${label}</span><b class="num ${cls || ''}">${val}</b></div>`;
+    // Received = everything the payouts brought in; it is what was paid back plus the profit, so the three add up.
     const rows = [line('Invested', money(v ? v.out : 0))];
-    if (v && v.back) rows.push(line('Paid back', money(v.back)));
-    if (v && v.profit) rows.push(line('Profit', '+' + money(v.profit), 'good'));
+    if (v && v.payouts) rows.push(line('Received', money(v.payouts)));
+    if (v && v.payouts && v.payouts - v.profit > 0.004) rows.push(line('of which paid back', money(L.r2(v.payouts - v.profit)), 'muted'));
+    if (v && v.profit) rows.push(line('Profit', (v.profit < 0 ? '-' : '+') + money(Math.abs(v.profit)), v.profit < 0 ? 'bad' : 'good'));
     if (v && v.open) rows.push(line('Still out', money(v.open)));
     return `<div class="inv-line small"><div class="inv-rows"><div class="inv-title"><span>Investments</span><button class="btn ghost small-btn" id="invSrc">Sources</button></div>${rows.join('')}</div></div>`;
   }
@@ -234,7 +236,15 @@
       if (!(c.debt > 0)) c.on = false;
       save();
     }
-    return L.catchupPlan(ledger, c, today);
+    const cp = L.catchupPlan(ledger, c, today);
+    // Money that came in (an investment's profit, a refund, extra income) can put you back on or ahead of the
+    // even pace before the planned days are over: then there is nothing left to catch up, so the mode ends.
+    if (c && c.on && cp && !cp.done && L.paceGap(ledger, today).gap <= 0.004) {
+      c.on = false; c.endedAhead = today; save();
+      setTimeout(() => { try { toast('Caught up: back on pace, catch-up mode ended'); } catch (e) {} }, 0);
+      return null;
+    }
+    return cp;
   };
   /** How far along the catch-up is, 0 to 1 (the cards fill with liquid as it goes): days already behind you out
    *  of all the days, these plus the days still to go. 15 days left after 1 day done = 1/16. Going over the limit
