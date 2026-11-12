@@ -329,3 +329,10 @@ body.catchup .chip, body.catchup .tomorrow, body.catchup .cu-line { background: 
 .inv-sub b { font-weight: 600; color: var(--text); }
 .inv-sub b.bad { color: var(--bad); }
 .inv-sub b.good { color: var(--good); }
+
+/* Investments, folded by default */
+.inv-fold { display: block; }
+.inv-fold > summary { list-style: none; cursor: pointer; margin-bottom: 0; }
+.inv-fold > summary::-webkit-details-marker { display: none; }
+.inv-fold[open] > summary { margin-bottom: 6px; }
+.inv-fold[open] > summary .muted { transform: rotate(180deg); display: inline-block; }

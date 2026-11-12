@@ -222,7 +222,18 @@
     if (v && v.payouts && v.payouts - v.profit > 0.004) rows.push(line('of which paid back', money(L.r2(v.payouts - v.profit)), 'muted'));
     if (v && v.profit) rows.push(line('Profit', (v.profit < 0 ? '-' : '+') + money(Math.abs(v.profit)), v.profit < 0 ? 'bad' : 'good'));
     if (v && v.open) rows.push(line('Still out', money(v.open)));
-    return `<div class="inv-line small"><div class="inv-rows"><div class="inv-title"><span>Investments</span><button class="btn ghost small-btn" id="invSrc">Sources</button></div>${rows.join('')}</div></div>`;
+    // Folded by default; open it to see every investment and which payout paid what back (newest first).
+    const iv = ledger && ledger.invest;
+    const det = iv ? (() => {
+      const ex = iv.exps.slice().sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 15).map((e) => {
+        const left = L.r2(e.fullAmount - e.repaid);
+        const by = (e.repaidBy || []).map((x) => `${money(x.amt)} from ${esc(x.inc.source || 'payout')} ${dShort(x.inc.date)}`).join(', ');
+        return `<div class="inv-row"><span>${dShort(e.date)} ${esc(e.place || '')}${by ? `<br><span class="muted">back: ${by}</span>` : ''}</span><b class="num">${money(e.fullAmount)}${left > 0.004 ? ` <span class="muted">(${money(left)} out)</span>` : ''}</b></div>`;
+      }).join('');
+      const ps = iv.pays.slice().sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 15).map((p) => `<div class="inv-row"><span>${dShort(p.date)} ${esc(p.source || '')}<br><span class="muted">${money(p.paidBack)} paid back, ${money(p.profit)} profit</span></span><b class="num good">+${money(p.fullAmount)}</b></div>`).join('');
+      return `${ex ? `<div class="inv-title" style="margin-top:8px"><span>Put in</span></div>${ex}` : ''}${ps ? `<div class="inv-title" style="margin-top:8px"><span>Payouts</span></div>${ps}` : ''}`;
+    })() : '';
+    return `<details class="inv-line small inv-fold" id="invFold"${ui.invOpen ? ' open' : ''}><summary class="inv-title"><span>Investments${v && v.open ? ` · <b class="num">${money(v.open)}</b> out` : ''}</span><span class="muted">▾</span></summary><div class="inv-rows">${rows.join('')}${det}<div style="margin-top:8px"><button class="btn ghost small-btn" id="invSrc">Sources</button></div></div></details>`;
   }
 
   // ---------------- catch-up mode ----------------
@@ -723,6 +734,7 @@
     bindReserves(v);
     bindCatchup(v, ts);
     const iv = $('#invSrc', v); if (iv) iv.onclick = () => openInvestSetup();
+    const ivf = $('#invFold', v); if (ivf) ivf.addEventListener('toggle', () => { ui.invOpen = ivf.open; });
     const ps = $('#pwSet'); if (ps) ps.onclick = (ev) => { ev.preventDefault(); openPasswordSheet(); };
     const ht = $('#hideTip'); if (ht) ht.onclick = (ev) => { ev.preventDefault(); try { localStorage.setItem('budget.hideInstall', '1'); } catch (e) {} $('#installTip').remove(); };
     $('#qInc').onclick = () => openIncome(null);
