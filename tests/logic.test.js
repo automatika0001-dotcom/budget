@@ -231,6 +231,26 @@ t('tomorrow preview: unspent today does not raise it, overspend lowers it, lefto
     L.applyBankTransactions(d, [tx('p2', 5, '2026-10-06', { pending: true }), tx('f2', 5, '2026-10-07', { ref: 'p2' })], opts);
     assert.strictEqual(d.expenses.length, 1); assert.strictEqual(d.expenses[0].bankId, 'f2');
   });
+  // Enable Banking (SEB): the final payment has no link back to its reservation
+  t('reservation without a link: the final payment takes it over (same amount), counted once', () => {
+    const d = { expenses: [], incomes: [], ignoredBankIds: [] };
+    L.applyBankTransactions(d, [tx('r1', 15, '2026-10-06', { pending: true, name: 'Rimi' })], opts);
+    assert.strictEqual(d.expenses.length, 1); assert.strictEqual(d.expenses[0].pending, true);
+    L.applyBankTransactions(d, [tx('b1', 15, '2026-10-08', { name: 'Rimi' }), tx('r1', 15, '2026-10-06', { pending: true, name: 'Rimi' })], opts);
+    assert.strictEqual(d.expenses.length, 1); assert.deepStrictEqual([d.expenses[0].bankId, d.expenses[0].pending], ['b1', undefined]);
+    L.applyBankTransactions(d, [tx('r1', 15, '2026-10-06', { pending: true, name: 'Rimi' })], opts); // reservation shown again: still once
+    assert.strictEqual(d.expenses.length, 1);
+  });
+  t('reservation without a link: same shop, amount changed a little (tip), taken over', () => {
+    const d = { expenses: [], incomes: [], ignoredBankIds: [] };
+    L.applyBankTransactions(d, [tx('r2', 20, '2026-10-06', { pending: true, name: 'Cafe' })], opts);
+    L.applyBankTransactions(d, [tx('b2', 22, '2026-10-07', { name: 'Cafe' })], opts);
+    assert.strictEqual(d.expenses.length, 1); assert.deepStrictEqual([d.expenses[0].bankId, d.expenses[0].amount], ['b2', 22]);
+  });
+  t('a HOLD (account hold) counts as reserved too', () => {
+    const m = L.mapTransaction({ transaction_id: 'h1', transaction_amount: { amount: '9' }, credit_debit_indicator: 'DBIT', booking_date: '2026-10-06', status: 'HOLD' });
+    assert.strictEqual(m.pending, true);
+  });
   t('pending that the bank drops (declined) disappears, edited ones stay', () => {
     const d = { expenses: [], incomes: [], ignoredBankIds: [] };
     L.applyBankTransactions(d, [tx('p3', 9, '2026-10-06', { pending: true }), tx('p4', 7, '2026-10-06', { pending: true })], opts);

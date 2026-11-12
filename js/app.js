@@ -204,7 +204,7 @@
     const title = kind === 'income' ? (e.source || 'Income') : (e.place || 'Expense');
     return `<div class="item" data-kind="${kind}" data-id="${e.id}">
       <div class="dot">${initial}</div>
-      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && L.incomeKind(e) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.reserveId ? '<span class="tag">reserved</span>' : ''}${(() => { const v = investOf(e.id); if (!v) return ''; if (kind === 'income') return `<span class="tag">+${money(v.profit)} profit</span>`; return `<span class="tag">${v.repaid >= v.fullAmount - 0.004 ? 'paid back' : v.repaid > 0 ? money(v.repaid) + ' back' : 'invested'}</span>`; })()}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
+      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && L.incomeKind(e) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.pending ? '<span class="tag">pending</span>' : ''}${e.reserveId ? '<span class="tag">reserved</span>' : ''}${(() => { const v = investOf(e.id); if (!v) return ''; if (kind === 'income') return `<span class="tag">+${money(v.profit)} profit</span>`; return `<span class="tag">${v.repaid >= v.fullAmount - 0.004 ? 'paid back' : v.repaid > 0 ? money(v.repaid) + ' back' : 'invested'}</span>`; })()}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
       <div class="sub">${dShort(e.date)}${kind === 'expense' ? (() => { const id = window.Industry.classifyExpense(e, state.settings.industry); const x = id && window.Industry.allIndustries(state.settings.industry).find((y) => y.id === id); return x ? ` · <span style="color:${x.color}">${esc(x.name)}</span>` : ''; })() : ''}${e.note ? ' · ' + esc(e.note) : ''}</div></div>
       <div class="amt num ${kind === 'income' ? 'good' : ''}">${kind === 'income' ? '+' : '-'}${money(e.amount)}</div></div>`;
   }
@@ -2126,7 +2126,7 @@
       // Same purchase already logged live (Google Wallet) or by hand? It is linked instead of added twice.
       const idsBefore = new Set(state.expenses.map((x) => x.id));
       const res = L.applyBankTransactions(state, mapped, {
-        start, from: from < start ? start : from, earlyFrom, ignore: bk.ignore, importIncome: bk.importIncome, withPending: plaidMode,
+        start, from: from < start ? start : from, earlyFrom, ignore: bk.ignore, importIncome: bk.importIncome, withPending: true,
         newId: uid, kindOf: (rec) => guessKind(rec, state.settings)
       });
       const added = res.added, addedIn = res.addedIn, matched = res.matched;

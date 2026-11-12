@@ -709,7 +709,7 @@
     const remit = (tx.remittance_information || []).join(' ');
     const counter = dir === 'DBIT' ? (tx.creditor && tx.creditor.name) : (tx.debtor && tx.debtor.name);
     const place = cleanPlace(counter || remit || tx.bank_transaction_code?.description || 'Unknown');
-    return { bankId: txId(tx), dir: dir === 'DBIT' ? 'out' : 'in', amount: r2(amount), date, place, note: remit.slice(0, 140), pending: tx.status === 'PDNG', pendingRef: tx.pending_ref || null };
+    return { bankId: txId(tx), dir: dir === 'DBIT' ? 'out' : 'in', amount: r2(amount), date, place, note: remit.slice(0, 140), pending: tx.status === 'PDNG' || tx.status === 'HOLD', pendingRef: tx.pending_ref || null };
   }
 
   function matchesIgnore(m, rules) {
@@ -789,10 +789,27 @@
       (e.bankId || (e.created && Math.abs(e.created - timeMs) <= 3600e3))) || null;
   }
 
+  /** The pending bank payment a final one replaces (when the bank gives no link between them). */
+  function findPendingFor(expenses, m) {
+    const shop = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    let best = null, bestGap = 99;
+    for (const e of expenses) {
+      if (!e.pending || !e.bankId) continue;
+      const gap = Math.abs(diffDays(e.date, m.date));
+      if (gap > 7) continue;
+      const same = Math.abs(num(e.amount) - m.amount) <= 0.005;
+      const near = shop(e.bankPlace || e.place) && shop(e.bankPlace || e.place) === shop(m.place) && Math.abs(num(e.amount) - m.amount) <= Math.max(0.01, num(e.amount) * 0.15);
+      if ((same || near) && gap < bestGap) { best = e; bestGap = gap; }
+    }
+    return best;
+  }
+
   /**
    * Merge one sync's bank transactions into the data. Mutates data.expenses / data.incomes / data.ignoredBankIds.
-   * withPending (Plaid): pending card payments are shown at once (tagged pending); when the bank finalises one,
-   * the final transaction points back to it (pendingRef) and the same entry is updated instead of duplicated.
+   * withPending: reserved (pending) card payments are shown at once (tagged pending); when the bank finalises one,
+   * the same entry is updated instead of duplicated. Plaid's final transaction points back to it (pendingRef);
+   * other banks (Enable Banking) don't, so a final payment takes over a pending one going out with the same amount
+   * (or the same shop and within 15%) within 7 days, and that pending id is never added again.
    * Pending entries the bank dropped (declined, expired) are removed, unless you edited them.
    */
   function applyBankTransactions(data, mapped, o) {
@@ -817,9 +834,12 @@
       } else {
         if (ignored.has(m.bankId) || byBankId.has(m.bankId)) continue;
         if (m.pendingRef && ignored.has(m.pendingRef)) { data.ignoredBankIds.push(m.bankId); ignored.add(m.bankId); continue; }
-        const was = m.pendingRef && byBankId.get(m.pendingRef);
+        let was = m.pendingRef && byBankId.get(m.pendingRef);
+        if (!was && o.withPending && m.dir === 'out') was = findPendingFor(data.expenses, m);
         if (was) { // the pending payment became final
-          byBankId.delete(m.pendingRef); byBankId.set(m.bankId, was);
+          const oldId = was.bankId;
+          byBankId.delete(oldId); byBankId.set(m.bankId, was);
+          if (oldId && oldId !== m.pendingRef) { data.ignoredBankIds.push(oldId); ignored.add(oldId); }
           was.bankId = m.bankId; delete was.pending;
           if (!was.edited) { was.amount = m.amount; was.date = m.date; }
           res.updated++; continue;
@@ -830,7 +850,7 @@
         const dup = findDuplicateForBank(data.expenses, m);
         if (dup) { dup.bankId = m.bankId; dup.bankPlace = m.place; byBankId.set(m.bankId, dup); res.matched++; continue; }
         const rec = { id: o.newId(), date: m.date, amount: m.amount, place: m.place, note: m.note, bankId: m.bankId };
-        if (m.pending) rec.pending = true;
+        if (m.pending) { rec.pending = true; rec.bankPlace = m.place; }
         data.expenses.push(rec); byBankId.set(m.bankId, rec); res.added++;
       } else if (o.importIncome) {
         const dupIn = findDuplicateForBank(data.incomes, m);
