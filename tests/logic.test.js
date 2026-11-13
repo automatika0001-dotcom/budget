@@ -272,6 +272,37 @@ t('tomorrow preview: unspent today does not raise it, overspend lowers it, lefto
     L.applyBankTransactions(d, [tx('f6', 20, '2026-10-08', { ref: 'p6' })], opts);
     assert.strictEqual(d.expenses.length, 1); assert.strictEqual(d.expenses[0].bankId, 'f6');
   });
+  t('phone notification, then reservation, then final payment (no link back): one entry', () => {
+    const d = { expenses: [{ id: 'L', date: '2026-10-07', amount: 6.3, place: 'TALSU', liveId: 'w1', created: 1 }], incomes: [], ignoredBankIds: [] };
+    L.applyBankTransactions(d, [tx('r9', 6.3, '2026-10-07', { pending: true, name: 'TALSU AUTOTRANSPORTS' })], opts);
+    assert.strictEqual(d.expenses.length, 1); assert.strictEqual(d.expenses[0].bankId, 'r9');
+    L.applyBankTransactions(d, [tx('b9', 6.3, '2026-10-08', { name: 'TALSU AUTOTRANSPORTS' })], opts);
+    assert.strictEqual(d.expenses.length, 1, 'not added twice');
+    assert.deepStrictEqual([d.expenses[0].id, d.expenses[0].bankId, d.expenses[0].liveId], ['L', 'b9', 'w1']);
+  });
+  t('a reservation linked to a phone entry is dropped: the phone entry stays', () => {
+    const d = { expenses: [{ id: 'L', date: '2026-10-07', amount: 4, place: 'Cafe', liveId: 'w2', created: 1 }], incomes: [], ignoredBankIds: [] };
+    L.applyBankTransactions(d, [tx('r8', 4, '2026-10-07', { pending: true })], opts);
+    L.applyBankTransactions(d, [], opts);
+    assert.strictEqual(d.expenses.length, 1); assert.strictEqual(d.expenses[0].bankId, undefined);
+  });
+  t('existing duplicates are repaired: entry stuck on an old reservation id + the final payment become one', () => {
+    const d = { expenses: [
+      { id: 'L', date: '2026-10-07', amount: 6.3, place: 'TALSU', liveId: 'w1', bankId: 'gone', industry: 'transport' },
+      { id: 'B', date: '2026-10-08', amount: 6.3, place: 'TALSU AUTOTRANSPORTS A', bankId: 'b9' }], incomes: [], ignoredBankIds: [] };
+    const r = L.applyBankTransactions(d, [tx('b9', 6.3, '2026-10-08', { name: 'TALSU AUTOTRANSPORTS A' })], opts);
+    assert.strictEqual(r.merged, 1); assert.strictEqual(d.expenses.length, 1);
+    assert.deepStrictEqual([d.expenses[0].id, d.expenses[0].bankId, d.expenses[0].industry], ['L', 'b9', 'transport']);
+    assert.ok(d.ignoredBankIds.includes('gone'));
+  });
+  t('the same ticket bought every day is never merged', () => {
+    const d = { expenses: [
+      { id: 'a', date: '2026-10-07', amount: 6.3, place: 'TALSU', liveId: 'w1', bankId: 'b1' },
+      { id: 'b', date: '2026-10-08', amount: 6.3, place: 'TALSU', liveId: 'w2', bankId: 'b2' },
+      { id: 'c', date: '2026-10-09', amount: 6.3, place: 'TALSU', bankId: 'b3' }], incomes: [], ignoredBankIds: [] };
+    const r = L.applyBankTransactions(d, [tx('b1', 6.3, '2026-10-07'), tx('b2', 6.3, '2026-10-08'), tx('b3', 6.3, '2026-10-09')], opts);
+    assert.strictEqual(r.merged, 0); assert.strictEqual(d.expenses.length, 3);
+  });
   t('SEB mode ignores pending and imports income', () => {
     const d = { expenses: [], incomes: [], ignoredBankIds: [] };
     const r = L.applyBankTransactions(d, [tx('a', 4, '2026-10-07', { pending: true }), tx('b', 1500, '2026-10-05', { in: true }), tx('c', 2, '2026-09-20')], { ...opts, withPending: false });

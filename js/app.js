@@ -2324,7 +2324,8 @@
       const start = state.settings.startDate || today;
       // Salary or an advance paid shortly before the start date still belongs to the first month.
       const earlyFrom = L.addDays(start, -15);
-      let from = bk.lastSync && bk.earlyDone ? L.addDays(bk.lastSync.slice(0, 10), -5) : earlyFrom;
+      // dedupeV1: once, look at everything since the start, so duplicates made earlier get repaired
+      let from = bk.lastSync && bk.earlyDone && bk.dedupeV1 ? L.addDays(bk.lastSync.slice(0, 10), -5) : earlyFrom;
       if (from < earlyFrom) from = earlyFrom;
       const plaidMode = bk.provider === 'plaid';
       const mapped = [], errors = [];
@@ -2344,6 +2345,8 @@
         newId: uid, kindOf: (rec) => guessKind(rec, state.settings)
       });
       const added = res.added, addedIn = res.addedIn, matched = res.matched;
+      if (!errors.length) bk.dedupeV1 = true;
+      if (res.merged) toast(`Removed ${res.merged} duplicate payment${res.merged === 1 ? '' : 's'}`, 5000);
       const linkedRes = autoLinkReserves(new Set(state.expenses.filter((x) => !idsBefore.has(x.id)).map((x) => x.id)));
       if (linkedRes) toast(`${linkedRes} reserved payment${linkedRes === 1 ? '' : 's'} paid`);
       bk.lastSync = new Date().toISOString(); bk.lastError = errors.length ? errors[0].message : ''; if (!errors.length) bk.earlyDone = true; save();

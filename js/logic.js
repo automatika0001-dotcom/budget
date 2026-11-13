@@ -854,7 +854,7 @@
           const oldId = was.bankId;
           byBankId.delete(oldId); byBankId.set(m.bankId, was);
           if (oldId && oldId !== m.pendingRef) { data.ignoredBankIds.push(oldId); ignored.add(oldId); }
-          was.bankId = m.bankId; delete was.pending;
+          was.bankId = m.bankId; delete was.pending; delete was.pendingLink;
           if (!was.edited) { was.amount = m.amount; was.date = m.date; }
           res.updated++; continue;
         }
@@ -862,7 +862,12 @@
       if (matchesIgnore(m, o.ignore)) { continue; }
       if (m.dir === 'out') {
         const dup = findDuplicateForBank(data.expenses, m);
-        if (dup) { dup.bankId = m.bankId; dup.bankPlace = m.place; byBankId.set(m.bankId, dup); res.matched++; continue; }
+        if (dup) {
+          dup.bankId = m.bankId; dup.bankPlace = m.place; byBankId.set(m.bankId, dup); res.matched++;
+          // linked to a reservation: remember it, so the final payment takes this same entry over later
+          if (m.pending) { dup.pending = true; dup.pendingLink = true; }
+          continue;
+        }
         const rec = { id: o.newId(), date: m.date, amount: m.amount, place: m.place, note: m.note, bankId: m.bankId };
         if (m.pending) { rec.pending = true; rec.bankPlace = m.place; }
         data.expenses.push(rec); byBankId.set(m.bankId, rec); res.added++;
@@ -875,18 +880,64 @@
       }
     }
     if (o.withPending) {
+      // Reservations the bank dropped: an entry that only came from the bank goes; one you logged yourself or
+      // that came from a phone notification stays and is just unlinked from the bank.
       const before = data.expenses.length;
-      data.expenses = data.expenses.filter((e) => !(e.pending && !e.edited && e.bankId && e.date >= o.from && !seenPending.has(e.bankId)));
+      data.expenses = data.expenses.filter((e) => {
+        if (!(e.pending && e.bankId && e.date >= o.from && !seenPending.has(e.bankId))) return true;
+        if (e.edited) return true;
+        if (e.pendingLink) { delete e.pending; delete e.pendingLink; delete e.bankId; delete e.bankPlace; return true; }
+        return false;
+      });
       res.removed = before - data.expenses.length;
     }
+    res.merged = mergeStaleLinks(data, list, o);
     return res;
+  }
+
+  /**
+   * Repair duplicates: an entry still linked to a bank id the bank no longer reports (a reservation that was
+   * finalised under a new id) next to an entry for that final payment: same amount (or same shop within 15%),
+   * at most 7 days apart. The two are one purchase, so they become one: the older entry keeps your edits,
+   * category and the phone-notification link and takes the final bank id; the extra one is removed.
+   * Only looks inside the dates this sync covered, so nothing outside what the bank just reported is touched.
+   */
+  function mergeStaleLinks(data, list, o) {
+    const posted = new Set(list.filter((m) => !m.pending && m.dir === 'out').map((m) => m.bankId));
+    const pend = new Set(list.filter((m) => m.pending).map((m) => m.bankId));
+    const safeFrom = addDays(o.from, 2); // the first days of the range may be partly outside what the bank sent
+    const shop = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const used = new Set();
+    let merged = 0;
+    const stale = data.expenses.filter((e) => e.bankId && !e.ignored && e.date >= safeFrom && !posted.has(e.bankId) && !pend.has(e.bankId));
+    for (const y of stale) {
+      let best = null, bestGap = 99;
+      for (const x of data.expenses) {
+        if (x === y || used.has(x) || x.ignored || !x.bankId || !posted.has(x.bankId) || x.liveId || x.edited) continue;
+        const gap = Math.abs(diffDays(x.date, y.date));
+        if (gap > 7) continue;
+        const same = Math.abs(num(x.amount) - num(y.amount)) <= 0.005;
+        const near = shop(x.bankPlace || x.place) && shop(x.bankPlace || x.place) === shop(y.bankPlace || y.place) && Math.abs(num(x.amount) - num(y.amount)) <= Math.max(0.01, num(y.amount) * 0.15);
+        if ((same || near) && gap < bestGap) { best = x; bestGap = gap; }
+      }
+      if (!best) continue;
+      used.add(best);
+      const oldId = y.bankId;
+      y.bankId = best.bankId; y.bankPlace = best.bankPlace || best.place; delete y.pending;
+      if (!y.edited) { y.amount = best.amount; y.date = best.date; }
+      for (const k of ['industry', 'reserveId']) if (best[k] && !y[k]) y[k] = best[k];
+      data.expenses = data.expenses.filter((e) => e !== best);
+      if (oldId && data.ignoredBankIds.indexOf(oldId) < 0) data.ignoredBankIds.push(oldId);
+      merged++;
+    }
+    return merged;
   }
 
   const api = {
     TAX2026, salaryNet, r2, num,
     pad, ymd, parse, addDays, diffDays, daysInMonth, todayStr, periodFor,
     incomeKind, textKind, budgetDateOf, payRange, reserveStatus, overUnder, paceGap, carryLeft, catchupDays, addBudgetDays, catchupPlan, catchupTake, catchupForecast, typicalDaily, releaseDateOf, createdAt, applyInvestments, investIn, monthsToLock, sumByDay, sumRange, buildLedger, isWeekend, makeHolidayCheck, budgetDaysBetween, dailySeries, todayStatus, daysInRange, overUnderStats, rebalanceDelta, projectGoal,
-    cleanPlace, topPlaces, txId, mapTransaction, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive, applyBankTransactions
+    cleanPlace, topPlaces, txId, mapTransaction, mergeStaleLinks, matchesIgnore, parseAmount, parsePaymentNotification, findDuplicateForBank, findDuplicateForLive, applyBankTransactions
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BudgetLogic = api;
