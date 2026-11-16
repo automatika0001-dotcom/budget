@@ -264,8 +264,9 @@
 
   // ---------- short-term investments ----------
   /**
-   * Pays investment expenses back from investment payouts, oldest first (a payout only pays back what was
-   * spent before its day: a payout arriving the same day as a new order is for earlier ones). Changes the working copies in place:
+   * Pays investment expenses back from investment payouts, pooled: everything put in against every payout,
+   * oldest with oldest, whatever the dates (when the payouts together cover all money put in, nothing is still
+   * out). Changes the working copies in place:
    *  - an investment expense's amount drops by what was paid back (it no longer counts as spending);
    *  - a payout's amount becomes its profit (payout minus what it paid back);
    *  - money paid back for an expense in a locked month can't leave that month, so it is added to the payout
@@ -282,24 +283,31 @@
     };
     const es = exps.filter(isInvE).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : createdAt(a) - createdAt(b)));
     const ps = incs.filter(isInvI).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : createdAt(a) - createdAt(b)));
-    for (const e of es) { e.invest = true; e.fullAmount = num(e.amount); e.repaid = 0; e.repaidBy = []; }
+    // Pooled, not one payout per order: all money put in against all payouts, whatever their dates. As long as
+    // the payouts together cover everything put in, nothing is still out. Matched oldest with oldest, so the
+    // details still say which payout paid what back.
+    for (const e of es) { e.invest = true; e.fullAmount = num(e.amount); e.repaid = 0; e.repaidBy = []; e.lockedRepaid = 0; }
+    let ei = 0;
     for (const pay of ps) {
       const P = num(pay.amount);
       let left = P, lockedBack = 0;
-      for (const e of es) {
-        if (left <= 0.004) break;
-        if (e.date >= pay.date) break; // only money put in before the payout's day (a payout is for earlier orders)
+      const payLocked = lockedAt(pay.date);
+      while (left > 0.004 && ei < es.length) {
+        const e = es[ei];
         const open = r2(e.fullAmount - e.repaid);
-        if (open <= 0.004) continue;
+        if (open <= 0.004) { ei++; continue; }
         const amt = r2(Math.min(open, left));
         e.repaid = r2(e.repaid + amt); left = r2(left - amt);
         e.repaidBy.push({ inc: pay, amt });
         if (lockedAt(e.date)) lockedBack = r2(lockedBack + amt);
+        // A payout in a locked month already counted there in full: it can't also take spending off an open
+        // month, so that part still counts as spent where it is (nothing counted twice).
+        else if (payLocked) e.lockedRepaid = r2(e.lockedRepaid + amt);
       }
       pay.invest = true; pay.fullAmount = P; pay.paidBack = r2(P - left); pay.profit = r2(left);
       pay.amount = r2(left + lockedBack);
     }
-    for (const e of es) if (!lockedAt(e.date)) e.amount = r2(e.fullAmount - e.repaid);
+    for (const e of es) if (!lockedAt(e.date)) e.amount = r2(e.fullAmount - e.repaid + e.lockedRepaid);
     return { exps: es, pays: ps };
   }
   /** Investment totals for [from, to]: out (put in), back (of that, paid back since), profit (payouts' profit). */
