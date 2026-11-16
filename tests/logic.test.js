@@ -664,10 +664,10 @@ console.log('catch-up live tests passed');
     const lg = L.buildLedger(d, '2026-11-06', opts);
     near(lg.current.spent, 20, '10 of ads + 10 Rimi'); near(lg.current.invest.profit, 0, 'no profit'); near(lg.current.invest.open, 10, 'still out');
   });
-  t('a payout only pays back what was spent before it', () => {
+  t('pooled: a payout covers money put in later too (1.27.4)', () => {
     const d = mk(); d.incomes.push({ id: 'p', date: '2026-11-01', amount: 50, source: 'STRIPE' });
     const lg = L.buildLedger(d, '2026-11-06', opts);
-    near(lg.current.invest.profit, 50, 'nothing to pay back yet: all profit'); near(lg.current.spent, 40, 'ads still spending');
+    near(lg.current.invest.profit, 20, 'payouts cover the 30 put in: 20 profit'); near(lg.current.invest.open, 0, 'nothing still out'); near(lg.current.spent, 10, 'only Rimi');
   });
   t('a rebalance made before the payout keeps its meaning', () => {
     const d = mk(); d.adjustments.push({ id: 'r', created: Date.parse('2026-11-03T10:00:00Z'), date: '2026-11-03', target: 500 });
@@ -681,13 +681,20 @@ console.log('investment tests passed');
 // ---- 1.25.2 fixes ----
 {
   const t2 = (name, fn) => { fn(); console.log('ok  ' + name); };
-  t2('a payout does not pay back an order put in on its own day', () => {
+  t2('pooled (1.27.4): a payout pays back orders of any date, oldest first', () => {
     const e = [{ id: 'a', date: '2026-11-10', amount: 30 }, { id: 'b', date: '2026-11-12', amount: 20 }];
     const i = [{ id: 'p', date: '2026-11-12', amount: 40, source: 'S' }];
     const r = L.applyInvestments(e, i, () => true, () => true, {}, 1, '2026-11-12');
     assert.strictEqual(r.exps.find((x) => x.id === 'a').repaid, 30);
-    assert.strictEqual(r.exps.find((x) => x.id === 'b').repaid, 0);
-    assert.strictEqual(r.pays[0].profit, 10);
+    assert.strictEqual(r.exps.find((x) => x.id === 'b').repaid, 10);
+    assert.strictEqual(r.pays[0].profit, 0);
+    assert.strictEqual(L.investIn(r, '2026-11-01', '2026-11-30').open, 10);
+  });
+  t2('automatic catch-up (1.28.0): the same budget, the minimum, every catch-up day', () => {
+    const take = L.catchupTake({ start: '2026-11-06', days: 1, min: 15, budget: 15, keepFloor: true });
+    assert.strictEqual(L.r2(25.2 - take('2026-11-06', 25.2, 120, false)), 15);
+    assert.strictEqual(L.r2(9.58 - take('2026-11-07', 9.58, 490, false)), 15, 'normal budget already under the minimum: still the minimum');
+    assert.strictEqual(L.r2(29.17 - take('2026-11-13', 29.17, 5, false)), 24.17, 'last day: only the rest is taken');
   });
   t2('carryLeft: last month overspend not yet paid back shrinks over the month', () => {
     const lg = { current: { start: '2026-11-01', end: '2026-11-30', carryIn: -30 }, statsFrom: '2026-11-01', isHoliday: () => false };
