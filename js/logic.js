@@ -535,9 +535,14 @@
     const min = Math.max(0, num(cfg.min)), byBudget = num(cfg.budget) > 0;
     const floor = byBudget ? Math.max(min, num(cfg.budget)) : min;
     const end = addDays(cfg.start, Math.max(1, parseInt(cfg.days, 10) || 1) - 1);
+    // keepFloor (automatic catch-up): every catch-up day gets the same budget, the minimum, even when the
+    // month's normal budget has already dropped under it (that day takes a negative amount: the extra comes
+    // out of the debt's payback, i.e. the catch-up simply runs a little longer, into next month if needed).
+    const keep = !!cfg.keepFloor;
     return (date, raw, debt, holiday) => {
       if (holiday || debt <= 0.004) return 0;
       const rem = byBudget ? 1 : date <= end ? Math.max(1, budgetDaysBetween(date, end, isHol)) : 1;
+      if (keep && raw < floor) return r2(raw - floor);
       return r2(Math.max(0, Math.min(debt / rem, raw - floor, debt)));
     };
   }

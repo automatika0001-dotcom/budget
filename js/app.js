@@ -19,6 +19,7 @@
       aliases: {},
       industry: { custom: [], map: {} }, statsFixed: true,
       catchup: { on: false, start: '', days: 14, min: 0, debt: 0 },
+      minDaily: 0, overspendWaive: null, // automatic catch-up: budget per catch-up day, overspend not caught up
       buffer: { on: false, start: '', days: 14, min: 0, debt: 0 }
     },
     expenses: [], incomes: [], adjustments: [], ignoredBankIds: [], liveSeen: [], liveLog: [], closed: {}, reserves: []
@@ -266,9 +267,10 @@
     return Object.assign({}, cfg, { budget: Math.floor(lo * 100) / 100 });
   }
   const catchPlan = () => {
-    if (planMemo && planMemo.ledger === ledger && planMemo.mode === modeOn() && planMemo.today === today) return planMemo.cp;
+    const key = `${modeOn()}|${L.num(state.settings.minDaily)}|${JSON.stringify(state.settings.overspendWaive || null)}`;
+    if (planMemo && planMemo.ledger === ledger && planMemo.key === key && planMemo.today === today) return planMemo.cp;
     const cp = catchPlanRaw();
-    planMemo = { ledger, mode: modeOn(), today, cp };
+    planMemo = { ledger, key, today, cp };
     return cp;
   };
   // Buffer turned on while still catching up waits its turn: it starts the day catch-up ends.
@@ -280,7 +282,38 @@
     const f = L.catchupForecast(ledger, take, L.num(bf.debt), s0, cp.availAfter, today);
     return f && f.date ? Object.assign({ from: s0 }, f) : null;
   }
+  // ---- automatic catch-up (1.28.0) ----
+  // No switch any more: whenever spending is behind the even pace (this month, plus last month's overspend not
+  // paid back yet), every budget day gets the same budget, your minimum daily budget (Settings), until it's paid
+  // back; the number of days follows from that. The last day may get a little more (only the rest is taken).
+  // Settings can erase or lower this month's overspend when you don't plan to catch all of it up. The old
+  // catch-up mode (its sheet and card) stays in the code but is hidden.
+  const minDaily = () => {
+    const m = L.num(state.settings.minDaily);
+    if (m > 0) return m;
+    const old = state.settings.catchup && L.num(state.settings.catchup.min); // the minimum set in the old catch-up mode
+    return old > 0 ? old : Math.max(0, Math.floor(L.typicalDaily(ledger) * 0.5));
+  };
+  const waived = () => {
+    const w = state.settings.overspendWaive, per = ledger && ledger.current;
+    return w && per && w.start === per.start ? Math.max(0, L.num(w.amount)) : 0;
+  };
+  // Behind by yesterday (the same number as Stats), minus what you chose not to catch up this month.
+  const autoGap = () => Math.max(0, L.r2(paceBalance().gap));
+  const autoDebt = () => Math.max(0, L.r2(autoGap() - waived()));
+  function autoPlan() {
+    const D = autoDebt();
+    if (!(D > 0.004)) return null;
+    const M = minDaily();
+    const cp = L.catchupPlan(ledger, { on: true, v: 2, start: today, debt: D, budget: Math.max(M, 0.01), min: M, keepFloor: true }, today);
+    if (cp) cp.auto = true;
+    return cp;
+  }
   const catchPlanRaw = () => {
+    const c0 = state.settings.catchup;
+    if (c0 && c0.on) { c0.on = false; c0.endedAuto = today; save(); } // the old manual mode: replaced by the automatic one
+    const auto = autoPlan();
+    if (auto) return auto; // a buffer waits while catching up
     if (modeOn() === 'buffer') {
       const bf = bufCfg();
       if (bf.waiting) { bf.waiting = false; bf.start = today; bf.began = today; save(); } // catch-up is over: the buffer starts now
@@ -309,7 +342,7 @@
    *  adds days still to go, so the level drops; spending less brings it up. */
   function catchProgress() {
     const c = modeCfg(), cp = c ? catchPlan() : null;
-    if (!cp) return 0;
+    if (!cp || cp.auto) return 0;
     if (cp.done || cp.missing <= 0.004) return 1;
     if (!cp.etaDays) return 0;
     const done = Math.max(0, L.diffDays(c.began || c.start, today));
@@ -319,7 +352,7 @@
     const cp = catchPlan();
     if (!ts || !cp || !cp.today || ts.holiday) return ts;
     const t = cp.today;
-    const out = Object.assign({}, ts, { catchTake: t.take, rawAllowance: ts.dailyAllowance, dailyAllowance: t.limit, leftToday: L.r2(t.limit - ts.spentToday) });
+    const out = Object.assign({}, ts, { catchTake: t.take, catchAuto: !!cp.auto, rawAllowance: ts.dailyAllowance, dailyAllowance: t.limit, leftToday: L.r2(t.limit - ts.spentToday) });
     if (ts.nextDate && ts.nextAllowance !== null) out.nextAllowance = cp.nextLimit(ts.nextDate, ts.nextAllowance);
     return out;
   }
@@ -328,7 +361,7 @@
     const m = modeOn();
     if (!m) return '';
     const cp = catchPlan();
-    if (!cp) return '';
+    if (!cp || cp.auto) return '';
     if (m === 'buffer') {
       if (!cp.eta) return `<div class="cu-line"><b class="num">${money(cp.missing)}</b> still to set aside. At this minimum it can't be done: lower it in Buffer mode.</div>`;
       const n = cp.etaDays, dd = `${n} day${n === 1 ? '' : 's'}`;
@@ -346,8 +379,10 @@
   const paceBalance = () => { const y = L.addDays(today, -1), g = L.paceGap(ledger, today, y), cl = L.carryLeft(ledger, y); return Object.assign({}, g, { carry: cl, gap: L.r2(g.gap + cl) }); };
   function catchupHtml(ts) {
     const c = state.settings.catchup || {}, bf = bufCfg();
-    const cp = modeOn() ? catchPlan() : null;
+    const cp0 = modeOn() ? catchPlan() : null;
+    const cp = cp0 && !cp0.auto ? cp0 : null; // automatic catch-up shows nowhere here (only in today's formula)
     let body = '';
+    if (modeOn() === 'buffer' && cp0 && cp0.auto) body = '<div class="row"><span class="label">Buffer</span><span class="num muted">starts once you are caught up</span></div><button class="btn ghost block" id="bfEdit" style="margin-top:8px">Change</button>';
     if (modeOn() === 'buffer' && cp) {
       body = `<div class="row"><span class="label">Still to set aside</span><b class="num">${money(cp.missing)}</b> <span class="muted small">of ${money(bf.total || bf.debt)}</span></div>
         ${ts.catchTake ? `<div class="row"><span class="label">Today's budget</span><span class="num">${money(ts.rawAllowance)} - ${money(ts.catchTake)} = <b>${money(ts.dailyAllowance)}</b></span></div>` : ''}
@@ -363,8 +398,9 @@
       if (bf.on) body += `<div class="row"><span class="label">Buffer built</span><span class="num">${qb ? `${dShort(qb.date)} · ${qb.days} day${qb.days === 1 ? '' : 's'}` : 'after catching up'}</span></div>`;
       body += `<div style="display:flex;gap:8px;margin-top:8px"><button class="btn ghost block" id="cuEdit">Change</button>${bf.on ? '<button class="btn ghost block" id="bfEdit">Buffer</button>' : ''}</div>`;
     }
+    // The Catch-up switch is hidden: catching up is automatic now (kept in the code, not shown).
     return `<div class="card catchup-card"><div class="mode-switches">
-      <div class="toggle"><span><b>Catch-up</b></span><input type="checkbox" id="cuOn" ${c.on ? 'checked' : ''}></div>
+      <div class="toggle" hidden><span><b>Catch-up</b></span><input type="checkbox" id="cuOn" ${c.on ? 'checked' : ''}></div>
       <div class="toggle"><span><b>Buffer</b></span><input type="checkbox" id="bfOn" ${bf.on ? 'checked' : ''}></div></div>${body}</div>`;
   }
   function bindCatchup(v, ts) {
@@ -385,8 +421,8 @@
   // change any of them and the others follow as you type. With catch-up still running, the buffer waits and is
   // built right after it (the days count from then). Or set the daily budget you want afterwards instead.
   function openBuffer(ts, editing) {
-    const bf = bufCfg(), cuOn = !!(state.settings.catchup && state.settings.catchup.on);
-    const gapNow = L.r2(L.paceGap(ledger, today).gap + L.carryLeft(ledger, today));
+    const bf = bufCfg(), cuOn = autoDebt() > 0.004; // catching up (automatic): the buffer is built right after
+    const gapNow = 0; // catch-up is automatic now: no need to turn it on first (the sheet below is kept, unused)
     if (!editing && !cuOn && gapNow > 0.004) {
       openSheet(`<h3>Buffer mode</h3><div class="row total"><span>You're behind by</span><span class="num bad">${money(gapNow)}</span></div>
         <p class="small muted">Turn on catch-up too: the buffer is built right after it.</p>
@@ -825,7 +861,7 @@
     }
     const n = ts.budgetDaysLeft;
     const raw = ts.rawAllowance !== undefined ? ts.rawAllowance : ts.dailyAllowance;
-    return `<div class="formula num">${money(ts.remainingMonth + ts.spentToday)} left this morning ÷ ${n} ${hol ? 'budget ' : ''}day${n === 1 ? '' : 's'} = <b>${money(raw)}</b> a day${hol && n !== ts.daysLeft ? ' (holidays skipped)' : ''}${ts.catchTake ? ` - ${money(ts.catchTake)} ${modeOn() === 'buffer' ? 'buffer' : 'catch-up'} = <b>${money(ts.dailyAllowance)}</b>` : ''}</div>`;
+    return `<div class="formula num">${money(ts.remainingMonth + ts.spentToday)} left this morning ÷ ${n} ${hol ? 'budget ' : ''}day${n === 1 ? '' : 's'} = <b>${money(raw)}</b> a day${hol && n !== ts.daysLeft ? ' (holidays skipped)' : ''}${ts.catchTake ? ` ${ts.catchTake < 0 ? '+' : '-'} ${money(Math.abs(ts.catchTake))} ${ts.catchAuto ? (ts.catchTake < 0 ? 'minimum' : 'catch-up') : modeOn() === 'buffer' ? 'buffer' : 'catch-up'} = <b>${money(ts.dailyAllowance)}</b>` : ''}</div>`;
   }
 
   function weekendCount(x) {
@@ -1598,7 +1634,8 @@
       body = `<h3>Savings</h3><p class="small muted">What you put aside each month is taken out before your daily budget.</p>
         <div class="field"><label>Save per month, ${SYM}</label><input id="wzSave" inputmode="decimal" value="${s.monthlySaving}"></div>
         <div class="field"><label>Savings goal, ${SYM}</label><input id="wzGoal" inputmode="decimal" value="${s.goal}"></div>
-        <div class="field"><label>Already saved, ${SYM}</label><input id="wzStart" inputmode="decimal" value="${s.startingSaved || 0}"></div>`;
+        <div class="field"><label>Already saved, ${SYM}</label><input id="wzStart" inputmode="decimal" value="${s.startingSaved || 0}"></div>
+        <div class="field"><label>Minimum daily budget, ${SYM}</label><input id="wzMin" inputmode="decimal" value="${L.num(s.minDaily) > 0 ? s.minDaily : ''}"><div class="hint">If you overspend, every day gets this much until it's caught up. You can change it in Settings.</div></div>`;
     }
     const nav = `<div class="wz-nav">${wz.step > 0 ? '<button class="btn ghost" id="wzBack">Back</button>' : '<span></span>'}${nextLabel ? `<button class="btn primary" id="wzNext">${nextLabel}</button>` : ''}</div>
       ${canSkip ? `<button class="linkbtn" id="wzSkip">${canSkip}</button>` : ''}`;
@@ -1677,6 +1714,7 @@
       if (id === 'savings') {
         next.onclick = () => {
           s.monthlySaving = L.num($('#wzSave', b).value); s.goal = L.num($('#wzGoal', b).value); s.startingSaved = L.num($('#wzStart', b).value);
+          s.minDaily = Math.max(0, L.num($('#wzMin', b).value));
           s.backup.id = s.backup.id || uid() + uid();
           s.startDate = today; s.statsFrom = today; save();
           try { localStorage.removeItem(WZ_KEY); } catch (e) {}
@@ -1730,6 +1768,39 @@
     return calc;
   }
 
+  // Settings: the minimum daily budget (every catch-up day gets exactly this) and this month's overspend, which
+  // can be erased or lowered when you don't plan to catch all of it up.
+  function overspendSettingsHtml() {
+    const s = state.settings;
+    const gap = ledger && ledger.current ? autoGap() : 0, w = ledger && ledger.current ? waived() : 0;
+    const cp = ledger && ledger.current ? catchPlan() : null, auto = cp && cp.auto ? cp : null;
+    const eta = auto ? (auto.eta ? `${auto.etaDays} day${auto.etaDays === 1 ? '' : 's'} at ${money(minDaily())} a day, until ${dShort(auto.eta)}` : `not at ${money(minDaily())} a day: lower the minimum`) : 'nothing to catch up';
+    return `<h3 style="margin-top:22px">Overspend</h3>
+      <div class="field"><label>Minimum daily budget, ${SYM}</label><input id="stMin" class="num" inputmode="decimal" value="${L.num(s.minDaily) > 0 ? s.minDaily : ''}" placeholder="${Math.floor(L.typicalDaily(ledger || {}) * 0.5) || ''}"><div class="hint">When you overspend, every day gets exactly this until it's caught up. The days needed are worked out from it.</div></div>
+      <div class="row"><span class="label">Overspent (behind the even pace)</span><span class="num">${money(gap)}</span></div>
+      ${w > 0.004 ? `<div class="row"><span class="label">Not catching up</span><span class="num">${money(Math.min(w, gap))}</span></div>` : ''}
+      <div class="row"><span class="label">Catching up</span><span class="num">${eta}</span></div>
+      ${gap > 0.004 || w > 0.004 ? `<div class="field" style="margin-top:8px"><label>Catch up only, ${SYM} (lower the overspend)</label><input id="stCatch" class="num" inputmode="decimal" value="${L.r2(Math.max(0, gap - w))}"></div>
+      <div class="actions"><button class="btn" id="stErase">Erase overspend</button>${w > 0.004 ? '<button class="btn ghost" id="stUnerase">Catch up all of it</button>' : ''}</div>
+      <div class="hint">Erased or lowered overspend isn't caught up faster: it just lowers the rest of this month's days a little. It applies to this pay month only.</div>` : ''}`;
+  }
+  function bindOverspendSettings(b) {
+    const s = state.settings;
+    const per = ledger && ledger.current;
+    const reopen = () => { save(); render(); openSettings(); };
+    const mi = $('#stMin', b); if (mi) mi.onchange = (e) => { s.minDaily = Math.max(0, L.num(e.target.value)); reopen(); };
+    const setCatch = (x) => {
+      if (!per) return;
+      const gap = autoGap();
+      const keep = Math.max(0, Math.min(gap, L.num(x)));
+      s.overspendWaive = { start: per.start, amount: L.r2(gap - keep) };
+      reopen();
+    };
+    const ci = $('#stCatch', b); if (ci) ci.onchange = (e) => setCatch(e.target.value);
+    const er = $('#stErase', b); if (er) er.onclick = () => setCatch(0);
+    const ue = $('#stUnerase', b); if (ue) ue.onclick = () => { s.overspendWaive = null; reopen(); };
+  }
+
   function openSettings() {
     const s = state.settings, bk = s.bank;
     const connected = !!bk.sessionId;
@@ -1741,6 +1812,7 @@
       <div class="field"><label>Budget start date</label><input id="stStart" type="date" value="${s.startDate || today}"><div class="hint">Months before this are ignored.</div></div>
       <div class="field"><label>Statistics start date</label><input id="stStats" type="date" value="${s.statsFrom || s.startDate || today}"><div class="hint">Days before this don't count in any graph or average.</div></div>
       <div class="field"><label>Opening carry, ${SYM} (negative = debt to make up)</label><input id="stCarry" inputmode="decimal" value="${s.openingCarry || 0}"></div>
+      ${overspendSettingsHtml()}
       <div class="field"><label>Currency</label><select id="stCur"><option value="EUR" ${s.currency === 'USD' ? '' : 'selected'}>Euro (€)</option><option value="USD" ${s.currency === 'USD' ? 'selected' : ''}>US dollar ($)</option></select></div>
 
       <h3 style="margin-top:22px">Backup</h3>
@@ -1781,6 +1853,7 @@
       $('#stStart', b).onchange = (e) => { s.startDate = e.target.value || today; save(); render(); };
       $('#stStats', b).onchange = (e) => { s.statsFrom = e.target.value || s.startDate; save(); render(); };
       $('#stCarry', b).onchange = (e) => { s.openingCarry = L.num(e.target.value); save(); render(); };
+      bindOverspendSettings(b);
       $('#stCur', b).onchange = (e) => { s.currency = e.target.value; setCurrency(); save(); render(); openSettings(); };
       $('#bkUrl', b).onchange = readBridge; $('#bkTok', b).onchange = readBridge;
       $('#bpPass', b).onchange = () => { readBridge(); setTimeout(() => runBackup(true), 200); };
