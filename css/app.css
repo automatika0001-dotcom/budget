@@ -363,3 +363,11 @@ body.catchup.lava .icon-btn { background: #2f140b; }
 body.catchup.lava .seg { background: rgba(30, 12, 6, .9); }
 body.catchup.lava .chip, body.catchup.lava .tomorrow, body.catchup.lava .cu-line { background: rgba(40, 16, 8, .38); }
 .bad-input { border-color: var(--bad) !important; color: var(--bad); }
+.p2p-row { padding: 10px 0; border-top: 1px solid var(--line); }
+.p2p-row:first-child { border-top: 0; padding-top: 2px; }
+.p2p-when { font-weight: 600; margin-bottom: 4px; }
+.p2p-nums { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); }
+.p2p-nums b { color: var(--text); }
+.p2p-nums .bad b { color: var(--bad); }
+.p2p-nums .good b { color: var(--good); }
+.p2p-nums b.good { color: var(--good); }

@@ -1049,20 +1049,33 @@
       <div class="stat-grid">
         <div class="stat"><div class="k">Spent in ${MONTHS[m]}</div><div class="v num">${money(monthSpent)}</div></div>
         <div class="stat"><div class="k">Income in ${MONTHS[m]}</div><div class="v num good">${money(inc)}</div></div>
-        ${(() => {
-          // payday to payday: the pay month shown (this one when viewing the current month), from an early advance if there was one
-          const isNow = today >= first && today <= last;
-          const pr = L.payRange(state, isNow ? today : `${y}-${L.pad(m + 1)}-${L.pad(payDay)}`);
-          const upto = pr.end < today ? pr.end : today;
-          const sp = state.expenses.reduce((a, e) => (!e.ignored && e.date >= pr.from && e.date <= upto && (fixedOn() || !isFixedE(e)) ? a + L.num(e.amount) : a), 0);
-          return pr.from > upto ? '' : `<div class="stat" style="grid-column:1 / -1"><div class="k">Payday to payday · ${dShort(pr.from)} to ${dShort(pr.end)}</div><div class="v num">${money(sp)}</div></div>`;
-        })()}
       </div>
+      ${payToPayHtml()}
       <p class="small muted" style="text-align:center">Tap a day to see or add expenses.</p>`;
     bindFixedSwitch(v);
     $('#calPrev').onclick = () => { ui.calOffset--; render(); };
     $('#calNext').onclick = () => { ui.calOffset++; render(); };
     $$('.cal .day', v).forEach((el) => el.addEventListener('click', () => openDay(el.dataset.date)));
+  }
+
+  // Every pay month, newest first: spent and income from pay day to pay day (from an early advance or salary
+  // when there was one). Spending follows the Rent & utilities switch like the rest of the page.
+  function payToPayHtml() {
+    const rows = [], first = ledger.statsFrom || state.settings.startDate;
+    let nextFrom = null; // each one ends the day before the newer one starts, so no day is counted twice
+    for (const p of ledger.periods.slice().reverse()) {
+      const pr0 = L.payRange(state, p.start);
+      const pr = { from: pr0.from < first ? first : pr0.from, end: nextFrom && L.addDays(nextFrom, -1) < pr0.end ? L.addDays(nextFrom, -1) : pr0.end };
+      nextFrom = pr0.from;
+      const upto = pr.end < today ? pr.end : today;
+      if (pr.from > upto) continue;
+      const sp = state.expenses.reduce((a, e) => (!e.ignored && e.date >= pr.from && e.date <= upto && (fixedOn() || !isFixedE(e)) ? a + L.num(e.amount) : a), 0);
+      const inc = state.incomes.reduce((a, i) => (!i.ignored && i.date >= pr.from && i.date <= upto ? a + L.num(i.amount) : a), 0);
+      const net = L.r2(inc - sp);
+      rows.push(`<div class="p2p-row${p.isCurrent ? ' now' : ''}"><div class="p2p-when">${dShort(pr.from)} to ${dShort(pr.end)}${p.isCurrent ? ' <span class="tag">now</span>' : ''}</div>
+        <div class="p2p-nums"><span>Spent <b class="num">${money(sp)}</b></span><span>Income <b class="num good">${money(inc)}</b></span><span class="${net < 0 ? 'bad' : 'good'}"><b class="num">${net < 0 ? '-' : '+'}${money(Math.abs(net))}</b></span></div></div>`);
+    }
+    return rows.length ? `<div class="card"><h2>Payday to payday</h2><div class="p2p">${rows.join('')}</div></div>` : '';
   }
 
   function openDay(date) {
