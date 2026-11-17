@@ -130,7 +130,7 @@
     const cfg = state.settings.industry;
     // Planned costs (rent, utilities, business expenses, short-term investments) come off the month's money but are
     // never a day's spending, so they can't put any day over its limit.
-    const opts = { isFixed: (e) => window.Industry.isFixedExpense(e, cfg) || isInvestExp(e), closed: state.closed || (state.closed = {}), isInvestExp: isInvestExp, isInvestInc: isInvestInc };
+    const opts = { isFixed: (e) => !!e.notDaily || window.Industry.isFixedExpense(e, cfg) || isInvestExp(e), closed: state.closed || (state.closed = {}), isInvestExp: isInvestExp, isInvestInc: isInvestInc };
     ledger = L.buildLedger(state, today, opts);
     // A finished month is locked 3 days after it ends (late bank bookings): its results never change again.
     const locks = L.monthsToLock(ledger, today, 3);
@@ -209,7 +209,7 @@
     const title = kind === 'income' ? (e.source || 'Income') : (e.place || 'Expense');
     return `<div class="item" data-kind="${kind}" data-id="${e.id}">
       <div class="dot">${initial}</div>
-      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && L.incomeKind(e) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.pending ? '<span class="tag">pending</span>' : ''}${e.reserveId ? '<span class="tag">reserved</span>' : ''}${(() => { const v = investOf(e.id); if (!v) return ''; if (kind === 'income') return `<span class="tag">+${money(v.profit)} profit</span>`; return `<span class="tag">${v.repaid >= v.fullAmount - 0.004 ? 'paid back' : v.repaid > 0 ? money(v.repaid) + ' back' : 'invested'}</span>`; })()}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
+      <div class="meta"><div class="title">${esc(title)}${kind === 'income' && L.incomeKind(e) === 'advance' && !/advance/i.test(title) ? '<span class="tag">advance</span>' : ''}${e.liveId ? '<span class="tag">live</span>' : ''}${e.pending ? '<span class="tag">pending</span>' : ''}${e.notDaily ? '<span class="tag">not daily</span>' : ''}${e.reserveId ? '<span class="tag">reserved</span>' : ''}${(() => { const v = investOf(e.id); if (!v) return ''; if (kind === 'income') return `<span class="tag">+${money(v.profit)} profit</span>`; return `<span class="tag">${v.repaid >= v.fullAmount - 0.004 ? 'paid back' : v.repaid > 0 ? money(v.repaid) + ' back' : 'invested'}</span>`; })()}${e.bankId ? `<span class="tag">${esc(bankLabel())}</span>` : ''}</div>
       <div class="sub">${dShort(e.date)}${kind === 'expense' ? (() => { const id = window.Industry.classifyExpense(e, state.settings.industry); const x = id && window.Industry.allIndustries(state.settings.industry).find((y) => y.id === id); return x ? ` · <span style="color:${x.color}">${esc(x.name)}</span>` : ''; })() : ''}${e.note ? ' · ' + esc(e.note) : ''}</div></div>
       <div class="amt num ${kind === 'income' ? 'good' : ''}">${kind === 'income' ? '+' : '-'}${money(e.amount)}</div></div>`;
   }
@@ -1182,7 +1182,7 @@
   const chartAnim = () => (ui.animate ? { duration: 700, easing: 'easeOutCubic' } : false);
   // Rent & utilities switch for statistics and the calendar
   const fixedOn = () => state.settings.statsFixed !== false;
-  const isFixedE = (e) => window.Industry.isFixedExpense(e, state.settings.industry) || isInvestExp(e);
+  const isFixedE = (e) => !!e.notDaily || window.Industry.isFixedExpense(e, state.settings.industry) || isInvestExp(e);
   const fixedSwitchHtml = () => `<div class="toggle fixswitch"><span>Rent &amp; utilities</span><input type="checkbox" id="fxToggle" ${fixedOn() ? 'checked' : ''}></div>`;
   function bindFixedSwitch(v) {
     const t = $('#fxToggle', v);
@@ -1473,6 +1473,7 @@
         return `<option value="">Automatic${auto ? ': ' + esc(names[auto] || '') : ': Unclassified'}</option>` +
           I.allIndustries(cfg).filter((x) => x.id !== 'other').map((x) => `<option value="${x.id}" ${e.industry === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
       })()}</select></div>
+      <label class="toggle"><span>Not daily spending<span class="small muted" style="display:block">Comes off your money, never overspend or catch-up</span></span><input type="checkbox" id="eNotDaily" ${e.notDaily ? 'checked' : ''}></label>
       <div class="actions">${isNew ? '' : '<button class="btn danger" id="eDel">Delete</button>'}<button class="btn primary" id="eSave">Save</button></div>`, (b) => {
       setTimeout(() => isNew && $('#eAmt', b).focus(), 50);
       $$('.place-suggest button', b).forEach((x) => (x.onclick = () => ($('#ePlace', b).value = x.dataset.p)));
@@ -1482,6 +1483,7 @@
         const rec = Object.assign(item || { id: uid(), created: Date.now() }, { amount: L.r2(amt), place: $('#ePlace', b).value.trim() || 'Unknown', date: $('#eDate', b).value || today, note: $('#eNote', b).value.trim() });
         const ind = $('#eInd', b).value, wasInv = isNew ? false : isInvestExp(item);
         if (ind) rec.industry = ind; else delete rec.industry; // this one transaction only; the shop's other payments keep their category
+        if ($('#eNotDaily', b).checked) rec.notDaily = true; else delete rec.notDaily; // this one payment works like rent
         const askInvest = ind === 'invest' && !wasInv;
         if (isNew) state.expenses.push(rec);
         else if (rec.bankId) rec.edited = true; // your edit wins over later bank updates

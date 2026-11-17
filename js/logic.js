@@ -938,7 +938,7 @@
       const oldId = y.bankId;
       y.bankId = best.bankId; y.bankPlace = best.bankPlace || best.place; delete y.pending;
       if (!y.edited) { y.amount = best.amount; y.date = best.date; }
-      for (const k of ['industry', 'reserveId']) if (best[k] && !y[k]) y[k] = best[k];
+      for (const k of ['industry', 'reserveId', 'notDaily']) if (best[k] && !y[k]) y[k] = best[k];
       data.expenses = data.expenses.filter((e) => e !== best);
       if (oldId && data.ignoredBankIds.indexOf(oldId) < 0) data.ignoredBankIds.push(oldId);
       merged++;
