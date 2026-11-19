@@ -267,7 +267,7 @@
     return Object.assign({}, cfg, { budget: Math.floor(lo * 100) / 100 });
   }
   const catchPlan = () => {
-    const key = `${modeOn()}|${L.num(state.settings.minDaily)}|${JSON.stringify(state.settings.overspendWaive || null)}`;
+    const key = `${modeOn()}|${autoOn()}|${L.num(state.settings.minDaily)}|${JSON.stringify(state.settings.overspendWaive || null)}`;
     if (planMemo && planMemo.ledger === ledger && planMemo.key === key && planMemo.today === today) return planMemo.cp;
     const cp = catchPlanRaw();
     planMemo = { ledger, key, today, cp };
@@ -301,7 +301,10 @@
   // Behind by yesterday (the same number as Stats), minus what you chose not to catch up this month.
   const autoGap = () => Math.max(0, L.r2(paceBalance().gap));
   const autoDebt = () => Math.max(0, L.r2(autoGap() - waived()));
+  // The Catch-up switch (on by default): on = it starts by itself whenever you're over budget; off = never.
+  const autoOn = () => state.settings.autoCatchup !== false;
   function autoPlan() {
+    if (!autoOn()) return null;
     const D = autoDebt();
     if (!(D > 0.004)) return null;
     const M = minDaily();
@@ -398,16 +401,18 @@
       if (bf.on) body += `<div class="row"><span class="label">Buffer built</span><span class="num">${qb ? `${dShort(qb.date)} · ${qb.days} day${qb.days === 1 ? '' : 's'}` : 'after catching up'}</span></div>`;
       body += `<div style="display:flex;gap:8px;margin-top:8px"><button class="btn ghost block" id="cuEdit">Change</button>${bf.on ? '<button class="btn ghost block" id="bfEdit">Buffer</button>' : ''}</div>`;
     }
-    // The Catch-up switch is hidden: catching up is automatic now (kept in the code, not shown).
+    // Catch-up switch: automatic catch-up on or off. The look of the app doesn't change while catching up.
+    const ap = autoOn() ? autoPlan() : null;
+    const cuLine = ap ? `<div class="small muted" style="margin:-4px 0 8px">${ap.eta ? `Catching up ${money(ap.missing)}: ${ap.etaDays} day${ap.etaDays === 1 ? '' : 's'} at ${money(minDaily())} a day` : `Catching up ${money(ap.missing)}: lower the minimum daily budget in Settings`}</div>` : '';
     return `<div class="card catchup-card"><div class="mode-switches">
-      <div class="toggle" hidden><span><b>Catch-up</b></span><input type="checkbox" id="cuOn" ${c.on ? 'checked' : ''}></div>
+      <div class="toggle"><span><b>Catch-up</b></span><input type="checkbox" id="cuOn" ${autoOn() ? 'checked' : ''}></div>${cuLine}
       <div class="toggle"><span><b>Buffer</b></span><input type="checkbox" id="bfOn" ${bf.on ? 'checked' : ''}></div></div>${body}</div>`;
   }
   function bindCatchup(v, ts) {
     const sw = $('#cuOn', v);
     if (sw) sw.onchange = () => {
-      if (sw.checked) { if (window.CatchupFX) window.CatchupFX.askMotion(); sw.checked = false; openCatchup(ts, false); }
-      else { state.settings.catchup.on = false; save(); render(); }
+      state.settings.autoCatchup = sw.checked; save(); render();
+      toast(sw.checked ? 'Catch-up on: starts by itself when you overspend' : 'Catch-up off');
     };
     const e = $('#cuEdit', v); if (e) e.onclick = () => openCatchup(ts, true);
     const bs = $('#bfOn', v);
@@ -421,12 +426,12 @@
   // change any of them and the others follow as you type. With catch-up still running, the buffer waits and is
   // built right after it (the days count from then). Or set the daily budget you want afterwards instead.
   function openBuffer(ts, editing) {
-    const bf = bufCfg(), cuOn = autoDebt() > 0.004; // catching up (automatic): the buffer is built right after
+    const bf = bufCfg(), cuOn = autoOn() && autoDebt() > 0.004; // catching up (automatic): the buffer is built right after
     const gapNow = 0; // catch-up is automatic now: no need to turn it on first (the sheet below is kept, unused)
     if (!editing && !cuOn && gapNow > 0.004) {
       openSheet(`<h3>Buffer mode</h3><div class="row total"><span>You're behind by</span><span class="num bad">${money(gapNow)}</span></div>
         <p class="small muted">Turn on catch-up too: the buffer is built right after it.</p>
-        <button class="btn primary block" id="bfCu">Start catching up</button>`, (b) => { $('#bfCu', b).onclick = () => { closeSheet(); openCatchup(ts, false); }; });
+        <button class="btn primary block" id="bfCu">Turn catch-up on</button>`, (b) => { $('#bfCu', b).onclick = () => { state.settings.autoCatchup = true; save(); closeSheet(); render(); toast('Catch-up on'); }; });
       return;
     }
     const raw = ts.rawAllowance !== undefined ? ts.rawAllowance : ts.dailyAllowance;
@@ -1789,7 +1794,7 @@
     const s = state.settings;
     const gap = ledger && ledger.current ? autoGap() : 0, w = ledger && ledger.current ? waived() : 0;
     const cp = ledger && ledger.current ? catchPlan() : null, auto = cp && cp.auto ? cp : null;
-    const eta = auto ? (auto.eta ? `${auto.etaDays} day${auto.etaDays === 1 ? '' : 's'} at ${money(minDaily())} a day, until ${dShort(auto.eta)}` : `not at ${money(minDaily())} a day: lower the minimum`) : 'nothing to catch up';
+    const eta = !autoOn() ? 'off (Catch-up switch on Today)' : auto ? (auto.eta ? `${auto.etaDays} day${auto.etaDays === 1 ? '' : 's'} at ${money(minDaily())} a day, until ${dShort(auto.eta)}` : `not at ${money(minDaily())} a day: lower the minimum`) : 'nothing to catch up';
     return `<h3 style="margin-top:22px">Overspend</h3>
       <div class="field"><label>Minimum daily budget, ${SYM}</label><input id="stMin" class="num" inputmode="decimal" value="${L.num(s.minDaily) > 0 ? s.minDaily : ''}" placeholder="${Math.floor(L.typicalDaily(ledger || {}) * 0.5) || ''}"><div class="hint">When you overspend, every day gets exactly this until it's caught up. The days needed are worked out from it.</div></div>
       <div class="row"><span class="label">Overspent (behind the even pace)</span><span class="num">${money(gap)}</span></div>
