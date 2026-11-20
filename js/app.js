@@ -1031,10 +1031,13 @@
     let cells = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map((d) => `<div class="dow">${d}</div>`).join('');
     for (let i = 0; i < startDow; i++) cells += '<div></div>';
     let monthSpent = 0;
+    // Investments are shown as their own figure (payouts minus money put in), not as spending or income.
+    const invOpenByDay = {};
+    for (const e of ((ledger.invest && ledger.invest.exps) || [])) invOpenByDay[e.date] = (invOpenByDay[e.date] || 0) + L.num(e.amount);
     const payDay = Math.min(state.settings.payDay, L.daysInMonth(y, m));
     for (let d = 1; d <= L.daysInMonth(y, m); d++) {
       const ds = `${y}-${L.pad(m + 1)}-${L.pad(d)}`;
-      const sp = (ledger.spentByDay[ds] || 0) + (fixedOn() ? (ledger.fixedByDay[ds] || 0) : 0) + (ledger.more.paidByDay[ds] || 0);
+      const sp = (ledger.spentByDay[ds] || 0) + (fixedOn() ? (ledger.fixedByDay[ds] || 0) - (invOpenByDay[ds] || 0) : 0) + (ledger.more.paidByDay[ds] || 0);
       monthSpent += sp;
       const info = days[ds];
       let cls = 'day';
@@ -1045,6 +1048,9 @@
       cells += `<div class="${cls}" data-date="${ds}"><span class="d">${d}</span><span class="s num">${sp ? fmtEUR0.format(Math.round(sp)) : ''}</span></div>`;
     }
     const inc = L.sumRange(ledger.incomeByDay, first, last);
+    const inMonth = (x) => !x.ignored && x.date >= first && x.date <= last;
+    const invNet = L.r2(state.incomes.reduce((a, i) => (inMonth(i) && isInvestInc(i) ? a + L.num(i.amount) : a), 0) - state.expenses.reduce((a, e) => (inMonth(e) && isInvestExp(e) ? a + L.num(e.amount) : a), 0));
+    const monthNet = L.r2(inc - monthSpent + invNet);
     v.innerHTML = `
       <div class="navrow"><button class="icon-btn" id="calPrev"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
         <span class="lbl">${MONTHS_LONG[m]} ${y}</span>
@@ -1055,6 +1061,8 @@
       <div class="stat-grid">
         <div class="stat"><div class="k">Spent in ${MONTHS[m]}</div><div class="v num">${money(monthSpent)}</div></div>
         <div class="stat"><div class="k">Income in ${MONTHS[m]}</div><div class="v num good">${money(inc)}</div></div>
+        ${invNet ? `<div class="stat"><div class="k">Investments in ${MONTHS[m]}</div><div class="v num ${invNet < 0 ? '' : 'good'}">${signed(invNet)}</div></div>` : ''}
+        <div class="stat"><div class="k">Net in ${MONTHS[m]}</div><div class="v num ${monthNet < 0 ? 'bad' : 'good'}">${signed(monthNet)}</div></div>
       </div>
       ${payToPayHtml()}
       <p class="small muted" style="text-align:center">Tap a day to see or add expenses.</p>`;
