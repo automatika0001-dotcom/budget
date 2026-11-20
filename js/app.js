@@ -168,6 +168,9 @@
   const investCfg = () => state.settings.invest || (state.settings.invest = { income: [] });
   const isInvestExp = (e) => window.Industry.classifyExpense(e, state.settings.industry) === 'invest';
   const isInvestInc = (i) => { const k = window.Industry.brandKey(i.source); return investCfg().income.some((x) => window.Industry.keysMatch(k, x)); };
+  // Investment P&L of a set of entries: payouts minus money put in. Totals never count investments as spending
+  // or income themselves: a gain adds to income, a loss adds to spending.
+  const invPL = (exps, incs) => L.r2(incs.reduce((a, i) => (isInvestInc(i) ? a + L.num(i.amount) : a), 0) - exps.reduce((a, e) => (isInvestExp(e) ? a + L.num(e.amount) : a), 0));
   const investOf = (id) => { const iv = ledger && ledger.invest; if (!iv) return null; return iv.exps.find((x) => x.id === id) || iv.pays.find((x) => x.id === id) || null; };
   function openInvestSetup(preKey) {
     const I = window.Industry, cfg = state.settings.industry, ic = investCfg();
@@ -788,12 +791,13 @@
     const shown = all.slice(0, limit);
     const inSum = all.filter((x) => x.kind === 'income' && !isInvestInc(x.e)).reduce((a, x) => a + L.num(x.e.amount), 0);
     const outSum = all.filter((x) => x.kind === 'expense' && !isInvestExp(x.e)).reduce((a, x) => a + L.num(x.e.amount), 0);
-    const invSum = L.r2(all.reduce((a, x) => a + (x.kind === 'income' && isInvestInc(x.e) ? L.num(x.e.amount) : x.kind === 'expense' && isInvestExp(x.e) ? -L.num(x.e.amount) : 0), 0));
+    const pl = invPL(state.expenses.filter((e) => !e.ignored), state.incomes.filter((e) => !e.ignored));
+    const inAll = L.r2(inSum + Math.max(0, pl)), outAll = L.r2(outSum + Math.max(0, -pl));
     let lastDay = '';
     const rows = shown.map((x) => { const h = x.e.date !== lastDay ? `<div class="tx-day">${dLong(x.e.date)}</div>` : ''; lastDay = x.e.date; return h + itemRow(x.e, x.kind); }).join('');
     openSheet(`<h3>Transactions</h3>
       <div class="seg" style="margin-bottom:10px"><button data-f="all" class="${filter === 'all' ? 'on' : ''}">All</button><button data-f="expense" class="${filter === 'expense' ? 'on' : ''}">Spent</button><button data-f="income" class="${filter === 'income' ? 'on' : ''}">Income</button></div>
-      <div class="chips" style="margin-bottom:10px">${filter !== 'expense' ? `<span class="chip">In <b class="num good">+${money(inSum)}</b></span>` : ''}${filter !== 'income' ? `<span class="chip">Out <b class="num">-${money(outSum)}</b></span>` : ''}${filter === 'all' && invSum ? `<span class="chip">Investments <b class="num">${signed(invSum)}</b></span>` : ''}</div>
+      <div class="chips" style="margin-bottom:10px">${filter !== 'expense' ? `<span class="chip">In <b class="num good">+${money(inAll)}</b></span>` : ''}${filter !== 'income' ? `<span class="chip">Out <b class="num">-${money(outAll)}</b></span>` : ''}</div>
       <div class="list tx-list">${rows || '<div class="empty">Nothing here</div>'}</div>
       ${all.length > shown.length ? '<button class="btn ghost block" id="txMore" style="margin-top:10px">Show more</button>' : ''}`, (b) => {
       $$('.seg button', b).forEach((x) => (x.onclick = () => openTxLog(x.dataset.f, 60)));
@@ -1031,7 +1035,7 @@
     let cells = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map((d) => `<div class="dow">${d}</div>`).join('');
     for (let i = 0; i < startDow; i++) cells += '<div></div>';
     let monthSpent = 0;
-    // Investments are shown as their own figure (payouts minus money put in), not as spending or income.
+    // Investments are not spending or income: only their P&L counts (a gain as income, a loss as spending).
     const invOpenByDay = {};
     for (const e of ((ledger.invest && ledger.invest.exps) || [])) invOpenByDay[e.date] = (invOpenByDay[e.date] || 0) + L.num(e.amount);
     const payDay = Math.min(state.settings.payDay, L.daysInMonth(y, m));
@@ -1049,8 +1053,10 @@
     }
     const inc = L.sumRange(ledger.incomeByDay, first, last);
     const inMonth = (x) => !x.ignored && x.date >= first && x.date <= last;
-    const invNet = L.r2(state.incomes.reduce((a, i) => (inMonth(i) && isInvestInc(i) ? a + L.num(i.amount) : a), 0) - state.expenses.reduce((a, e) => (inMonth(e) && isInvestExp(e) ? a + L.num(e.amount) : a), 0));
-    const monthNet = L.r2(inc - monthSpent + invNet);
+    const pl = invPL(state.expenses.filter(inMonth), state.incomes.filter(inMonth));
+    const monthInc = L.r2(inc + Math.max(0, pl));
+    monthSpent = L.r2(monthSpent + Math.max(0, -pl));
+    const monthNet = L.r2(monthInc - monthSpent);
     v.innerHTML = `
       <div class="navrow"><button class="icon-btn" id="calPrev"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
         <span class="lbl">${MONTHS_LONG[m]} ${y}</span>
@@ -1060,8 +1066,7 @@
         <div class="legend" style="margin-top:12px"><span><i style="background:#17291f"></i>Under daily budget</span><span><i style="background:#331a18"></i>Over</span><span><span style="color:var(--accent)">${SYM}</span> Pay day</span>${(state.settings.vacations || []).length ? '<span><i style="background:transparent;border:1px dashed #6ab8f2"></i>Holiday</span>' : ''}</div></div>
       <div class="stat-grid">
         <div class="stat"><div class="k">Spent in ${MONTHS[m]}</div><div class="v num">${money(monthSpent)}</div></div>
-        <div class="stat"><div class="k">Income in ${MONTHS[m]}</div><div class="v num good">${money(inc)}</div></div>
-        ${invNet ? `<div class="stat"><div class="k">Investments in ${MONTHS[m]}</div><div class="v num ${invNet < 0 ? '' : 'good'}">${signed(invNet)}</div></div>` : ''}
+        <div class="stat"><div class="k">Income in ${MONTHS[m]}</div><div class="v num good">${money(monthInc)}</div></div>
         <div class="stat"><div class="k">Net in ${MONTHS[m]}</div><div class="v num ${monthNet < 0 ? 'bad' : 'good'}">${signed(monthNet)}</div></div>
       </div>
       ${payToPayHtml()}
@@ -1083,15 +1088,15 @@
       nextFrom = pr0.from;
       const upto = pr.end < today ? pr.end : today;
       if (pr.from > upto) continue;
-      // Investments apart from spending and income: what went in and what came back in these days, as one
-      // figure, so the result still matches what really moved in the account.
+      // Investments are not spending or income: only their P&L in these days counts, a gain as income and a
+      // loss as spending.
       const inR = (x) => !x.ignored && x.date >= pr.from && x.date <= upto;
-      const sp = state.expenses.reduce((a, e) => (inR(e) && !isInvestExp(e) && (fixedOn() || !isFixedE(e)) ? a + L.num(e.amount) : a), 0);
-      const inc = state.incomes.reduce((a, i) => (inR(i) && !isInvestInc(i) ? a + L.num(i.amount) : a), 0);
-      const invNet = L.r2(state.incomes.reduce((a, i) => (inR(i) && isInvestInc(i) ? a + L.num(i.amount) : a), 0) - state.expenses.reduce((a, e) => (inR(e) && isInvestExp(e) ? a + L.num(e.amount) : a), 0));
-      const net = L.r2(inc - sp + invNet);
+      const pl = invPL(state.expenses.filter(inR), state.incomes.filter(inR));
+      const sp = L.r2(state.expenses.reduce((a, e) => (inR(e) && !isInvestExp(e) && (fixedOn() || !isFixedE(e)) ? a + L.num(e.amount) : a), 0) + Math.max(0, -pl));
+      const inc = L.r2(state.incomes.reduce((a, i) => (inR(i) && !isInvestInc(i) ? a + L.num(i.amount) : a), 0) + Math.max(0, pl));
+      const net = L.r2(inc - sp);
       rows.push(`<div class="p2p-row${p.isCurrent ? ' now' : ''}"><div class="p2p-when">${dShort(pr.from)} to ${dShort(pr.end)}${p.isCurrent ? ' <span class="tag">now</span>' : ''}</div>
-        <div class="p2p-nums"><span>Spent <b class="num">${money(sp)}</b></span><span>Income <b class="num good">${money(inc)}</b></span>${invNet ? `<span>Investments <b class="num ${invNet < 0 ? '' : 'good'}">${signed(invNet)}</b></span>` : ''}<span class="${net < 0 ? 'bad' : 'good'}"><b class="num">${net < 0 ? '-' : '+'}${money(Math.abs(net))}</b></span></div></div>`);
+        <div class="p2p-nums"><span>Spent <b class="num">${money(sp)}</b></span><span>Income <b class="num good">${money(inc)}</b></span><span class="${net < 0 ? 'bad' : 'good'}"><b class="num">${net < 0 ? '-' : '+'}${money(Math.abs(net))}</b></span></div></div>`);
     }
     return rows.length ? `<div class="card"><h2>Payday to payday</h2><div class="p2p">${rows.join('')}</div></div>` : '';
   }
