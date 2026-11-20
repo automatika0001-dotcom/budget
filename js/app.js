@@ -786,7 +786,7 @@
   function openTxLog(filter, limit) {
     const all = txLog().filter((x) => filter === 'all' || x.kind === filter);
     const shown = all.slice(0, limit);
-    const inSum = all.filter((x) => x.kind === 'income').reduce((a, x) => a + L.num(x.e.amount), 0);
+    const inSum = all.filter((x) => x.kind === 'income' && !isInvestInc(x.e)).reduce((a, x) => a + L.num(x.e.amount), 0);
     const outSum = all.filter((x) => x.kind === 'expense').reduce((a, x) => a + L.num(x.e.amount), 0);
     let lastDay = '';
     const rows = shown.map((x) => { const h = x.e.date !== lastDay ? `<div class="tx-day">${dLong(x.e.date)}</div>` : ''; lastDay = x.e.date; return h + itemRow(x.e, x.kind); }).join('');
@@ -1075,7 +1075,7 @@
       const upto = pr.end < today ? pr.end : today;
       if (pr.from > upto) continue;
       const sp = state.expenses.reduce((a, e) => (!e.ignored && e.date >= pr.from && e.date <= upto && (fixedOn() || !isFixedE(e)) ? a + L.num(e.amount) : a), 0);
-      const inc = state.incomes.reduce((a, i) => (!i.ignored && i.date >= pr.from && i.date <= upto ? a + L.num(i.amount) : a), 0);
+      const inc = state.incomes.reduce((a, i) => (!i.ignored && !isInvestInc(i) && i.date >= pr.from && i.date <= upto ? a + L.num(i.amount) : a), 0);
       const net = L.r2(inc - sp);
       rows.push(`<div class="p2p-row${p.isCurrent ? ' now' : ''}"><div class="p2p-when">${dShort(pr.from)} to ${dShort(pr.end)}${p.isCurrent ? ' <span class="tag">now</span>' : ''}</div>
         <div class="p2p-nums"><span>Spent <b class="num">${money(sp)}</b></span><span>Income <b class="num good">${money(inc)}</b></span><span class="${net < 0 ? 'bad' : 'good'}"><b class="num">${net < 0 ? '-' : '+'}${money(Math.abs(net))}</b></span></div></div>`);

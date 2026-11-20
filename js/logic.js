@@ -155,7 +155,10 @@
     const spentByDay = sumByDay(allExp.filter((e) => !fromReserve(e) && !isFixed(e)));
     const fixedByDay = sumByDay(allExp.filter((e) => !fromReserve(e) && isFixed(e)));
     const more = { resByDay, paidByDay };
-    const incomeByDay = sumByDay(state.incomes || []);
+    // Income totals in statistics leave investment payouts out: they are weighed against the money put in (above,
+    // so they still shape the budget), and adding them to income would count the same money twice.
+    const isInvI = (opts && opts.isInvestInc) || (() => false);
+    const incomeByDay = sumByDay((state.incomes || []).filter((i) => !isInvI(i)));
     const adjByDay = {}; // rebalances, worked out per month below: change the allowance, never count as spend/income
     const adjs = (state.adjustments || []).filter((a) => !a.ignored);
     const statsFrom = s.statsFrom || s.startDate || today;
