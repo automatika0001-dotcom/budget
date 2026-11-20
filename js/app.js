@@ -1041,7 +1041,7 @@
     const payDay = Math.min(state.settings.payDay, L.daysInMonth(y, m));
     for (let d = 1; d <= L.daysInMonth(y, m); d++) {
       const ds = `${y}-${L.pad(m + 1)}-${L.pad(d)}`;
-      const sp = (ledger.spentByDay[ds] || 0) + (fixedOn() ? (ledger.fixedByDay[ds] || 0) - (invOpenByDay[ds] || 0) : 0) + (ledger.more.paidByDay[ds] || 0);
+      const sp = (ledger.spentByDay[ds] || 0) + (fixedOn() ? (ledger.fixedByDay[ds] || 0) - (invOpenByDay[ds] || 0) + (ledger.more.paidByDay[ds] || 0) : 0);
       monthSpent += sp;
       const info = days[ds];
       let cls = 'day';
@@ -1056,7 +1056,9 @@
     const pl = invPL(state.expenses.filter(inMonth), state.incomes.filter(inMonth));
     const monthInc = L.r2(inc + Math.max(0, pl));
     monthSpent = L.r2(monthSpent + Math.max(0, -pl));
-    const monthNet = L.r2(monthInc - monthSpent);
+    const po = plannedOut(first, last < today ? last : today);
+    const monthPri = L.r2(monthInc - po.paid - po.held);
+    const monthNet = L.r2(monthInc - monthSpent - (fixedOn() ? 0 : po.paid));
     v.innerHTML = `
       <div class="navrow"><button class="icon-btn" id="calPrev"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
         <span class="lbl">${MONTHS_LONG[m]} ${y}</span>
@@ -1067,6 +1069,7 @@
       <div class="stat-grid">
         <div class="stat"><div class="k">Spent in ${MONTHS[m]}</div><div class="v num">${money(monthSpent)}</div></div>
         <div class="stat"><div class="k">Income in ${MONTHS[m]}</div><div class="v num good">${money(monthInc)}</div></div>
+        ${fixedOn() ? '' : `<div class="stat"><div class="k">PRI in ${MONTHS[m]}</div><div class="v num ${monthPri < 0 ? 'bad' : 'good'}">${money(monthPri)}</div></div>`}
         <div class="stat"><div class="k">Net in ${MONTHS[m]}</div><div class="v num ${monthNet < 0 ? 'bad' : 'good'}">${signed(monthNet)}</div></div>
       </div>
       ${payToPayHtml()}
@@ -1079,6 +1082,20 @@
 
   // Every pay month, newest first: spent and income from pay day to pay day (from an early advance or salary
   // when there was one). Spending follows the Rent & utilities switch like the rest of the page.
+  // PRI (post rent income): income minus rent, utilities, excluded costs, payments from a reserve and money still
+  // reserved. Shown when the switch leaves those out of spending. Net is always what really came in minus what
+  // really went out (money still reserved has not gone out).
+  function plannedOut(from, to) {
+    const paidRes = new Set((state.reserves || []).filter((r) => resStatus(r) === 'paid').map((r) => r.id));
+    const isP = (e) => (isFixedE(e) && !isInvestExp(e)) || !!(e.reserveId && paidRes.has(e.reserveId));
+    const paid = state.expenses.reduce((a, e) => (!e.ignored && e.date >= from && e.date <= to && isP(e) ? a + L.num(e.amount) : a), 0);
+    const held = (state.reserves || []).reduce((a, r) => {
+      if (!r || !r.date || r.date < from || r.date > to) return a;
+      const rel = L.releaseDateOf(r);
+      return rel && rel <= to ? a : a + L.num(r.amount);
+    }, 0);
+    return { isP, paid: L.r2(paid), held: L.r2(held) };
+  }
   function payToPayHtml() {
     const rows = [], first = ledger.statsFrom || state.settings.startDate;
     let nextFrom = null; // each one ends the day before the newer one starts, so no day is counted twice
@@ -1092,11 +1109,13 @@
       // loss as spending.
       const inR = (x) => !x.ignored && x.date >= pr.from && x.date <= upto;
       const pl = invPL(state.expenses.filter(inR), state.incomes.filter(inR));
-      const sp = L.r2(state.expenses.reduce((a, e) => (inR(e) && !isInvestExp(e) && (fixedOn() || !isFixedE(e)) ? a + L.num(e.amount) : a), 0) + Math.max(0, -pl));
+      const po = plannedOut(pr.from, upto);
+      const sp = L.r2(state.expenses.reduce((a, e) => (inR(e) && !isInvestExp(e) && (fixedOn() || !po.isP(e)) ? a + L.num(e.amount) : a), 0) + Math.max(0, -pl));
       const inc = L.r2(state.incomes.reduce((a, i) => (inR(i) && !isInvestInc(i) ? a + L.num(i.amount) : a), 0) + Math.max(0, pl));
-      const net = L.r2(inc - sp);
+      const pri = L.r2(inc - po.paid - po.held);
+      const net = L.r2(inc - sp - (fixedOn() ? 0 : po.paid));
       rows.push(`<div class="p2p-row${p.isCurrent ? ' now' : ''}"><div class="p2p-when">${dShort(pr.from)} to ${dShort(pr.end)}${p.isCurrent ? ' <span class="tag">now</span>' : ''}</div>
-        <div class="p2p-nums"><span>Spent <b class="num">${money(sp)}</b></span><span>Income <b class="num good">${money(inc)}</b></span><span class="${net < 0 ? 'bad' : 'good'}"><b class="num">${net < 0 ? '-' : '+'}${money(Math.abs(net))}</b></span></div></div>`);
+        <div class="p2p-nums"><span>Spent <b class="num">${money(sp)}</b></span><span>Income <b class="num good">${money(inc)}</b></span>${fixedOn() ? '' : `<span>PRI <b class="num ${pri < 0 ? 'bad' : 'good'}">${money(pri)}</b></span>`}<span class="${net < 0 ? 'bad' : 'good'}"><b class="num">${net < 0 ? '-' : '+'}${money(Math.abs(net))}</b></span></div></div>`);
     }
     return rows.length ? `<div class="card"><h2>Payday to payday</h2><div class="p2p">${rows.join('')}</div></div>` : '';
   }
