@@ -1058,7 +1058,6 @@
     monthSpent = L.r2(monthSpent + Math.max(0, -pl));
     const po = plannedOut(first, last < today ? last : today);
     const monthPri = L.r2(monthInc - po.paid - po.held);
-    const monthNet = L.r2(monthInc - monthSpent - (fixedOn() ? 0 : po.paid));
     v.innerHTML = `
       <div class="navrow"><button class="icon-btn" id="calPrev"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
         <span class="lbl">${MONTHS_LONG[m]} ${y}</span>
@@ -1068,9 +1067,7 @@
         <div class="legend" style="margin-top:12px"><span><i style="background:#17291f"></i>Under daily budget</span><span><i style="background:#331a18"></i>Over</span><span><span style="color:var(--accent)">${SYM}</span> Pay day</span>${(state.settings.vacations || []).length ? '<span><i style="background:transparent;border:1px dashed #6ab8f2"></i>Holiday</span>' : ''}</div></div>
       <div class="stat-grid">
         <div class="stat"><div class="k">Spent in ${MONTHS[m]}</div><div class="v num">${money(monthSpent)}</div></div>
-        <div class="stat"><div class="k">Income in ${MONTHS[m]}</div><div class="v num good">${money(monthInc)}</div></div>
-        ${fixedOn() ? '' : `<div class="stat"><div class="k">PRI in ${MONTHS[m]}</div><div class="v num ${monthPri < 0 ? 'bad' : 'good'}">${money(monthPri)}</div></div>`}
-        <div class="stat"><div class="k">Net in ${MONTHS[m]}</div><div class="v num ${monthNet < 0 ? 'bad' : 'good'}">${signed(monthNet)}</div></div>
+        ${fixedOn() ? `<div class="stat"><div class="k">Income in ${MONTHS[m]}</div><div class="v num good">${money(monthInc)}</div></div>` : `<div class="stat"><div class="k">PRI in ${MONTHS[m]}</div><div class="v num ${monthPri < 0 ? 'bad' : 'good'}">${money(monthPri)}</div></div>`}
       </div>
       ${payToPayHtml()}
       <p class="small muted" style="text-align:center">Tap a day to see or add expenses.</p>`;
@@ -1115,7 +1112,7 @@
       const pri = L.r2(inc - po.paid - po.held);
       const net = L.r2(inc - sp - (fixedOn() ? 0 : po.paid));
       rows.push(`<div class="p2p-row${p.isCurrent ? ' now' : ''}"><div class="p2p-when">${dShort(pr.from)} to ${dShort(pr.end)}${p.isCurrent ? ' <span class="tag">now</span>' : ''}</div>
-        <div class="p2p-nums"><span>Spent <b class="num">${money(sp)}</b></span><span>Income <b class="num good">${money(inc)}</b></span>${fixedOn() ? '' : `<span>PRI <b class="num ${pri < 0 ? 'bad' : 'good'}">${money(pri)}</b></span>`}<span class="${net < 0 ? 'bad' : 'good'}"><b class="num">${net < 0 ? '-' : '+'}${money(Math.abs(net))}</b></span></div></div>`);
+        <div class="p2p-nums"><span>Spent <b class="num">${money(sp)}</b></span>${fixedOn() ? `<span>Income <b class="num good">${money(inc)}</b></span>` : `<span>PRI <b class="num ${pri < 0 ? 'bad' : 'good'}">${money(pri)}</b></span>`}<span class="${net < 0 ? 'bad' : 'good'}"><b class="num">${net < 0 ? '-' : '+'}${money(Math.abs(net))}</b></span></div></div>`);
     }
     return rows.length ? `<div class="card"><h2>Payday to payday</h2><div class="p2p">${rows.join('')}</div></div>` : '';
   }
