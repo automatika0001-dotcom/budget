@@ -168,6 +168,9 @@
   const investCfg = () => state.settings.invest || (state.settings.invest = { income: [] });
   const isInvestExp = (e) => window.Industry.classifyExpense(e, state.settings.industry) === 'invest';
   const isInvestInc = (i) => { const k = window.Industry.brandKey(i.source); return investCfg().income.some((x) => window.Industry.keysMatch(k, x)); };
+  // What an expense counts as in totals: money put into an investment counts only for the part not yet paid back
+  // (the paid-back part is weighed against the payout, which is left out of income totals the same way).
+  const spendAmt = (e) => { const v = investOf(e.id); return v ? L.num(v.amount) : L.num(e.amount); };
   const investOf = (id) => { const iv = ledger && ledger.invest; if (!iv) return null; return iv.exps.find((x) => x.id === id) || iv.pays.find((x) => x.id === id) || null; };
   function openInvestSetup(preKey) {
     const I = window.Industry, cfg = state.settings.industry, ic = investCfg();
@@ -787,7 +790,7 @@
     const all = txLog().filter((x) => filter === 'all' || x.kind === filter);
     const shown = all.slice(0, limit);
     const inSum = all.filter((x) => x.kind === 'income' && !isInvestInc(x.e)).reduce((a, x) => a + L.num(x.e.amount), 0);
-    const outSum = all.filter((x) => x.kind === 'expense').reduce((a, x) => a + L.num(x.e.amount), 0);
+    const outSum = all.filter((x) => x.kind === 'expense').reduce((a, x) => a + spendAmt(x.e), 0);
     let lastDay = '';
     const rows = shown.map((x) => { const h = x.e.date !== lastDay ? `<div class="tx-day">${dLong(x.e.date)}</div>` : ''; lastDay = x.e.date; return h + itemRow(x.e, x.kind); }).join('');
     openSheet(`<h3>Transactions</h3>
@@ -1074,7 +1077,7 @@
       nextFrom = pr0.from;
       const upto = pr.end < today ? pr.end : today;
       if (pr.from > upto) continue;
-      const sp = state.expenses.reduce((a, e) => (!e.ignored && e.date >= pr.from && e.date <= upto && (fixedOn() || !isFixedE(e)) ? a + L.num(e.amount) : a), 0);
+      const sp = state.expenses.reduce((a, e) => (!e.ignored && e.date >= pr.from && e.date <= upto && (fixedOn() || !isFixedE(e)) ? a + spendAmt(e) : a), 0);
       const inc = state.incomes.reduce((a, i) => (!i.ignored && !isInvestInc(i) && i.date >= pr.from && i.date <= upto ? a + L.num(i.amount) : a), 0);
       const net = L.r2(inc - sp);
       rows.push(`<div class="p2p-row${p.isCurrent ? ' now' : ''}"><div class="p2p-when">${dShort(pr.from)} to ${dShort(pr.end)}${p.isCurrent ? ' <span class="tag">now</span>' : ''}</div>
