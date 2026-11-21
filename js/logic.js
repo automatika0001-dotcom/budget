@@ -841,6 +841,8 @@
    * other banks (Enable Banking) don't, so a final payment takes over a pending one going out with the same amount
    * (or the same shop and within 15%) within 7 days, and that pending id is never added again.
    * Pending entries the bank dropped (declined, expired) are removed, unless you edited them.
+   * A payment stays on the day it first showed up (phone notification, reservation or by hand): when the bank
+   * books it on a later day only the amount is updated, so old payments never show up as today's spending.
    */
   function applyBankTransactions(data, mapped, o) {
     const res = { added: 0, addedIn: 0, matched: 0, updated: 0, removed: 0 };
@@ -860,7 +862,8 @@
         seenPending.add(m.bankId);
         if (finalisedRefs.has(m.bankId) || ignored.has(m.bankId)) continue;
         const ex = byBankId.get(m.bankId);
-        if (ex) { if (!ex.edited && (ex.amount !== m.amount || ex.date !== m.date)) { ex.amount = m.amount; ex.date = m.date; res.updated++; } continue; }
+        // the amount follows the bank; the date stays the day the payment first showed up (never moves later)
+        if (ex) { if (!ex.edited && ex.amount !== m.amount) { ex.amount = m.amount; res.updated++; } continue; }
       } else {
         if (ignored.has(m.bankId) || byBankId.has(m.bankId)) continue;
         if (m.pendingRef && ignored.has(m.pendingRef)) { data.ignoredBankIds.push(m.bankId); ignored.add(m.bankId); continue; }
@@ -871,7 +874,7 @@
           byBankId.delete(oldId); byBankId.set(m.bankId, was);
           if (oldId && oldId !== m.pendingRef) { data.ignoredBankIds.push(oldId); ignored.add(oldId); }
           was.bankId = m.bankId; delete was.pending; delete was.pendingLink;
-          if (!was.edited) { was.amount = m.amount; was.date = m.date; }
+          if (!was.edited) was.amount = m.amount; // the date stays where the payment first showed up
           res.updated++; continue;
         }
       }
@@ -940,7 +943,7 @@
       used.add(best);
       const oldId = y.bankId;
       y.bankId = best.bankId; y.bankPlace = best.bankPlace || best.place; delete y.pending;
-      if (!y.edited) { y.amount = best.amount; y.date = best.date; }
+      if (!y.edited) y.amount = best.amount; // the older entry keeps its date: where the payment first showed up
       for (const k of ['industry', 'reserveId', 'notDaily']) if (best[k] && !y[k]) y[k] = best[k];
       data.expenses = data.expenses.filter((e) => e !== best);
       if (oldId && data.ignoredBankIds.indexOf(oldId) < 0) data.ignoredBankIds.push(oldId);

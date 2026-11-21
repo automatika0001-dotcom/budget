@@ -224,7 +224,17 @@ t('tomorrow preview: unspent today does not raise it, overspend lowers it, lefto
     assert.strictEqual(r.added, 0); assert.strictEqual(d.expenses.length, 1);
     r = L.applyBankTransactions(d, [tx('f1', 12.8, '2026-10-08', { ref: 'p1' })], opts); // tip added, now final
     assert.strictEqual(d.expenses.length, 1); assert.strictEqual(r.updated, 1);
-    assert.deepStrictEqual([d.expenses[0].bankId, d.expenses[0].amount, d.expenses[0].date, d.expenses[0].pending], ['f1', 12.8, '2026-10-08', undefined]);
+    assert.deepStrictEqual([d.expenses[0].bankId, d.expenses[0].amount, d.expenses[0].date, d.expenses[0].pending], ['f1', 12.8, '2026-10-07', undefined]); // stays on the day it first showed up
+  });
+  t('a payment logged from a notification stays on its day when the bank books it later', () => {
+    const d = { expenses: [{ id: 'live1', liveId: 'x', date: '2026-10-10', amount: 9.99, place: 'Sinsay' }], incomes: [], ignoredBankIds: [] };
+    L.applyBankTransactions(d, [tx('p9', 9.99, '2026-10-10', { pending: true, name: 'Sinsay' })], opts);
+    L.applyBankTransactions(d, [tx('f9', 9.99, '2026-10-12', { name: 'Sinsay' })], opts); // final under a new id, 2 days later
+    assert.strictEqual(d.expenses.length, 1);
+    assert.deepStrictEqual([d.expenses[0].id, d.expenses[0].bankId, d.expenses[0].date], ['live1', 'f9', '2026-10-10']);
+    L.applyBankTransactions(d, [tx('p8', 4, '2026-10-11', { pending: true })], opts);
+    L.applyBankTransactions(d, [tx('p8', 4, '2026-10-13', { pending: true })], opts); // the reservation's date moves
+    assert.strictEqual(d.expenses.find((e) => e.bankId === 'p8').date, '2026-10-11');
   });
   t('final and its pending in the same sync count once', () => {
     const d = { expenses: [], incomes: [], ignoredBankIds: [] };

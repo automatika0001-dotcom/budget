@@ -51,6 +51,20 @@
     (out.incomes || []).forEach((i) => { if (!i.kind) i.kind = guessKind(i, out.settings); });
     // v1.2: statistics ignore days before 6 Oct 2026 (or the budget start date, whichever is later)
     if (!out.settings.statsFrom && out.settings.startDate) out.settings.statsFrom = out.settings.startDate > '2026-10-06' ? out.settings.startDate : '2026-10-06';
+    // v1.32: a bank payment used to move to the day the bank booked it. Put the ones that moved back on the day
+    // they first showed up in the app (once; never inside or into a locked month).
+    if (!out.settings.datesV1) {
+      let lockedTo = '';
+      for (const k in out.closed || {}) { const c = out.closed[k]; if (c && c.end && c.end > lockedTo) lockedTo = c.end; }
+      for (const e of out.expenses || []) {
+        if (!e.bankId || e.edited || e.ignored) continue;
+        const t = L.createdAt(e);
+        if (!(t > 0 && t < Infinity)) continue;
+        const added = L.todayStr(new Date(t));
+        if (added < e.date && L.diffDays(added, e.date) <= 7 && added > lockedTo) e.date = added;
+      }
+      out.settings.datesV1 = true;
+    }
     out.v = DATA_VERSION;
     return out;
   }
