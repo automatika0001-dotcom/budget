@@ -1996,7 +1996,8 @@
       <div class="ind-grid">${inds.map((x) => {
         const m = mine(x.id);
         return `<div class="ind-drop ${clsOpen === x.id ? 'open' : ''}" data-ind="${x.id}" style="--c:${x.color}"><div class="ind-name"><i></i>${esc(x.name)}${m.length ? ` <span class="muted small">+${m.length}</span>` : ''}</div>
-          ${clsOpen === x.id ? `<div class="ind-mine">${m.length ? m.map((k) => `<span class="mine-chip">${esc(k)}<button data-unset="${esc(k)}" aria-label="Remove">×</button></span>`).join('') : '<span class="small muted">Nothing added by you yet</span>'}</div>
+          ${clsOpen === x.id ? `<div class="ind-mine">${(() => { const sh = I.shopsIn(x.id, state.expenses, cfg); return sh.length ? sh.map((g) => `<span class="mine-chip" data-move="${esc(g.key)}">${esc(g.name)}<button data-unset="${esc(g.key)}" aria-label="Remove">×</button></span>`).join('') : '<span class="small muted">No shops here yet</span>'; })()}</div>
+            <div class="small muted" style="margin-top:6px">Tap a shop to move it. × makes it unsorted.</div>
             ${I.FIXED.has(x.id) || x.id === 'invest' ? '' : `<label class="toggle small" style="margin-top:8px" data-noopen="1"><span>Not daily spending (like rent)</span><input type="checkbox" data-planned="${x.id}" ${I.isPlannedInd(x.id, cfg) ? 'checked' : ''}></label>`}` : ''}
         </div>`;
       }).join('')}</div>
@@ -2019,11 +2020,15 @@
         save(); render(); toast(x.checked ? 'Not counted as daily spending' : 'Counted as daily spending');
       }));
       $$('.ind-drop', b).forEach((z) => (z.onclick = (e) => {
-        if (e.target.dataset.unset || e.target.closest('[data-noopen]')) return;
+        if (e.target.dataset.unset || e.target.closest('[data-noopen]') || e.target.closest('[data-move]')) return;
         clsOpen = clsOpen === z.dataset.ind ? '' : z.dataset.ind; openClassify();
       }));
       $$('[data-unset]', b).forEach((x) => (x.onclick = (e) => {
-        e.stopPropagation(); delete cfg.map[x.dataset.unset]; save(); render(); openClassify(); toast(x.dataset.unset + ' is unsorted again');
+        e.stopPropagation(); I.moveShop(x.dataset.unset, x.closest('.ind-drop').dataset.ind, null, state.expenses, cfg); save(); render(); openClassify(); toast(x.dataset.unset + ' is unsorted again');
+      }));
+      $$('[data-move]', b).forEach((x) => (x.onclick = (e) => {
+        if (e.target.dataset.unset) return;
+        e.stopPropagation(); pickMove(x.dataset.move, x.closest('.ind-drop').dataset.ind, inds);
       }));
       const assign = (key, ind) => {
         cfg.map[key] = ind; save(); render();
@@ -2065,6 +2070,22 @@
       else if (!wasDrag) pickIndustry(chip.dataset.key, inds, assign);
     });
     chip.addEventListener('pointercancel', () => { start = null; end(); });
+  }
+  // Move a shop with all its payments to another category (or back to unsorted).
+  function pickMove(key, from, inds) {
+    const cfg = state.settings.industry;
+    openSheet(`<h3>Move ${esc(key)}</h3><p class="small muted" style="margin-top:-6px">All its payments move too.</p>
+      <div class="ind-pick">${inds.filter((x) => x.id !== from).map((x) => `<button class="choice" data-ind="${x.id}" style="margin-top:6px"><b><i class="dot" style="background:${x.color}"></i>${esc(x.name)}</b></button>`).join('')}
+        <button class="choice" data-ind="" style="margin-top:6px"><b>Unsorted</b></button></div>
+      <div class="actions" style="margin-top:12px"><button class="btn ghost block" id="pkBack">Back</button></div>`, (b) => {
+      $$('.choice', b).forEach((c) => (c.onclick = () => {
+        const to = c.dataset.ind || null;
+        window.Industry.moveShop(key, from, to, state.expenses, cfg); save(); render();
+        if (to === 'invest') { openInvestSetup(key); return; }
+        clsOpen = to || from; openClassify(); toast(key + ' → ' + (to ? inds.find((x) => x.id === to).name : 'Unsorted'));
+      }));
+      $('#pkBack', b).onclick = () => openClassify();
+    });
   }
   function pickIndustry(key, inds, assign) {
     openSheet(`<h3>${esc(key)}</h3><p class="small muted" style="margin-top:-6px">Which industry is this shop?</p>

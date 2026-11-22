@@ -68,3 +68,20 @@ console.log(`ok  ${n} statement merchants classified; ${I.INDUSTRIES.length} ind
   require('assert').strictEqual(cfg.map.PICA, 'eating');
   console.log('ok  a shop named just VEIKALS keeps its category');
 }
+
+// moving a shop and taking it out of a category
+{
+  const cfg = { custom: [{ id: 'c_k', name: 'Kiosks', color: '#fff' }], map: { NARVESEN: 'c_k' } };
+  const ex = [{ id: 'a', place: 'NARVESEN 1151', amount: 3 }, { id: 'b', place: 'NARVESEN 760', amount: 2, industry: 'c_k' }, { id: 'c', place: 'RIMI SHM', amount: 9 }];
+  assert.strictEqual(I.classifyExpense(ex[0], cfg), 'c_k');
+  assert.deepStrictEqual(I.shopsIn('c_k', ex, cfg).map((s) => [s.key, s.count, s.mine]), [['NARVESEN', 2, true]]);
+  I.moveShop('NARVESEN', 'c_k', null, ex, cfg); // ×: back to unsorted even though NARVESEN is a known brand
+  assert.strictEqual(I.classifyExpense(ex[0], cfg), null);
+  assert.strictEqual(I.classifyExpense(ex[1], cfg), null);
+  assert.deepStrictEqual(I.unclassifiedGroups(ex, cfg).map((g) => g.key), ['NARVESEN']);
+  I.moveShop('NARVESEN', null, 'eating', ex, cfg);
+  I.moveShop('NARVESEN', 'eating', 'c_k', ex, cfg);
+  assert.ok(ex.slice(0, 2).every((e) => I.classifyExpense(e, cfg) === 'c_k'));
+  assert.strictEqual(I.classifyExpense(ex[2], cfg), 'groceries');
+  console.log('move shop ok');
+}

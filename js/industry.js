@@ -130,8 +130,11 @@
     utilities: ['LATVENERGO', 'ELEKTRUM', 'ENEFIT', 'BALTCOM', 'TELE2', 'SILTUMS', 'APSAIMNIEKOSANA']
   };
   const BRAND_LIST = Object.entries(BRANDS).flatMap(([id, keys]) => keys.map((k) => [k, id]));
+  // A shop you took out of a category stays unsorted (map value UNSORTED), even when a built-in rule knows it.
+  const UNSORTED = '-';
   function classify(place, note, cfg) {
     const u = userIndustry(place, cfg);
+    if (u === UNSORTED) return null;
     if (u && (BY_ID[u] || (cfg.custom || []).some((c) => c.id === u))) return u;
     const bk = brandKey(place);
     for (const [k, id] of BRAND_LIST) if (bk.length >= 4 && keysMatch(bk, k)) return id;
@@ -181,6 +184,33 @@
       .sort((a, b) => b.total - a.total);
   }
 
+  /** Shops whose payments land in category id: [{ key, name, count, total, mine }], biggest first. mine: you put it there. */
+  function shopsIn(id, expenses, cfg) {
+    const g = {};
+    for (const e of expenses) {
+      if (e.ignored || classifyExpense(e, cfg) !== id) continue;
+      const k = brandKey(placeOf(e)) || '?';
+      const x = g[k] || (g[k] = { key: k, names: {}, count: 0, total: 0 });
+      x.count++; x.total += +e.amount || 0;
+      const nm = String(placeOf(e) || '?').trim(); x.names[nm] = (x.names[nm] || 0) + 1;
+    }
+    for (const k in (cfg && cfg.map) || {}) if (cfg.map[k] === id && !g[k]) g[k] = { key: k, names: { [k]: 1 }, count: 0, total: 0 };
+    return Object.values(g).map((x) => ({ key: x.key, name: Object.entries(x.names).sort((a, b) => b[1] - a[1])[0][0], count: x.count, total: Math.round(x.total * 100) / 100, mine: !!(cfg && cfg.map && cfg.map[x.key] === id) }))
+      .sort((a, b) => b.total - a.total);
+  }
+  /**
+   * Move a shop fully from one category to another (to = null: back to unsorted). Its future payments follow,
+   * and so do its past ones, including the ones you put in `from` one by one.
+   */
+  function moveShop(key, from, to, expenses, cfg) {
+    cfg.map[key] = to || UNSORTED;
+    for (const e of expenses) {
+      if (!e.industry || (from && e.industry !== from)) continue;
+      if (!keysMatch(brandKey(placeOf(e)), key)) continue;
+      if (to) e.industry = to; else delete e.industry;
+    }
+  }
+
   const csvCell = (v) => { const s = String(v ?? ''); return /[",\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   /** CSV of every expense whose shop isn't classified yet (one row per payment). */
   function unclassifiedCsv(expenses, cfg) {
@@ -217,7 +247,7 @@
     }
     return changed;
   }
-  const api = { autoIndustry, fixMapKeys, FIXED, isFixedExpense, isPlannedInd, INDUSTRIES, RULES, brandKey, keysMatch, classify, classifyExpense, allIndustries, byIndustry, unclassifiedGroups, unclassifiedCsv };
+  const api = { UNSORTED, shopsIn, moveShop, autoIndustry, fixMapKeys, FIXED, isFixedExpense, isPlannedInd, INDUSTRIES, RULES, brandKey, keysMatch, classify, classifyExpense, allIndustries, byIndustry, unclassifiedGroups, unclassifiedCsv };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Industry = api;
 })(typeof window !== 'undefined' ? window : globalThis);
