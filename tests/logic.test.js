@@ -338,7 +338,8 @@ console.log('tomorrow tests passed');
     // 1000 for 30 days = 33.33/day; days 1-4 nothing spent; on the 5th 400 rent comes off: (1000-400)/26
     near(ts.dailyAllowance, 600 / 26, 'allowance after rent');
     near(ts.spentToday, 20, 'only the groceries count today');
-    near(ts.remainingMonth, 1000 - 450, 'month money includes rent and the bill dated later this month');
+    near(ts.remainingMonth, 1000 - 420, 'month money: rent and today\'s spending; the bill dated later counts on its own day');
+    near(ts.remainingMonth + ts.spentToday, 600, '"left this morning" matches the money the allowance is worked out from');
     near(ts.nextAllowance, (600 - Math.max(20, 600 / 26)) / 25, 'tomorrow');
   });
   t('day before rent is unaffected; over/under ignores fixed costs', () => {

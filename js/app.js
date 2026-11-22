@@ -83,7 +83,8 @@
   let state = load();
   let saveSeq = 0;
   function save() {
-    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+    catch (e) { console.error(e); try { toast('Could not save: phone storage is full. Export a backup in Settings.', 6000); } catch (x) {} }
     saveSeq++;
     if (!bkmeta.dirty) { bkmeta.dirty = true; saveMeta(); }
   }
@@ -136,6 +137,13 @@
   function toast(msg, ms) {
     const t = $('#toast'); t.textContent = msg; t.hidden = false;
     clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), ms || 2600);
+  }
+  // A toast with an Undo button (for deletes): undo() puts things back.
+  function toastUndo(msg, undo) {
+    const t = $('#toast');
+    t.innerHTML = `${esc(msg)} <button class="toast-undo" type="button">Undo</button>`; t.hidden = false;
+    $('.toast-undo', t).onclick = () => { clearTimeout(toast._t); t.hidden = true; undo(); };
+    clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), 6000);
   }
 
   // ---------------- core render ----------------
@@ -261,14 +269,14 @@
     return `<details class="inv-line small inv-fold" id="invFold"${ui.invOpen ? ' open' : ''}><summary class="inv-title"><span>Investments${v && v.open ? ` · <b class="num">${money(v.open)}</b> out` : ''}</span><span class="muted">▾</span></summary><div class="inv-rows">${rows.join('')}${det}<div style="margin-top:8px"><button class="btn ghost small-btn" id="invSrc">Sources</button></div></div></details>`;
   }
 
-  // ---------------- catch-up mode ----------------
-  // Behind the even pace this month? Each day's limit is lowered until it's paid back: either within a chosen
-  // number of days or by living on a chosen daily budget, never under the minimum per day (then it takes longer).
-  // Today counts live: going over today's limit adds to what's missing straight away.
-  // Buffer mode works the same way the other way round: with nothing to catch up, each day's limit is lowered
-  // until a chosen extra amount is set aside; that money stays in the month, so the daily budget rises after.
+  // ---------------- catch-up and buffer ----------------
+  // Catch-up is automatic: behind the even pace, every budget day gets the minimum daily budget until it's paid
+  // back (autoPlan). Today counts live: going over today's limit adds to what's missing straight away.
+  // Buffer mode works the other way round: each day's limit is lowered until a chosen extra amount is set aside;
+  // that money stays in the month, so the daily budget rises after. It waits while catch-up runs.
   const bufCfg = () => state.settings.buffer || (state.settings.buffer = { on: false, start: '', days: 14, min: 0, debt: 0 });
-  const modeOn = () => (state.settings.catchup && state.settings.catchup.on ? 'catchup' : bufCfg().on ? 'buffer' : null);
+  // The only mode you switch on is the buffer: catch-up runs by itself (see autoPlan).
+  const modeOn = () => (bufCfg().on ? 'buffer' : null);
   const modeCfg = () => { const m = modeOn(); return m ? state.settings[m] : null; };
   // The plan keeps its finishing day: every time the numbers change (you went over, money came in) the daily
   // budget is worked out again as the highest one that still finishes by that day; at the minimum budget it
@@ -302,12 +310,11 @@
     const f = L.catchupForecast(ledger, take, L.num(bf.debt), s0, cp.availAfter, today);
     return f && f.date ? Object.assign({ from: s0 }, f) : null;
   }
-  // ---- automatic catch-up (1.28.0) ----
-  // No switch any more: whenever spending is behind the even pace (this month, plus last month's overspend not
-  // paid back yet), every budget day gets the same budget, your minimum daily budget (Settings), until it's paid
-  // back; the number of days follows from that. The last day may get a little more (only the rest is taken).
-  // Settings can erase or lower this month's overspend when you don't plan to catch all of it up. The old
-  // catch-up mode (its sheet and card) stays in the code but is hidden.
+  // ---- automatic catch-up ----
+  // Whenever spending is behind the even pace (this month, plus last month's overspend not paid back yet), every
+  // budget day gets the same budget, your minimum daily budget (Settings), until it's paid back; the number of
+  // days follows from that. The last day may get a little more (only the rest is taken). The Catch-up switch on
+  // Today turns it off. Settings can erase or lower this month's overspend you don't plan to catch up.
   const minDaily = () => {
     const m = L.num(state.settings.minDaily);
     if (m > 0) return m;
@@ -333,36 +340,17 @@
     return cp;
   }
   const catchPlanRaw = () => {
-    const c0 = state.settings.catchup;
-    if (c0 && c0.on) { c0.on = false; c0.endedAuto = today; save(); } // the old manual mode: replaced by the automatic one
     const auto = autoPlan();
     if (auto) return auto; // a buffer waits while catching up
-    if (modeOn() === 'buffer') {
-      const bf = bufCfg();
-      if (bf.waiting) { bf.waiting = false; bf.start = today; bf.began = today; save(); } // catch-up is over: the buffer starts now
-      const bp = L.catchupPlan(ledger, adapted(bf), today);
-      if (bp && bp.done) { bf.on = false; bf.builtOn = today; save(); setTimeout(() => { try { toast('Buffer built: your daily budget goes up from tomorrow'); } catch (e) {} }, 0); return null; }
-      return bp;
-    }
-    const c = state.settings.catchup;
-    if (c && c.on && c.v !== 2) { // started before 1.18.5: its amount added up every day's over, recount it
-      c.v = 2; c.start = today; c.debt = Math.max(0, L.paceGap(ledger, today, L.addDays(today, -1)).gap);
-      if (!(c.debt > 0)) c.on = false;
-      save();
-    }
-    const cp = L.catchupPlan(ledger, adapted(c), today);
-    // Money that came in (an investment's profit, a refund, extra income) can put you back on or ahead of the
-    // even pace before the planned days are over: then there is nothing left to catch up, so the mode ends.
-    if (c && c.on && cp && !cp.done && L.paceGap(ledger, today).gap + L.carryLeft(ledger, today) <= 0.004) {
-      c.on = false; c.endedAhead = today; save();
-      setTimeout(() => { try { toast('Caught up: back on pace, catch-up mode ended'); } catch (e) {} }, 0);
-      return null;
-    }
-    return cp;
+    if (modeOn() !== 'buffer') return null;
+    const bf = bufCfg();
+    if (bf.waiting) { bf.waiting = false; bf.start = today; bf.began = today; save(); } // catch-up is over: the buffer starts now
+    const bp = L.catchupPlan(ledger, adapted(bf), today);
+    if (bp && bp.done) { bf.on = false; bf.builtOn = today; save(); setTimeout(() => { try { toast('Buffer built: your daily budget goes up from tomorrow'); } catch (e) {} }, 0); return null; }
+    return bp;
   };
-  /** How far along the catch-up is, 0 to 1 (the cards fill with liquid as it goes): days already behind you out
-   *  of all the days, these plus the days still to go. 15 days left after 1 day done = 1/16. Going over the limit
-   *  adds days still to go, so the level drops; spending less brings it up. */
+  /** How far along the buffer is, 0 to 1 (the cards fill with liquid as it goes): days already behind you out
+   *  of all the days, these plus the days still to go. 15 days left after 1 day done = 1/16. */
   function catchProgress() {
     const c = modeCfg(), cp = c ? catchPlan() : null;
     if (!cp || cp.auto) return 0;
@@ -379,29 +367,20 @@
     if (ts.nextDate && ts.nextAllowance !== null) out.nextAllowance = cp.nextLimit(ts.nextDate, ts.nextAllowance);
     return out;
   }
-  // The line in the main box while catching up.
+  // The line in the main box while building a buffer.
   function catchLineHtml() {
-    const m = modeOn();
-    if (!m) return '';
+    if (modeOn() !== 'buffer') return '';
     const cp = catchPlan();
     if (!cp || cp.auto) return '';
-    if (m === 'buffer') {
-      if (!cp.eta) return `<div class="cu-line"><b class="num">${money(cp.missing)}</b> still to set aside. At this minimum it can't be done: lower it in Buffer mode.</div>`;
-      const n = cp.etaDays, dd = `${n} day${n === 1 ? '' : 's'}`;
-      return `<div class="cu-line"><b class="num">${dd}</b> until your buffer is built, <b class="num">${money(cp.missing)}</b> still to set aside. After ${dd} your daily budget will be <b class="num">${money(cp.after)}</b>.</div>`;
-    }
-    if (cp.done || cp.missing <= 0.004) return '<div class="cu-line">All caught up. Your daily budget is back to normal.</div>';
-    if (!cp.eta) return `<div class="cu-line"><b class="num">${money(cp.missing)}</b> still missing. At this minimum it can't be caught up: lower it in Catch-up mode.</div>`;
+    if (!cp.eta) return `<div class="cu-line"><b class="num">${money(cp.missing)}</b> still to set aside. At this minimum it can't be done: lower it in Buffer mode.</div>`;
     const n = cp.etaDays, dd = `${n} day${n === 1 ? '' : 's'}`;
-    const qb = bufferAfter(cp);
-    const bufTxt = qb ? ` Then your buffer: built in <b class="num">${qb.days} day${qb.days === 1 ? '' : 's'}</b> from today, after that <b class="num">${money(qb.after)}</b> a day.` : '';
-    return `<div class="cu-line"><b class="num">${dd}</b> until caught up, <b class="num">${money(cp.missing)}</b> still missing. After ${dd} your daily budget will be <b class="num">${money(cp.after)}</b>.${bufTxt}</div>`;
+    return `<div class="cu-line"><b class="num">${dd}</b> until your buffer is built, <b class="num">${money(cp.missing)}</b> still to set aside. After ${dd} your daily budget will be <b class="num">${money(cp.after)}</b>.</div>`;
   }
   // How far ahead of the even pace this pay month's spending was by yesterday (same as the Stats chart).
   // Last month's overspend is counted too: the part of it this month hasn't paid back yet.
   const paceBalance = () => { const y = L.addDays(today, -1), g = L.paceGap(ledger, today, y), cl = L.carryLeft(ledger, y); return Object.assign({}, g, { carry: cl, gap: L.r2(g.gap + cl) }); };
   function catchupHtml(ts) {
-    const c = state.settings.catchup || {}, bf = bufCfg();
+    const bf = bufCfg();
     const cp0 = modeOn() ? catchPlan() : null;
     const cp = cp0 && !cp0.auto ? cp0 : null; // automatic catch-up shows nowhere here (only in today's formula)
     let body = '';
@@ -412,14 +391,6 @@
         ${bf.goal ? `<div class="row"><span class="label">Goal</span><span class="num">${money(bf.goal)} a day after</span></div>` : ''}
         <div class="row"><span class="label">Built</span><span class="num">${cp.eta ? `${dShort(cp.eta)} · ${cp.etaDays} day${cp.etaDays === 1 ? '' : 's'}` : 'never at this minimum'}</span></div>
         <button class="btn ghost block" id="bfEdit" style="margin-top:8px">Change</button>`;
-    } else if (c.on && cp) {
-      body = cp.done || cp.missing <= 0.004 ? '<div class="row"><span class="label">All caught up</span><b class="num">0</b></div>'
-        : `<div class="row"><span class="label">Still missing</span><b class="num">${money(cp.missing)}</b></div>
-          ${ts.catchTake ? `<div class="row"><span class="label">Today's budget</span><span class="num">${money(ts.rawAllowance)} - ${money(ts.catchTake)} = <b>${money(ts.dailyAllowance)}</b></span></div>` : ''}
-          <div class="row"><span class="label">Caught up</span><span class="num">${cp.eta ? `${dShort(cp.eta)} · ${cp.etaDays} day${cp.etaDays === 1 ? '' : 's'}` : 'never at this minimum'}</span></div>`;
-      const qb = bufferAfter(cp);
-      if (bf.on) body += `<div class="row"><span class="label">Buffer built</span><span class="num">${qb ? `${dShort(qb.date)} · ${qb.days} day${qb.days === 1 ? '' : 's'}` : 'after catching up'}</span></div>`;
-      body += `<div style="display:flex;gap:8px;margin-top:8px"><button class="btn ghost block" id="cuEdit">Change</button>${bf.on ? '<button class="btn ghost block" id="bfEdit">Buffer</button>' : ''}</div>`;
     }
     // Catch-up switch: automatic catch-up on or off. The look of the app doesn't change while catching up.
     const ap = autoOn() ? autoPlan() : null;
@@ -434,7 +405,6 @@
       state.settings.autoCatchup = sw.checked; save(); render();
       toast(sw.checked ? 'Catch-up on: starts by itself when you overspend' : 'Catch-up off');
     };
-    const e = $('#cuEdit', v); if (e) e.onclick = () => openCatchup(ts, true);
     const bs = $('#bfOn', v);
     if (bs) bs.onchange = () => {
       if (bs.checked) { bs.checked = false; openBuffer(ts, false); }
@@ -447,13 +417,6 @@
   // built right after it (the days count from then). Or set the daily budget you want afterwards instead.
   function openBuffer(ts, editing) {
     const bf = bufCfg(), cuOn = autoOn() && autoDebt() > 0.004; // catching up (automatic): the buffer is built right after
-    const gapNow = 0; // catch-up is automatic now: no need to turn it on first (the sheet below is kept, unused)
-    if (!editing && !cuOn && gapNow > 0.004) {
-      openSheet(`<h3>Buffer mode</h3><div class="row total"><span>You're behind by</span><span class="num bad">${money(gapNow)}</span></div>
-        <p class="small muted">Turn on catch-up too: the buffer is built right after it.</p>
-        <button class="btn primary block" id="bfCu">Turn catch-up on</button>`, (b) => { $('#bfCu', b).onclick = () => { state.settings.autoCatchup = true; save(); closeSheet(); render(); toast('Catch-up on'); }; });
-      return;
-    }
     const raw = ts.rawAllowance !== undefined ? ts.rawAllowance : ts.dailyAllowance;
     const isHol = ledger.isHoliday || (() => false);
     // where building starts: today, or the day after catch-up ends
@@ -558,108 +521,6 @@
       };
     });
   }
-  function openCatchup(ts, editing) {
-    const c = state.settings.catchup;
-    const cp = editing ? catchPlan() : null;
-    const bal = editing ? null : paceBalance();
-    const debt = editing ? (cp ? cp.debt : 0) : bal.gap;
-    const raw = ts.rawAllowance !== undefined ? ts.rawAllowance : ts.dailyAllowance;
-    const isHol = ledger.isHoliday || (() => false);
-    const day0 = L.daysInRange(ledger, today, today, today)[0];
-    const avail = day0 && day0.pool !== undefined ? day0.pool - day0.before : raw * Math.max(1, ts.budgetDaysLeft || 1);
-    if (!(debt > 0.004)) {
-      openSheet(`<h3>Catch-up mode</h3>
-        ${bal ? `<div class="row"><span class="label">Spent this month, by yesterday</span><span class="num">${money(bal.spent)}</span></div>
-        <div class="row"><span class="label">Even pace by yesterday</span><span class="num">${money(bal.pace)}</span></div>
-        ${bal.carry > 0.004 ? `<div class="row"><span class="label">Last month's overspend not paid back yet</span><span class="num">${money(bal.carry)}</span></div>` : ''}
-        <div class="row total"><span>Nothing to catch up</span><span class="num good">${money(-bal.gap)} under</span></div>` : '<div class="row total"><span>All caught up</span></div>'}
-        <button class="btn primary block" id="cuOk" style="margin-top:12px">OK</button>`, (b) => { $('#cuOk', b).onclick = closeSheet; });
-      return;
-    }
-    const minDef = c.min > 0 ? c.min : Math.max(0, Math.floor(L.typicalDaily(ledger) * 0.5));
-    const daysDef = editing && cp && cp.etaDays ? cp.etaDays : c.days || 14;
-    openSheet(`<h3>Catch-up mode</h3>
-      ${bal ? `<div class="row"><span class="label">Spent this month, by yesterday</span><span class="num">${money(bal.spent)}</span></div>
-      <div class="row"><span class="label">Even pace by yesterday</span><span class="num">${money(bal.pace)}</span></div>` : ''}
-      <div class="row total"><span>To catch up</span><span class="num">${money(debt)}</span></div>
-      <div class="field" style="margin-top:12px"><label>Catch up within (days) <span class="muted" id="cuDMin"></span></label><input id="cuDays" class="num" inputmode="numeric" value="${daysDef}"></div>
-      <div class="field"><label>Daily budget while catching up, ${SYM}</label><input id="cuBud" class="num" inputmode="decimal"></div>
-      <div class="field"><label>Minimum, ${SYM} a day (never less)</label><input id="cuMin" class="num" inputmode="decimal" value="${minDef}"></div>
-      <div class="card" style="margin:0 0 12px">
-        <div class="row"><span class="label">Today</span><span class="num" id="cuToday"></span></div>
-        <div class="row"><span class="label">Caught up in</span><b class="num" id="cuEta"></b></div>
-        <div class="row"><span class="label">Then a day</span><b class="num" id="cuAfter"></b></div>
-        ${bufCfg().on ? '<div class="row"><span class="label">Buffer built in</span><b class="num" id="cuBuf"></b></div>' : ''}</div>
-      <button class="btn primary block" id="cuGo">${editing ? 'Save' : 'Start catching up'}</button>`, (b) => {
-      /* Days, daily budget and minimum, linked as you type:
-         - change the days: the daily budget becomes the highest that gets there in that many days;
-         - change the daily budget: the days it takes are filled in;
-         - the minimum is only a floor: the budget can't go under it, so days that would need less are made
-           longer (the fastest possible at the minimum). Changing it touches nothing else unless the budget was
-           under it. While catching up the plan keeps adjusting itself (see adapted()). */
-      const minNow = () => Math.max(0, L.num($('#cuMin', b).value));
-      const fc = (B0) => L.catchupForecast(ledger, L.catchupTake({ start: today, days: 1, min: Math.min(minNow(), B0), budget: Math.max(B0, 0.01) }, isHol), debt, today, avail, today);
-      const top = Math.max(raw, L.typicalDaily(ledger)); // above this nothing is ever paid back
-      const put = (id, v) => { const el = $(id, b); if (el && document.activeElement !== el) el.value = v; };
-      let B = minNow(), note = '';
-      const show = (f) => {
-        const tk = Math.max(0, Math.min(debt, raw - B));
-        $('#cuToday', b).innerHTML = tk > 0.004 ? `${money(raw)} - ${money(tk)} = <b>${money(raw - tk)}</b>` : `${money(raw)}`;
-        if (!f) {
-          $('#cuEta', b).textContent = 'Never: this budget is above what a usual day has'; $('#cuEta', b).className = 'num bad';
-          $('#cuAfter', b).textContent = ''; if ($('#cuBuf', b)) $('#cuBuf', b).textContent = ''; $('#cuGo', b).disabled = true; return;
-        }
-        $('#cuEta', b).textContent = `${f.days} day${f.days === 1 ? '' : 's'} · ${dShort(f.date)}${note}`; $('#cuEta', b).className = note ? 'num bad' : 'num';
-        $('#cuAfter', b).textContent = money(f.after); $('#cuGo', b).disabled = false;
-        if ($('#cuBuf', b)) { const qb = bufferAfter({ eta: f.date, availAfter: f.availAfter }); $('#cuBuf', b).textContent = qb ? `${qb.days} days · ${dShort(qb.date)}` : 'can\'t at its minimum'; }
-      };
-      // The fewest days possible: living on the minimum every day. Fewer can't be chosen.
-      const fewest = () => { const f = fc(minNow()); $('#cuDMin', b).textContent = f ? `at least ${f.days}` : ''; return f ? f.days : null; };
-      const tooFew = (n) => {
-        $('#cuDays', b).classList.add('bad-input'); B = minNow(); put('#cuBud', L.r2(B));
-        $('#cuEta', b).textContent = `At least ${fewest()} days at your minimum`; $('#cuEta', b).className = 'num bad';
-        $('#cuAfter', b).textContent = ''; $('#cuGo', b).disabled = true;
-      };
-      const fromDays = () => {
-        const n = Math.max(1, parseInt($('#cuDays', b).value, 10) || 1), m = minNow();
-        const fast = fc(m), lowest = fewest();
-        $('#cuDays', b).classList.remove('bad-input');
-        if (!fast) { B = m; note = ''; put('#cuBud', L.r2(B)); show(null); return; }
-        if (lowest && n < lowest) { tooFew(n); return; }
-        let lo = m, hi = Math.max(m, top);
-        for (let k = 0; k < 30; k++) { const mid = (lo + hi) / 2, f = fc(mid); if (f && f.days <= n) lo = mid; else hi = mid; }
-        B = Math.floor(lo * 100) / 100; note = ''; put('#cuBud', L.r2(B)); show(fc(B));
-      };
-      const fromBudget = () => {
-        const v = L.num($('#cuBud', b).value); if (!(v > 0)) return;
-        fewest(); $('#cuDays', b).classList.remove('bad-input');
-        const m = minNow(); B = Math.max(v, m); note = v < m ? ` (not under your minimum ${money(m)})` : '';
-        const f = fc(B); if (f) put('#cuDays', f.days); show(f);
-      };
-      // the minimum only limits: work the plan out again from what you typed last (days or budget)
-      let last = 'days';
-      const fromMin = () => (last === 'bud' ? fromBudget() : fromDays());
-      fromDays();
-      $('#cuDays', b).oninput = () => { last = 'days'; fromDays(); };
-      $('#cuBud', b).oninput = () => { last = 'bud'; fromBudget(); };
-      $('#cuMin', b).oninput = fromMin;
-      // leaving the days box with too few puts in the fewest possible
-      $('#cuDays', b).onblur = () => { const lo = fewest(), n = parseInt($('#cuDays', b).value, 10) || 0; if (lo && n < lo) { $('#cuDays', b).value = lo; fromDays(); } };
-      $('#cuGo', b).onclick = () => {
-        const lo = fewest(), n = parseInt($('#cuDays', b).value, 10) || 0;
-        if (lo && n < lo) { $('#cuDays', b).value = lo; fromDays(); return; }
-        const f = fc(B); if (!f) return;
-        // total = what there was to catch up when it started (kept when you change the plan), for the progress
-        const total = editing && c.total > 0 ? Math.max(c.total, debt) : debt;
-        // began = the first day of this catch-up (kept when you change the plan), for the progress
-        const began = editing && c.began ? c.began : editing && c.start ? c.start : today;
-        state.settings.catchup = { v: 2, on: true, start: today, began, days: f.days, min: L.r2(minNow()), budget: L.r2(B), debt: L.r2(debt), total: L.r2(total), target: f.date };
-        if (bufCfg().on) bufCfg().waiting = true; // a buffer already on waits until catch-up is done
-        save(); closeSheet(); render(); toast(editing ? 'Catch-up updated' : 'Catching up');
-      };
-    });
-  }
-
   // ---------------- reserved money for future payments ----------------
   // Reserved = taken out of what you can spend until you mark it paid or cancelled. Paid gives it back and the
   // real payments (whatever they came to) count instead. Every status can be changed later from the history.
@@ -803,22 +664,32 @@
       .concat(state.incomes.filter((e) => !e.ignored).map((e) => ({ e, kind: 'income' })))
       .sort((a, b) => (b.e.date + (b.e.id || '')).localeCompare(a.e.date + (a.e.id || '')));
   }
-  function openTxLog(filter, limit) {
-    const all = txLog().filter((x) => filter === 'all' || x.kind === filter);
+  function openTxLog(filter, limit, q) {
+    q = q || '';
+    // search: shop, source, note, category or amount ("12,40" or "12.4")
+    const qs = q.trim().toLowerCase(), qn = L.num(qs);
+    const cat = (e) => { const id = window.Industry.classifyExpense(e, state.settings.industry); const x = id && window.Industry.allIndustries(state.settings.industry).find((y) => y.id === id); return x ? x.name : ''; };
+    const hit = (x) => !qs || [x.e.place, x.e.source, x.e.note, x.e.bankPlace, x.kind === 'expense' ? cat(x.e) : ''].some((t) => String(t || '').toLowerCase().includes(qs)) || (qn > 0 && Math.abs(L.num(x.e.amount) - qn) < 0.005);
+    const all = txLog().filter((x) => (filter === 'all' || x.kind === filter) && hit(x));
     const shown = all.slice(0, limit);
     const inSum = all.filter((x) => x.kind === 'income' && !isInvestInc(x.e)).reduce((a, x) => a + L.num(x.e.amount), 0);
     const outSum = all.filter((x) => x.kind === 'expense' && !isInvestExp(x.e)).reduce((a, x) => a + L.num(x.e.amount), 0);
-    const pl = invPL(state.expenses.filter((e) => !e.ignored), state.incomes.filter((e) => !e.ignored));
+    const both = filter === 'all' ? all : txLog().filter(hit); // P&L needs both sides, whatever the filter
+    const pl = invPL(both.filter((x) => x.kind === 'expense').map((x) => x.e), both.filter((x) => x.kind === 'income').map((x) => x.e));
     const inAll = L.r2(inSum + Math.max(0, pl)), outAll = L.r2(outSum + Math.max(0, -pl));
     let lastDay = '';
     const rows = shown.map((x) => { const h = x.e.date !== lastDay ? `<div class="tx-day">${dLong(x.e.date)}</div>` : ''; lastDay = x.e.date; return h + itemRow(x.e, x.kind); }).join('');
     openSheet(`<h3>Transactions</h3>
+      <div class="field" style="margin-bottom:8px"><input id="txQ" placeholder="Search shop, note, category or amount" value="${esc(q)}" autocomplete="off"></div>
       <div class="seg" style="margin-bottom:10px"><button data-f="all" class="${filter === 'all' ? 'on' : ''}">All</button><button data-f="expense" class="${filter === 'expense' ? 'on' : ''}">Spent</button><button data-f="income" class="${filter === 'income' ? 'on' : ''}">Income</button></div>
       <div class="chips" style="margin-bottom:10px">${filter !== 'expense' ? `<span class="chip">In <b class="num good">+${money(inAll)}</b></span>` : ''}${filter !== 'income' ? `<span class="chip">Out <b class="num">-${money(outAll)}</b></span>` : ''}</div>
       <div class="list tx-list">${rows || '<div class="empty">Nothing here</div>'}</div>
       ${all.length > shown.length ? '<button class="btn ghost block" id="txMore" style="margin-top:10px">Show more</button>' : ''}`, (b) => {
-      $$('.seg button', b).forEach((x) => (x.onclick = () => openTxLog(x.dataset.f, 60)));
-      const m = $('#txMore', b); if (m) m.onclick = () => { const sc = $('#sheet').scrollTop; openTxLog(filter, limit + 60); $('#sheet').scrollTop = sc; };
+      $$('.seg button', b).forEach((x) => (x.onclick = () => openTxLog(x.dataset.f, 60, q)));
+      const m = $('#txMore', b); if (m) m.onclick = () => { const sc = $('#sheet').scrollTop; openTxLog(filter, limit + 60, q); $('#sheet').scrollTop = sc; };
+      const qi = $('#txQ', b);
+      if (q) { qi.focus(); qi.setSelectionRange(q.length, q.length); }
+      qi.oninput = () => { clearTimeout(openTxLog._t); openTxLog._t = setTimeout(() => openTxLog(filter, 60, qi.value), 250); };
       bindItems(b);
     });
   }
@@ -846,29 +717,42 @@
     return `<div class="tomorrow ${cls}"><span>${label}</span><b class="num">${money(ts.nextAllowance)}</b><span class="trend">${trend}</span></div>`;
   }
 
-  // The limit a past day really had while catching up (or building a buffer): worked out the way the app showed
-  // it on that day (everything as of that day). Null when neither was running then.
-  let pastMemo = null;
-  function catchLimitOn(date) {
-    if (pastMemo && pastMemo.ledger === ledger && pastMemo.date === date) return pastMemo.limit;
+  // The limit each day really had while catching up (or building a buffer), as the app showed it on that day:
+  // worked out with everything as of that day. Only for the last 45 days (older days keep the normal limit).
+  // { date: limit } for the days that had one; today's comes from the live plan.
+  let limMemo = null;
+  function realLimits() {
+    const key = saveSeq + '|' + today + '|' + autoOn() + '|' + L.num(state.settings.minDaily);
+    if (limMemo && limMemo.key === key) return limMemo.map;
+    const map = {};
     const keepL = ledger, keepT = today;
-    let limit = null;
+    let from = L.addDays(keepT, -45);
+    if (ledger.statsFrom > from) from = ledger.statsFrom;
     try {
-      today = date; ledger = L.buildLedger(state, date, ledgerOpts());
-      let cp = autoPlan();
-      if (!cp && modeOn() === 'buffer' && !bufCfg().waiting) cp = L.catchupPlan(ledger, adapted(bufCfg()), date);
-      if (cp && cp.today && !cp.done) limit = cp.today.limit;
-    } catch (e) { limit = null; } finally { ledger = keepL; today = keepT; }
-    pastMemo = { ledger, date, limit };
-    return limit;
+      for (let d = from; d < keepT; d = L.addDays(d, 1)) {
+        today = d; ledger = L.buildLedger(state, d, ledgerOpts());
+        let cp = autoPlan();
+        if (!cp && bufCfg().on && !bufCfg().waiting && bufCfg().start && bufCfg().start <= d) cp = L.catchupPlan(ledger, adapted(bufCfg()), d);
+        if (cp && cp.today && !cp.done && !cp.today.holiday) map[d] = cp.today.limit;
+      }
+    } catch (e) { console.warn(e); } finally { ledger = keepL; today = keepT; }
+    const cp = catchPlan();
+    if (cp && cp.today && !cp.today.holiday) map[today] = cp.today.limit;
+    limMemo = { key, map };
+    return map;
+  }
+  // A day from daysInRange with the limit it really had (catch-up or buffer) instead of the normal one.
+  function realDay(d) {
+    if (!d) return d;
+    const lim = realLimits()[d.date];
+    if (lim === undefined || d.holiday) return d;
+    return Object.assign({}, d, { normalAllow: d.allow, allow: lim, diff: L.r2(d.spent - lim) });
   }
   function yesterdayHtml() {
     const y = L.addDays(today, -1);
-    const d = L.daysInRange(ledger, y, y, today)[0];
+    const d = realDay(L.daysInRange(ledger, y, y, today)[0]);
     if (!d || (d.holiday && !d.spent)) return '';
-    const cp = catchPlan(), cy = cp && cp.byDay && cp.byDay[y];
-    const lim = cy ? cy.limit : catchLimitOn(y);
-    const diff = lim !== null && lim !== undefined ? L.r2(d.spent - lim) : d.diff;
+    const diff = d.diff;
     const over = diff > 0.005;
     return `<div class="yday ${over ? 'bad' : 'good'}">Yesterday ${money(Math.abs(diff))} ${over ? 'over' : 'under'} the limit</div>`;
   }
@@ -1064,7 +948,7 @@
     y += Math.floor(m / 12); m = ((m % 12) + 12) % 12;
     const first = `${y}-${L.pad(m + 1)}-01`;
     const last = `${y}-${L.pad(m + 1)}-${L.pad(L.daysInMonth(y, m))}`;
-    const days = Object.fromEntries(L.daysInRange(ledger, first, last, today).map((d) => [d.date, d]));
+    const days = Object.fromEntries(L.daysInRange(ledger, first, last, today).map((d) => [d.date, realDay(d)]));
     const startDow = (L.parse(first).getUTCDay() + 6) % 7; // Monday first
     let cells = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map((d) => `<div class="dow">${d}</div>`).join('');
     for (let i = 0; i < startDow; i++) cells += '<div></div>';
@@ -1163,9 +1047,9 @@
   function openDay(date) {
     const ex = state.expenses.filter((e) => e.date === date);
     const inc = state.incomes.filter((e) => e.date === date);
-    const info = L.daysInRange(ledger, date, date, today)[0];
+    const info = realDay(L.daysInRange(ledger, date, date, today)[0]);
     openSheet(`<h3>${dLong(date)}</h3>
-      ${info ? `<div class="chips" style="margin-bottom:12px">${info.holiday ? '<span class="chip" style="color:#6ab8f2"><b>HOLIDAY</b></span>' : ''}<span class="chip">Daily budget <b class="num">${money(info.allow)}</b></span>
+      ${info ? `<div class="chips" style="margin-bottom:12px">${info.holiday ? '<span class="chip" style="color:#6ab8f2"><b>HOLIDAY</b></span>' : ''}<span class="chip">Daily budget <b class="num">${money(info.allow)}</b>${info.normalAllow !== undefined && Math.abs(info.normalAllow - info.allow) > 0.004 ? ` <span class="muted">(${info.allow < info.normalAllow ? 'catch-up' : 'minimum'})</span>` : ''}</span>
         <span class="chip">Spent <b class="num">${money(info.spent)}</b></span>
         <span class="chip ${info.diff > 0 ? 'bad' : 'good'}"><b class="num">${info.diff > 0 ? 'Over ' : 'Under '}${money(Math.abs(info.diff))}</b></span></div>` : ''}
       <div class="list">${ex.map((e) => itemRow(e, 'expense')).join('')}${inc.map((e) => itemRow(e, 'income')).join('')}${!ex.length && !inc.length ? '<div class="empty">No entries</div>' : ''}</div>
@@ -1219,7 +1103,7 @@
         <h2>Expected salary</h2>
         <div class="toggle"><span>Use expected net salary when a month has no logged income</span><input type="checkbox" id="useExp" ${state.settings.useExpected ? 'checked' : ''}></div>
         <div class="field"><label>Expected net per month, ${SYM}</label><input id="expNet" class="num" inputmode="decimal" value="${state.settings.expectedNet || ''}"></div>
-        ${per ? `<div class="small muted">This period (${dShort(per.start)} to ${dShort(per.end)}): ${money(L.sumRange(ledger.incomeByDay, per.start, per.end))} logged.</div>` : ''}
+        ${per ? `<div class="small muted">This period (${dShort(per.start)} to ${dShort(per.end)}): ${money(((ledger.items && ledger.items.inc) || []).reduce((a, i) => (i.bdate >= per.start && i.bdate <= per.end ? a + L.num(i.amount) : a), 0))} logged.</div>` : ''}
       </div>
 
       <div class="card"><h2>Income history</h2><div class="list">${list.length ? list.slice(0, 40).map((e) => itemRow(e, 'income')).join('') : '<div class="empty">No income logged yet</div>'}</div></div>`;
@@ -1387,6 +1271,7 @@
         ] }
       };
     }
+    days = days.map(realDay); // over / under against the limit each day really had (catch-up included)
     const st = L.overUnderStats(days.filter((d) => d.date <= today));
     const statExp = fixedOn() ? state.expenses : state.expenses.filter((e) => !isFixedE(e));
     const places = L.topPlaces(statExp, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.aliases, 0.01, window.Industry.brandKey);
@@ -1394,8 +1279,8 @@
     const palette = [css('--accent'), '#5fd3a0', '#6ab8f2', '#b48cf2', '#f2a65f', '#f26a9a', '#f5c35b', '#7ad1d8'];
     // as many distinct colours as there are shops; "Other" is grey
     const placeColor = (p, i) => (p.other ? '#5b6662' : i < palette.length ? palette[i] : `hsl(${Math.round((i * 137.5) % 360)}, 62%, 64%)`);
-    // SEB users: spending by industry, from the built-in shop classification
-    const sebUser = state.settings.bank.provider === 'eb' && (!!state.settings.bank.sessionId || state.expenses.some((e) => e.bankId));
+    // Spending by industry (built-in shop list plus your own sorting), for everyone with expenses
+    const sebUser = state.expenses.length > 0;
     const inds = sebUser ? window.Industry.byIndustry(statExp, from > ledger.statsFrom ? from : ledger.statsFrom, to, state.settings.industry) : [];
     const indTotal = inds.reduce((a, x) => a + x.total, 0);
     // Short-term investment: Still out = everything put in and not paid back yet (any time);
@@ -1507,7 +1392,7 @@
         <div class="row"><span class="label">Planned saving</span><span class="num">${money(s.monthlySaving)}</span></div>
         ${per.overspend > 0 ? `<div class="row"><span class="label">Overspend so far</span><span class="num bad">-${money(per.overspend)}</span></div>` : ''}
         <div class="row total"><span>Saved this month</span><span class="num ${per.saved < s.monthlySaving ? 'bad' : 'good'}">${money(per.saved)}</span></div>
-        ${per.rolloverIn > 0 ? `<div class="small muted" style="margin-top:6px">If ${money(per.rolloverIn)} of last month's rollover is still unspent on ${dShort(per.next)}, it moves to savings.</div>` : ''}
+        <div class="small muted" style="margin-top:6px">Whatever is left on ${dShort(per.end)} goes to savings. An overspend is taken from next month.</div>
       </div>` : ''}
       <div class="card"><h2>Goal settings</h2>
         <div class="field"><label>Savings goal, ${SYM}</label><input id="gGoal" class="num" inputmode="decimal" value="${s.goal}"></div>
@@ -1554,7 +1439,8 @@
         const auto = I.autoIndustry(e, cfg), names = Object.fromEntries(I.allIndustries(cfg).map((x) => [x.id, x.name]));
         return `<option value="">Automatic${auto ? ': ' + esc(names[auto] || '') : ': Unclassified'}</option>` +
           I.allIndustries(cfg).filter((x) => x.id !== 'other').map((x) => `<option value="${x.id}" ${e.industry === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
-      })()}</select></div>
+      })()}</select>
+        <label class="toggle small" style="margin-top:6px"><span>Every payment from this shop</span><input type="checkbox" id="eIndAll"></label></div>
       <label class="toggle"><span>Not daily spending<span class="small muted" style="display:block">Comes off your money, never overspend or catch-up</span></span><input type="checkbox" id="eNotDaily" ${e.notDaily ? 'checked' : ''}></label>
       <div class="actions">${isNew ? '' : '<button class="btn danger" id="eDel">Delete</button>'}<button class="btn primary" id="eSave">Save</button></div>`, (b) => {
       setTimeout(() => isNew && $('#eAmt', b).focus(), 50);
@@ -1565,16 +1451,26 @@
         const rec = Object.assign(item || { id: uid(), created: Date.now() }, { amount: L.r2(amt), place: $('#ePlace', b).value.trim() || 'Unknown', date: $('#eDate', b).value || today, note: $('#eNote', b).value.trim() });
         const ind = $('#eInd', b).value, wasInv = isNew ? false : isInvestExp(item);
         if (ind) rec.industry = ind; else delete rec.industry; // this one transaction only; the shop's other payments keep their category
+        if (ind && $('#eIndAll', b).checked) { // or the whole shop: its past and future payments too
+          const key = window.Industry.brandKey(rec.bankPlace || rec.place);
+          if (key) window.Industry.moveShop(key, null, ind, state.expenses.concat(isNew ? [rec] : []), state.settings.industry);
+        }
         if ($('#eNotDaily', b).checked) rec.notDaily = true; else delete rec.notDaily; // this one payment works like rent
         const askInvest = ind === 'invest' && !wasInv;
         if (isNew) state.expenses.push(rec);
         else if (rec.bankId) rec.edited = true; // your edit wins over later bank updates
-        save(); closeSheet(); render(); toast(isNew ? 'Saved' : 'Updated');
+        save(); closeSheet(); render();
+        toast(rec.date < openFrom() ? 'Saved. That month is closed, so it counts in this month' : isNew ? 'Saved' : 'Updated', rec.date < openFrom() ? 5000 : undefined);
         if (askInvest) openInvestSetup(window.Industry.brandKey(rec.bankPlace || rec.place)); // pick where it goes out and comes back
       };
       if (!isNew) $('#eDel', b).onclick = () => {
         if (item.bankId) state.ignoredBankIds.push(item.bankId);
-        state.expenses = state.expenses.filter((x) => x.id !== item.id); save(); closeSheet(); render(); toast('Deleted');
+        const at = state.expenses.indexOf(item);
+        state.expenses = state.expenses.filter((x) => x.id !== item.id); save(); closeSheet(); render();
+        toastUndo(item.date < openFrom() ? 'Deleted (closed month: its totals stay)' : 'Deleted', () => {
+          if (item.bankId) state.ignoredBankIds = state.ignoredBankIds.filter((x) => x !== item.bankId);
+          state.expenses.splice(Math.max(0, at), 0, item); save(); render(); toast('Back');
+        });
       };
     });
   }
@@ -1603,11 +1499,17 @@
         if (amt <= 0) return toast('Enter an amount');
         const rec = Object.assign(item || { id: uid() }, { amount: L.r2(amt), source: $('#nSrc', b).value.trim() || 'Income', kind: $('#nKind', b).value, date: $('#nDate', b).value || today, note: $('#nNote', b).value.trim() });
         if (isNew) state.incomes.push(rec);
+        else if (rec.bankId) rec.edited = true; // your edit wins over later bank updates
         save(); closeSheet(); render(); toast('Saved');
       };
       if (!isNew) $('#nDel', b).onclick = () => {
         if (item.bankId) state.ignoredBankIds.push(item.bankId);
-        state.incomes = state.incomes.filter((x) => x.id !== item.id); save(); closeSheet(); render(); toast('Deleted');
+        const at = state.incomes.indexOf(item);
+        state.incomes = state.incomes.filter((x) => x.id !== item.id); save(); closeSheet(); render();
+        toastUndo('Deleted', () => {
+          if (item.bankId) state.ignoredBankIds = state.ignoredBankIds.filter((x) => x !== item.bankId);
+          state.incomes.splice(Math.max(0, at), 0, item); save(); render(); toast('Back');
+        });
       };
     });
   }
@@ -1934,6 +1836,8 @@
       <div class="actions"><button class="btn primary" id="bkConnect">${connected ? 'Reconnect ' + label : 'Connect ' + label}</button>${connected ? '<button class="btn" id="bkSync">Sync now</button>' : ''}${bk.pendingState ? '<button class="btn" id="bkCheck">I finished, check now</button>' : ''}</div>
 
       ${liveSettingsHtml()}
+      <h3 style="margin-top:22px">Categories</h3>
+      <div class="actions"><button class="btn" id="dSort">Sort shops into industries</button></div>
       <h3 style="margin-top:22px">Data</h3>
       <div class="actions"><button class="btn" id="dExport">Export backup file</button><button class="btn" id="dImport">Import backup file</button></div>
       <input type="file" id="dFile" accept="application/json" hidden>
@@ -1982,6 +1886,7 @@
       if (connected) $('#bkSync', b).onclick = () => { closeSheet(); bankSync(true); };
       const ck = $('#bkCheck', b); if (ck) ck.onclick = async () => { const ok = await checkClaim(); toast(ok ? 'Connected' : 'Not finished yet'); if (ok) openSettings(); };
       bindLiveSettings(b);
+      $('#dSort', b).onclick = () => openClassify();
       $('#dExport', b).onclick = exportData;
       $('#dImport', b).onclick = () => $('#dFile', b).click();
       $('#dFile', b).onchange = (e) => importData(e.target.files[0]);
@@ -2019,15 +1924,15 @@
     const mine = (id) => Object.keys(cfg.map).filter((k) => cfg.map[k] === id);
     const scroller = $('#sheet'), keep = scroller.hidden ? 0 : scroller.scrollTop;
     openSheet(`<h3>Sort shops</h3>
-      <p class="small muted" style="margin-top:-6px">Drag a shop onto an industry (or tap it). Tap an industry to see what you put there and remove mistakes. Similar names (MEGO, MEGOveikals) are matched automatically.</p>
+      <p class="small muted" style="margin-top:-6px">Drag a shop onto an industry, or tap it. Tap an industry to see its shops: tap one to move it, × to unsort it. Similar names (MEGO, MEGOveikals) count as one shop.</p>
       <div class="cls-shops" id="clsShops">${groups.length ? groups.map((g) => `<div class="shop-chip" data-key="${esc(g.key)}"><b>${esc(g.name)}</b><span>${g.count}× · ${money(g.total)}</span></div>`).join('') : '<div class="empty" style="padding:12px">Every shop is sorted 🎉</div>'}</div>
       <div class="small muted" style="margin:14px 0 8px">Industries</div>
       <div class="ind-grid">${inds.map((x) => {
         const m = mine(x.id);
         return `<div class="ind-drop ${clsOpen === x.id ? 'open' : ''}" data-ind="${x.id}" style="--c:${x.color}"><div class="ind-name"><i></i>${esc(x.name)}${m.length ? ` <span class="muted small">+${m.length}</span>` : ''}</div>
           ${clsOpen === x.id ? `<div class="ind-mine">${(() => { const sh = I.shopsIn(x.id, state.expenses, cfg); return sh.length ? sh.map((g) => `<span class="mine-chip" data-move="${esc(g.key)}">${esc(g.name)}<button data-unset="${esc(g.key)}" aria-label="Remove">×</button></span>`).join('') : '<span class="small muted">No shops here yet</span>'; })()}</div>
-            <div class="small muted" style="margin-top:6px">Tap a shop to move it. × makes it unsorted.</div>
-            ${I.FIXED.has(x.id) || x.id === 'invest' ? '' : `<label class="toggle small" style="margin-top:8px" data-noopen="1"><span>Not daily spending (like rent)</span><input type="checkbox" data-planned="${x.id}" ${I.isPlannedInd(x.id, cfg) ? 'checked' : ''}></label>`}` : ''}
+            ${I.FIXED.has(x.id) || x.id === 'invest' ? '' : `<label class="toggle small" style="margin-top:8px" data-noopen="1"><span>Not daily spending (like rent)</span><input type="checkbox" data-planned="${x.id}" ${I.isPlannedInd(x.id, cfg) ? 'checked' : ''}></label>`}
+            ${/^c_/.test(x.id) ? `<div class="actions" data-noopen="1" style="margin-top:8px"><button class="btn ghost small-btn" data-indren="${x.id}">Rename</button><button class="btn ghost small-btn" data-inddel="${x.id}">Delete</button></div>` : ''}` : ''}
         </div>`;
       }).join('')}</div>
       <div class="actions" style="margin-top:12px" id="newIndRow"><button class="btn ghost block" id="newInd">+ New industry</button></div>`, (b) => {
@@ -2042,6 +1947,23 @@
         };
         $('#newIndAdd', b).onclick = add; inp.onkeydown = (e) => { if (e.key === 'Enter') add(); };
       };
+      // your own industries: rename, or delete (its shops and payments go back to unsorted or their usual industry)
+      $$('[data-indren]', b).forEach((x) => (x.onclick = (e) => {
+        e.stopPropagation();
+        const c = cfg.custom.find((y) => y.id === x.dataset.indren); if (!c) return;
+        const n = prompt('New name', c.name); if (n === null || !n.trim()) return;
+        c.name = n.trim().slice(0, 30); save(); render(); openClassify();
+      }));
+      $$('[data-inddel]', b).forEach((x) => (x.onclick = (e) => {
+        e.stopPropagation();
+        const id = x.dataset.inddel, c = cfg.custom.find((y) => y.id === id); if (!c) return;
+        if (!confirm(`Delete ${c.name}? Its shops go back to unsorted.`)) return;
+        for (const k in cfg.map) if (cfg.map[k] === id) cfg.map[k] = I.UNSORTED;
+        for (const ex of state.expenses) if (ex.industry === id) delete ex.industry;
+        cfg.custom = cfg.custom.filter((y) => y.id !== id);
+        cfg.planned = (cfg.planned || []).filter((y) => y !== id); cfg.notPlanned = (cfg.notPlanned || []).filter((y) => y !== id);
+        clsOpen = ''; save(); render(); openClassify(); toast(c.name + ' deleted');
+      }));
       $$('[data-planned]', b).forEach((x) => (x.onchange = () => {
         const id = x.dataset.planned;
         cfg.planned = (cfg.planned || []).filter((y) => y !== id); cfg.notPlanned = (cfg.notPlanned || []).filter((y) => y !== id);

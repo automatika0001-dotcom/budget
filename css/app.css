@@ -377,3 +377,5 @@ body.catchup.lava .chip, body.catchup.lava .tomorrow, body.catchup.lava .cu-line
 .p2p-line b.good { color: var(--good); }
 .p2p-line b.bad { color: var(--bad); }
 .p2p-line:last-child { border-top: 1px dashed var(--line); margin-top: 3px; padding-top: 4px; font-weight: 600; }
+
+.toast-undo { margin-left: 10px; background: none; border: 0; color: inherit; font: inherit; font-weight: 800; text-decoration: underline; padding: 2px 4px; cursor: pointer; }

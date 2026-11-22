@@ -113,15 +113,13 @@
 
   /**
    * Walk every budget period from the start date until today and apply the carry rules:
-   *  - Overspend (negative leftover) is carried in full to the next period, every time.
-   *  - Surplus rolls over to the next period once. If that rollover is still unspent when the
-   *    next period closes, what is left of it goes to savings; that period's own surplus rolls on.
-   *  - Savings per closed period = monthly saving + rollover sent to savings.
+   *  - Overspend (negative leftover) is carried in full to the next period.
+   *  - Anything left over when a period closes goes to savings (it is not carried).
+   *  - Savings per closed period = monthly saving + what was left over.
    *  - Current period (live): saved = monthly saving minus any overspend so far.
-   */
-  /**
-   * opts.isFixed(expense): fixed costs (rent, utilities). They come out of the month's money on their day
-   * (so the daily allowance is recalculated without them) but never count as that day's spending.
+   * opts.isFixed(expense): planned costs (rent, utilities, excluded payments, investments). They come out of the
+   * month's money on their day (so the daily allowance is recalculated without them) but are never that day's
+   * spending. Finished months that are locked (opts.closed) keep their numbers.
    */
   function buildLedger(state, today, opts) {
     const s = state.settings;
@@ -192,7 +190,7 @@
       const incomeOf = (before) => {
         let salary = 0, advance = 0, other = 0, hasSalary = false;
         for (const it of incomesB) {
-          if (it.bdate < p.start || it.bdate > p.end) continue;
+          if (it.bdate < p.start || it.bdate > p.end || it.bdate > today) continue; // future-dated: counts on its day
           if (before !== undefined && !knownAt(it, before)) continue;
           const k = incomeKind(it), a = num(it.amount);
           if (k === 'salary') { salary += a; hasSalary = true; } else if (k === 'advance') advance += a; else other += a;
@@ -208,7 +206,7 @@
       let incomeLater = 0;
       if (!incomeExpected) {
         for (const it of incomesB) {
-          if (it.bdate < p.start || it.bdate > p.end || it.bdate <= p.start) continue;
+          if (it.bdate < p.start || it.bdate > p.end || it.bdate <= p.start || it.bdate > today) continue;
           incomeSteps[it.bdate] = r2((incomeSteps[it.bdate] || 0) + num(it.amount));
           incomeLater += num(it.amount);
         }
@@ -238,11 +236,14 @@
         adjust = r2(adjust + delta);
         adjByDay[x.date] = r2((adjByDay[x.date] || 0) + delta);
       }
-      const reserve = sumRange(resByDay, p.start, p.end);
+      // Only what happened up to today: an entry dated later in this month counts on its own day, so "left" and
+      // the daily budget always agree.
+      const upto = p.end < today ? p.end : today;
+      const reserve = sumRange(resByDay, p.start, upto);
       const effective = r2(effectiveBase + adjust + reserve);
-      const fixed = sumRange(fixedByDay, p.start, p.end);
-      const daily = sumRange(spentByDay, p.start, p.end);
-      const paidRes = sumRange(paidByDay, p.start, p.end);
+      const fixed = sumRange(fixedByDay, p.start, upto);
+      const daily = sumRange(spentByDay, p.start, upto);
+      const paidRes = sumRange(paidByDay, p.start, upto);
       const spent = r2(daily + fixed + paidRes); // all money that went out this period
       const leftover = r2(effective - spent);
       const inv = investIn(invest, p.start, p.end);
