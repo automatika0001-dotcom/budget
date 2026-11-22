@@ -139,12 +139,15 @@
   }
 
   // ---------------- core render ----------------
+  // Planned costs (rent, utilities, business expenses, short-term investments) come off the month's money but are
+  // never a day's spending, so they can't put any day over its limit.
+  function ledgerOpts() {
+    const cfg = state.settings.industry;
+    return { isFixed: (e) => !!e.notDaily || window.Industry.isFixedExpense(e, cfg) || isInvestExp(e), closed: state.closed || (state.closed = {}), isInvestExp: isInvestExp, isInvestInc: isInvestInc };
+  }
   function recompute() {
     today = L.todayStr();
-    const cfg = state.settings.industry;
-    // Planned costs (rent, utilities, business expenses, short-term investments) come off the month's money but are
-    // never a day's spending, so they can't put any day over its limit.
-    const opts = { isFixed: (e) => !!e.notDaily || window.Industry.isFixedExpense(e, cfg) || isInvestExp(e), closed: state.closed || (state.closed = {}), isInvestExp: isInvestExp, isInvestInc: isInvestInc };
+    const opts = ledgerOpts();
     ledger = L.buildLedger(state, today, opts);
     // A finished month is locked 3 days after it ends (late bank bookings): its results never change again.
     const locks = L.monthsToLock(ledger, today, 3);
@@ -843,12 +846,29 @@
     return `<div class="tomorrow ${cls}"><span>${label}</span><b class="num">${money(ts.nextAllowance)}</b><span class="trend">${trend}</span></div>`;
   }
 
+  // The limit a past day really had while catching up (or building a buffer): worked out the way the app showed
+  // it on that day (everything as of that day). Null when neither was running then.
+  let pastMemo = null;
+  function catchLimitOn(date) {
+    if (pastMemo && pastMemo.ledger === ledger && pastMemo.date === date) return pastMemo.limit;
+    const keepL = ledger, keepT = today;
+    let limit = null;
+    try {
+      today = date; ledger = L.buildLedger(state, date, ledgerOpts());
+      let cp = autoPlan();
+      if (!cp && modeOn() === 'buffer' && !bufCfg().waiting) cp = L.catchupPlan(ledger, adapted(bufCfg()), date);
+      if (cp && cp.today && !cp.done) limit = cp.today.limit;
+    } catch (e) { limit = null; } finally { ledger = keepL; today = keepT; }
+    pastMemo = { ledger, date, limit };
+    return limit;
+  }
   function yesterdayHtml() {
     const y = L.addDays(today, -1);
     const d = L.daysInRange(ledger, y, y, today)[0];
     if (!d || (d.holiday && !d.spent)) return '';
-    const cp = catchPlan(), cy = cp && cp.byDay[y];
-    const diff = cy ? L.r2(d.spent - cy.limit) : d.diff;
+    const cp = catchPlan(), cy = cp && cp.byDay && cp.byDay[y];
+    const lim = cy ? cy.limit : catchLimitOn(y);
+    const diff = lim !== null && lim !== undefined ? L.r2(d.spent - lim) : d.diff;
     const over = diff > 0.005;
     return `<div class="yday ${over ? 'bad' : 'good'}">Yesterday ${money(Math.abs(diff))} ${over ? 'over' : 'under'} the limit</div>`;
   }
