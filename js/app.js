@@ -1111,11 +1111,8 @@
     $$('.cal .day', v).forEach((el) => el.addEventListener('click', () => openDay(el.dataset.date)));
   }
 
-  // Every pay month, newest first: spent and income from pay day to pay day (from an early advance or salary
-  // when there was one). Spending follows the Rent & utilities switch like the rest of the page.
-  // PRI (post rent income): income minus rent, utilities, excluded costs, payments from a reserve and money still
-  // reserved. Shown when the switch leaves those out of spending. Net is always what really came in minus what
-  // really went out (money still reserved has not gone out).
+  // PRI for the Calendar's month: rent, utilities, excluded costs and payments from a reserve paid in these days,
+  // and money reserved in them and still held.
   function plannedOut(from, to) {
     const paidRes = new Set((state.reserves || []).filter((r) => resStatus(r) === 'paid').map((r) => r.id));
     const isP = (e) => (isFixedE(e) && !isInvestExp(e)) || !!(e.reserveId && paidRes.has(e.reserveId));
@@ -1127,26 +1124,38 @@
     }, 0);
     return { isP, paid: L.r2(paid), held: L.r2(held) };
   }
+  // Every budget month, newest first, with exactly the numbers the daily budget uses, so "Left" here is the
+  // same money as on the Today page. A month runs pay day to pay day; an advance counts in the month it
+  // arrives in (it pays for that month's last days).
+  //  - Rent & utilities on: Income, what came from last month, saving, rebalances, money still reserved and
+  //    still invested, Spent (everything else that went out), Left.
+  //  - Off: PRI (the month's money after rent, utilities, excluded costs, reserves and investments still out),
+  //    Spent (daily spending only), Left. PRI minus Spent is always Left.
   function payToPayHtml() {
     const rows = [], first = ledger.statsFrom || state.settings.startDate;
-    let nextFrom = null; // each one ends the day before the newer one starts, so no day is counted twice
     for (const p of ledger.periods.slice().reverse()) {
-      const pr0 = L.payRange(state, p.start);
-      const pr = { from: pr0.from < first ? first : pr0.from, end: nextFrom && L.addDays(nextFrom, -1) < pr0.end ? L.addDays(nextFrom, -1) : pr0.end };
-      nextFrom = pr0.from;
-      const upto = pr.end < today ? pr.end : today;
-      if (pr.from > upto) continue;
-      // Investments are not spending or income: only their P&L in these days counts, a gain as income and a
-      // loss as spending.
-      const inR = (x) => !x.ignored && x.date >= pr.from && x.date <= upto;
-      const pl = invPL(state.expenses.filter(inR), state.incomes.filter(inR));
-      const po = plannedOut(pr.from, upto);
-      const sp = L.r2(state.expenses.reduce((a, e) => (inR(e) && !isInvestExp(e) && (fixedOn() || !po.isP(e)) ? a + L.num(e.amount) : a), 0) + Math.max(0, -pl));
-      const inc = L.r2(state.incomes.reduce((a, i) => (inR(i) && !isInvestInc(i) ? a + L.num(i.amount) : a), 0) + Math.max(0, pl));
-      const pri = L.r2(inc - po.paid - po.held);
-      const net = L.r2(inc - sp - (fixedOn() ? 0 : po.paid));
-      rows.push(`<div class="p2p-row${p.isCurrent ? ' now' : ''}"><div class="p2p-when">${dShort(pr.from)} to ${dShort(pr.end)}${p.isCurrent ? ' <span class="tag">now</span>' : ''}</div>
-        <div class="p2p-nums"><span>Spent <b class="num">${money(sp)}</b></span>${fixedOn() ? `<span>Income <b class="num good">${money(inc)}</b></span>` : `<span>PRI <b class="num ${pri < 0 ? 'bad' : 'good'}">${money(pri)}</b></span>`}<span class="${net < 0 ? 'bad' : 'good'}"><b class="num">${net < 0 ? '-' : '+'}${money(Math.abs(net))}</b></span></div></div>`);
+      if (p.end < first) continue;
+      const line = (k, v, cls) => `<div class="p2p-line"><span>${k}</span><b class="num ${cls || ''}">${v}</b></div>`;
+      const inv = p.invest ? Math.max(0, L.r2(L.num(p.invest.out) - L.num(p.invest.back))) : 0;
+      const held = Math.max(0, -L.num(p.reserve));
+      const left = L.num(p.leftover);
+      const out = [];
+      if (fixedOn()) {
+        out.push(line('Income', money(p.income), 'good'));
+        if (L.num(p.carryIn)) out.push(line('From last month', signed(p.carryIn), p.carryIn < 0 ? 'bad' : 'good'));
+        if (L.num(p.saving)) out.push(line('Saving', signed(-p.saving)));
+        if (L.num(p.adjust)) out.push(line('Rebalanced', signed(p.adjust)));
+        if (held) out.push(line('Reserved', signed(-held)));
+        if (inv) out.push(line('Invested, not back yet', signed(-inv)));
+        out.push(line('Spent', money(L.r2(L.num(p.spent) - inv))));
+      } else {
+        const pri = L.r2(L.num(p.effective) - L.num(p.fixed) - L.num(p.paidRes));
+        out.push(line('PRI', money(pri), pri < 0 ? 'bad' : 'good'));
+        out.push(line('Spent', money(p.daily)));
+      }
+      out.push(line(p.isCurrent ? 'Left' : 'Left over', signed(left), left < 0 ? 'bad' : 'good'));
+      rows.push(`<div class="p2p-row${p.isCurrent ? ' now' : ''}"><div class="p2p-when">${dShort(p.start)} to ${dShort(p.end)}${p.isCurrent ? ' <span class="tag">now</span>' : ''}</div>
+        <div class="p2p-list">${out.join('')}</div></div>`);
     }
     return rows.length ? `<div class="card"><h2>Payday to payday</h2><div class="p2p">${rows.join('')}</div></div>` : '';
   }
