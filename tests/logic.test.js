@@ -715,3 +715,14 @@ console.log('investment tests passed');
     assert.strictEqual(L.carryLeft({ current: { start: '2026-11-01', end: '2026-11-30', carryIn: 5 } }, '2026-11-15'), 0);
   });
 }
+
+// ---- automatic catch-up measured against the even pace ----
+{
+  const take = L.catchupTake({ start: '2026-11-26', budget: 5, min: 5, keepFloor: true });
+  const lim = (raw, debt, pace) => L.r2(raw - take('2026-11-26', raw, debt, false, pace));
+  near(lim(24.94, 21.76, 25.98), 5, 'far behind: the minimum');
+  near(lim(25.94, 0.78, 25.98), 25.2, 'a little behind: even pace minus what is behind (spend it and you are on pace)');
+  near(lim(4.29, 100, 25.98), 5, 'normal budget under the minimum: the minimum');
+  near(lim(24.94, 0, 25.98), 24.94, 'not behind: normal budget');
+  console.log('pace catch-up tests passed');
+}

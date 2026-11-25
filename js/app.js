@@ -335,7 +335,10 @@
     const D = autoDebt();
     if (!(D > 0.004)) return null;
     const M = minDaily();
-    const cp = L.catchupPlan(ledger, { on: true, v: 2, start: today, debt: D, budget: Math.max(M, 0.01), min: M, keepFloor: true }, today);
+    // the even pace per day: this month's money for daily spending (after rent, utilities, savings, reserves and
+    // other planned costs) spread evenly over its budget days. Catching up = getting back to it.
+    const rate = L.paceGap(ledger, today, L.addDays(today, -1)).rate || L.paceGap(ledger, today, today).rate || 0; // first day of the month: today's
+    const cp = L.catchupPlan(ledger, { on: true, v: 2, start: today, debt: D, budget: Math.max(M, 0.01), min: M, keepFloor: true, paceDay: rate }, today);
     if (cp) cp.auto = true;
     return cp;
   }
@@ -364,7 +367,13 @@
     if (!ts || !cp || !cp.today || ts.holiday) return ts;
     const t = cp.today;
     const out = Object.assign({}, ts, { catchTake: t.take, catchAuto: !!cp.auto, rawAllowance: ts.dailyAllowance, dailyAllowance: t.limit, leftToday: L.r2(t.limit - ts.spentToday) });
-    if (ts.nextDate && ts.nextAllowance !== null) out.nextAllowance = cp.nextLimit(ts.nextDate, ts.nextAllowance);
+    if (ts.nextDate && ts.nextAllowance !== null) {
+      // tomorrow's normal budget if today's lowered limit gets spent (not the normal one)
+      const left = L.r2(ts.remainingMonth + ts.spentToday - Math.max(ts.spentToday, t.limit));
+      const n = L.budgetDaysBetween(ts.nextDate, ts.period.end, ledger.isHoliday || (() => false));
+      const nextRaw = n > 0 ? L.r2(Math.max(0, left) / n) : ts.nextAllowance;
+      out.nextAllowance = cp.nextLimit(ts.nextDate, nextRaw);
+    }
     return out;
   }
   // The line in the main box while building a buffer.
