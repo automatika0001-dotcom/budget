@@ -394,7 +394,16 @@
     }
     // Catch-up switch: automatic catch-up on or off. The look of the app doesn't change while catching up.
     const ap = autoOn() ? autoPlan() : null;
-    const cuLine = ap ? `<div class="small muted" style="margin:-4px 0 8px">${ap.eta ? `Catching up ${money(ap.missing)}: ${ap.etaDays} day${ap.etaDays === 1 ? '' : 's'} at ${money(minDaily())} a day` : `Catching up ${money(ap.missing)}: lower the minimum daily budget in Settings`}</div>` : '';
+    // What's behind in total (today's cut included), and how the next days look. One figure per line.
+    let cuLine = '';
+    if (ap && ap.today) {
+      const t = ap.today, lines = [`Behind by <b class="num">${money(t.debtBefore)}</b>`, `Today <b class="num">${money(t.limit)}</b>`];
+      if (ap.missing <= 0.004) lines.push('Caught up after today');
+      else if (!ap.eta) lines.push('Never at this minimum: lower it in Settings');
+      else if (ap.eta === ts.nextDate) lines.push(`Tomorrow <b class="num">${money(ts.nextAllowance)}</b>, then caught up`);
+      else lines.push(`About <b class="num">${money(minDaily())}</b> a day until ${dShort(ap.eta)}, then caught up`);
+      cuLine = `<div class="small muted cu-lines" style="margin:-4px 0 8px">${lines.map((x) => `<div>${x}</div>`).join('')}</div>`;
+    }
     return `<div class="card catchup-card"><div class="mode-switches">
       <div class="toggle"><span><b>Catch-up</b></span><input type="checkbox" id="cuOn" ${autoOn() ? 'checked' : ''}></div>${cuLine}
       <div class="toggle"><span><b>Buffer</b></span><input type="checkbox" id="bfOn" ${bf.on ? 'checked' : ''}></div></div>${body}</div>`;
