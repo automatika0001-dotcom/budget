@@ -1433,25 +1433,15 @@
       </table></div></div>`;
     const bind = (id, key) => ($(id).onchange = (e) => { s[key] = L.num(e.target.value); save(); render(); });
     bind('#gGoal', 'goal'); bind('#gStart', 'startingSaved');
-    // A new monthly saving: from today (the days already behind you keep the budget they had) or for the
-    // whole month (as if it had been set on its first day).
+    // A new monthly saving always counts from today: the days already behind you keep the limit they had.
     $('#gMonthly').onchange = (e) => {
       const from = L.num(s.monthlySaving), to = L.num(e.target.value);
       if (from === to) return;
-      const apply = (fromToday) => {
-        const old = (s.savingLog || []).filter((x) => x.date >= L.addDays(today, -400));
-        const same = old.find((x) => x.date === today); // changed twice today: one change
-        s.savingLog = old.filter((x) => x.date !== today && (fromToday || !per || x.date <= per.start)); // whole month: earlier changes this month go too
-        if (fromToday && per && today > per.start) s.savingLog.push({ date: today, from: same ? L.num(same.from) : from, to });
-        s.monthlySaving = to; save(); closeSheet(); render(); toast(fromToday ? 'New saving counts from today' : 'New saving counts for the whole month');
-      };
-      if (!per || today <= per.start) { apply(false); return; }
-      openSheet(`<h3>Save ${money(to)} a month</h3><p class="small muted" style="margin-top:-6px">Was ${money(from)}.</p>
-        <button class="choice" id="svToday"><b>From today</b><span class="small muted">Days already behind you keep their budget.</span></button>
-        <button class="choice" id="svMonth" style="margin-top:8px"><b>For the whole month</b><span class="small muted">As if set on ${dShort(per.start)}.</span></button>`, (b) => {
-        $('#svToday', b).onclick = () => apply(true);
-        $('#svMonth', b).onclick = () => apply(false);
-      });
+      const old = (s.savingLog || []).filter((x) => x.date >= L.addDays(today, -400));
+      const same = old.find((x) => x.date === today); // changed twice today: one change
+      s.savingLog = old.filter((x) => x.date !== today);
+      if (per && today > per.start) s.savingLog.push({ date: today, from: same ? L.num(same.from) : from, to });
+      s.monthlySaving = to; save(); render(); toast('New saving counts from today');
     };
   }
 
