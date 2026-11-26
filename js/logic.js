@@ -125,6 +125,11 @@
     const s = state.settings;
     const payDay = s.payDay || 1;
     const S = num(s.monthlySaving);
+    // Changing the monthly saving mid-month takes the difference out of (or gives it back to) the month's money
+    // from the day it was changed, not from the month's first day, so past days keep the budget they had.
+    // savingLog: [{ date, from, to }], oldest first.
+    const savLog = (Array.isArray(s.savingLog) ? s.savingLog : []).filter((x) => x && x.date).slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    const savAt = (d) => { let v = savLog.length ? num(savLog[0].from) : S; for (const x of savLog) if (x.date <= d) v = num(x.to); return v; };
     const isFixed = (opts && opts.isFixed) || (() => false);
     const closed = (opts && opts.closed) || {}; // locked results of finished months, by period start
     // A locked month only counts what it held when it was locked. Anything dated inside it that it didn't
@@ -231,7 +236,8 @@
             const rel = releaseDateOf(r);
             if (rel && rel >= p.start && rel <= p.end && (+r.releasedAt || 0) <= t) resThen += num(r.amount);
           }
-          delta = r2(num(x.target) - (incomeOf(t).income - S + carry + adjust + resThen - spentThen));
+          const savThen = savAt(todayStr(new Date(t))); // the monthly saving as it was when you rebalanced
+          delta = r2(num(x.target) - (incomeOf(t).income - savThen + carry + adjust + resThen - spentThen));
         }
         adjust = r2(adjust + delta);
         adjByDay[x.date] = r2((adjByDay[x.date] || 0) + delta);
@@ -247,7 +253,14 @@
       const spent = r2(daily + fixed + paidRes); // all money that went out this period
       const leftover = r2(effective - spent);
       const inv = investIn(invest, p.start, p.end);
-      const per = Object.assign({}, p, { invest: inv, incomeSteps, incomeLater: r2(incomeLater), income, incomeExpected, salaryToCome, advance: r2(advance), saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), adjust, effectiveBase, effective, reserve: r2(reserve), spent, daily: r2(daily), fixed: r2(fixed), paidRes: r2(paidRes), leftover, isCurrent });
+      // saving changed during this month: the days before the change had the old saving
+      const savByDay = {};
+      if (savLog.length) {
+        const d0 = r2(S - savAt(p.start));
+        if (d0) savByDay[p.start] = d0;
+        for (const x of savLog) if (x.date > p.start && x.date <= p.end) savByDay[x.date] = r2((savByDay[x.date] || 0) - (num(x.to) - num(x.from)));
+      }
+      const per = Object.assign({}, p, { savByDay, invest: inv, incomeSteps, incomeLater: r2(incomeLater), income, incomeExpected, salaryToCome, advance: r2(advance), saving: S, base, carryIn: r2(carry), rolloverIn: r2(rolloverIn), adjust, effectiveBase, effective, reserve: r2(reserve), spent, daily: r2(daily), fixed: r2(fixed), paidRes: r2(paidRes), leftover, isCurrent });
       if (!isCurrent) {
         // Closed month: an overspend carries into the next month; anything left over goes to savings.
         let toSavings = 0, carryOut = 0;
@@ -410,7 +423,7 @@
       const adj = adjByDay[d] || 0;
       const fx = fixedByDay[d] || 0; // rent/utilities paid today: taken off the month's money before today's allowance
       const inc = steps[d] || 0; // income that arrived today
-      const rz = resByDay[d] || 0, pd = paidByDay[d] || 0; // reserved (-) / released (+), paid from a reserve
+      const rz = (resByDay[d] || 0) + ((per.savByDay && per.savByDay[d]) || 0), pd = paidByDay[d] || 0; // reserved (-) / released (+) or saving changed, paid from a reserve
       eff += adj - fx + inc + rz - pd;
       const holiday = isHoliday(d);
       const daysLeft = diffDays(d, per.end) + 1;

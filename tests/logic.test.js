@@ -726,3 +726,15 @@ console.log('investment tests passed');
   near(lim(24.94, 0, 25.98), 24.94, 'not behind: normal budget');
   console.log('pace catch-up tests passed');
 }
+
+// ---- monthly saving changed mid-month counts from that day ----
+{
+  const st = { settings: { payDay: 1, monthlySaving: 300, startDate: '2026-11-01', statsFrom: '2026-11-01', savingLog: [{ date: '2026-11-11', from: 200, to: 300 }] },
+    incomes: [{ id: 'i', date: '2026-11-01', amount: 1200, kind: 'salary' }], expenses: [], reserves: [] };
+  const lg = L.buildLedger(st, '2026-11-20');
+  const d = Object.fromEntries(L.daysInRange(lg, '2026-11-01', '2026-11-20', '2026-11-20').map((x) => [x.date, x]));
+  near(d['2026-11-01'].allow, 1000 / 30, 'before the change: the old saving');
+  near(d['2026-11-11'].pool - d['2026-11-11'].before, 900, 'from the change day: the new saving');
+  near(lg.current.effective, 900, 'the month ends with the new saving');
+  console.log('saving change tests passed');
+}

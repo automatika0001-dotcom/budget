@@ -192,7 +192,8 @@
   // longer counts as spending or for catch-up, and only the profit counts as income.
   const investCfg = () => state.settings.invest || (state.settings.invest = { income: [] });
   const isInvestExp = (e) => window.Industry.classifyExpense(e, state.settings.industry) === 'invest';
-  const isInvestInc = (i) => { const k = window.Industry.brandKey(i.source); return investCfg().income.some((x) => window.Industry.keysMatch(k, x)); };
+  // a payout from a chosen source (Stripe), or money back from a shop you invest at (a refund of an investment)
+  const isInvestInc = (i) => { const k = window.Industry.brandKey(i.source); return investCfg().income.some((x) => window.Industry.keysMatch(k, x)) || (!!k && window.Industry.classify(i.source, '', state.settings.industry) === 'invest'); };
   // Investment P&L of a set of entries: payouts minus money put in. Totals never count investments as spending
   // or income themselves: a gain adds to income, a loss adds to spending.
   const invPL = (exps, incs) => L.r2(incs.reduce((a, i) => (isInvestInc(i) ? a + L.num(i.amount) : a), 0) - exps.reduce((a, e) => (isInvestExp(e) ? a + L.num(e.amount) : a), 0));
@@ -1423,7 +1424,27 @@
           <td class="${(p.carryOut ?? 0) < 0 ? 'bad' : (p.carryOut ?? 0) > 0 ? 'good' : ''}">${p.isCurrent ? '…' : fmtEUR0.format(p.carryOut)}</td><td>${fmtEUR0.format(p.saved)}</td></tr>`).join('')}
       </table></div></div>`;
     const bind = (id, key) => ($(id).onchange = (e) => { s[key] = L.num(e.target.value); save(); render(); });
-    bind('#gGoal', 'goal'); bind('#gMonthly', 'monthlySaving'); bind('#gStart', 'startingSaved');
+    bind('#gGoal', 'goal'); bind('#gStart', 'startingSaved');
+    // A new monthly saving: from today (the days already behind you keep the budget they had) or for the
+    // whole month (as if it had been set on its first day).
+    $('#gMonthly').onchange = (e) => {
+      const from = L.num(s.monthlySaving), to = L.num(e.target.value);
+      if (from === to) return;
+      const apply = (fromToday) => {
+        const old = (s.savingLog || []).filter((x) => x.date >= L.addDays(today, -400));
+        const same = old.find((x) => x.date === today); // changed twice today: one change
+        s.savingLog = old.filter((x) => x.date !== today && (fromToday || !per || x.date <= per.start)); // whole month: earlier changes this month go too
+        if (fromToday && per && today > per.start) s.savingLog.push({ date: today, from: same ? L.num(same.from) : from, to });
+        s.monthlySaving = to; save(); closeSheet(); render(); toast(fromToday ? 'New saving counts from today' : 'New saving counts for the whole month');
+      };
+      if (!per || today <= per.start) { apply(false); return; }
+      openSheet(`<h3>Save ${money(to)} a month</h3><p class="small muted" style="margin-top:-6px">Was ${money(from)}.</p>
+        <button class="choice" id="svToday"><b>From today</b><span class="small muted">Days already behind you keep their budget.</span></button>
+        <button class="choice" id="svMonth" style="margin-top:8px"><b>For the whole month</b><span class="small muted">As if set on ${dShort(per.start)}.</span></button>`, (b) => {
+        $('#svToday', b).onclick = () => apply(true);
+        $('#svMonth', b).onclick = () => apply(false);
+      });
+    };
   }
 
   // ---------------- SHEETS ----------------
