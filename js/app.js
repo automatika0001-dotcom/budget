@@ -65,6 +65,14 @@
       }
       out.settings.datesV1 = true;
     }
+    // v1.35.1: a saving raised from 200 to 300 on 26 Nov 2026, before the app dated saving changes, was applied
+    // to the whole month. Date it, once, so the days before keep the budget they had.
+    if (!out.settings.savingFix1) {
+      const sv = out.settings;
+      if (!(sv.savingLog || []).length && L.num(sv.monthlySaving) === 300 && sv.payDay === 17 && L.todayStr() >= '2026-11-26' && L.todayStr() <= '2026-12-16')
+        sv.savingLog = [{ date: '2026-11-26', from: 200, to: 300 }];
+      sv.savingFix1 = true;
+    }
     out.v = DATA_VERSION;
     return out;
   }
