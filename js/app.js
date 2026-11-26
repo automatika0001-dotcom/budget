@@ -1258,8 +1258,8 @@
       chart1 = {
         type: 'line',
         data: { labels: all.map(dShort), datasets: [
-          { label: 'Spent', data: spentS, borderColor: css('--accent'), backgroundColor: css('--accent-fill'), fill: true, tension: .2, pointRadius: lastDot, pointBackgroundColor: css('--accent'), borderWidth: 2.5 },
-          { label: 'Limit', data: limS, borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 2, stepped: true },
+          { label: 'Spent', data: spentS, borderColor: css('--accent'), backgroundColor: css('--accent-fill'), fill: true, tension: .2, cubicInterpolationMode: 'monotone', pointRadius: lastDot, pointBackgroundColor: css('--accent'), borderWidth: 2.5 },
+          { label: 'Limit', data: limS, borderColor: css('--bad'), borderDash: [6, 4], pointRadius: 0, borderWidth: 2, stepped: 'after' }, // a day's limit holds from the day before's point, where that day's spending starts
           { label: 'Even pace', data: paceS, borderColor: css('--text'), borderDash: [2, 4], pointRadius: 0, borderWidth: 1.5 }
         ] }
       };
