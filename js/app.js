@@ -422,6 +422,7 @@
       else lines.push(`About <b class="num">${money(minDaily())}</b> a day until ${dShort(ap.eta)}, then caught up`);
       cuLine = `<div class="small muted cu-lines" style="margin:-4px 0 8px">${lines.map((x) => `<div>${x}</div>`).join('')}</div>`;
     }
+    if (autoOn()) cuLine += `<button class="btn ghost block" id="cuSet" style="margin:0 0 10px">${ap && ap.today ? 'Change daily budget or days' : `Catch-up budget: ${money(minDaily())} a day`}</button>`;
     return `<div class="card catchup-card"><div class="mode-switches">
       <div class="toggle"><span><b>Catch-up</b></span><input type="checkbox" id="cuOn" ${autoOn() ? 'checked' : ''}></div>${cuLine}
       <div class="toggle"><span><b>Buffer</b></span><input type="checkbox" id="bfOn" ${bf.on ? 'checked' : ''}></div></div>${body}</div>`;
@@ -438,6 +439,40 @@
       else { bufCfg().on = false; save(); render(); }
     };
     const be = $('#bfEdit', v); if (be) be.onclick = () => openBuffer(ts, true);
+    const cs = $('#cuSet', v); if (cs) cs.onclick = () => openCatchupSet();
+  }
+  // Catch-up: set the daily budget while catching up, or the number of days; the other follows as you type.
+  // Each catch-up day pays back the even pace minus that day's budget, so days = behind / (pace - budget).
+  function openCatchupSet() {
+    const ap = autoPlan(), t = ap && ap.today;
+    const D = t ? L.num(t.debtBefore) : 0;
+    const rate = L.paceGap(ledger, today, L.addDays(today, -1)).rate || L.paceGap(ledger, today, today).rate || L.typicalDaily(ledger);
+    const fewest = D > 0 && rate > 0 ? Math.max(1, Math.ceil(D / rate - 1e-9)) : 1; // at 0 a day
+    const daysFor = (m) => (rate - m > 0.004 ? Math.max(1, Math.ceil(D / (rate - m) - 1e-9)) : null);
+    const budgetFor = (n) => Math.max(0, L.r2(rate - D / n));
+    const m0 = minDaily();
+    openSheet(`<h3>Catch-up</h3>
+      ${D > 0 ? `<div class="row"><span class="label">Behind by</span><b class="num">${money(D)}</b></div><div class="row"><span class="label">Even pace</span><span class="num">${money(rate)} a day</span></div>` : '<p class="small muted">Nothing to catch up right now. This is the daily budget you get when you are behind.</p>'}
+      <div class="field"><label>Daily budget while catching up, ${SYM}</label><input id="csM" class="num" inputmode="decimal" value="${m0}"></div>
+      ${D > 0 ? `<div class="field"><label>Days to catch up</label><input id="csN" class="num" inputmode="numeric" value="${daysFor(m0) || ''}"><div class="hint" id="csHint">Fewest days: ${fewest} (at 0 a day)</div></div>` : ''}
+      <div class="actions"><button class="btn primary block" id="csSave">Save</button></div>`, (b) => {
+      const mi = $('#csM', b), ni = $('#csN', b), hint = $('#csHint', b), sv = $('#csSave', b);
+      const check = () => {
+        const m = L.num(mi.value), n = ni ? Math.round(L.num(ni.value)) : 0;
+        const bad = (ni && (n < fewest)) || m < 0 || (D > 0 && m >= rate);
+        if (ni) ni.classList.toggle('bad-input', n < fewest);
+        mi.classList.toggle('bad-input', D > 0 && m >= rate);
+        if (hint) hint.textContent = D > 0 && m >= rate ? `Must be under ${money(rate)} or you never catch up` : `Fewest days: ${fewest} (at 0 a day)`;
+        sv.disabled = bad;
+      };
+      mi.oninput = () => { if (ni) { const n = daysFor(L.num(mi.value)); ni.value = n || ''; } check(); };
+      if (ni) ni.oninput = () => { const n = Math.round(L.num(ni.value)); if (n >= fewest) mi.value = budgetFor(n); check(); };
+      check();
+      sv.onclick = () => {
+        state.settings.minDaily = Math.max(0.01, L.r2(L.num(mi.value))); // 0 would mean "not set"
+        save(); closeSheet(); render(); toast(`Catch-up budget: ${money(state.settings.minDaily)} a day`);
+      };
+    });
   }
   // Buffer: set an extra amount aside. Amount, days, daily budget while building and the minimum are linked:
   // change any of them and the others follow as you type. With catch-up still running, the buffer waits and is
